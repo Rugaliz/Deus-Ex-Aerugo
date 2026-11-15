@@ -76,7 +76,7 @@ const MAX_LOD_VERTICES: usize = 1 << 20;
 
 /// Float4s per slot of the per-frame slot buffer (decal pieces fill consecutive slots).
 const SLOT_VEC4S: usize = 54;
-const MAX_SLOTS: usize = 2048;
+const MAX_SLOTS: usize = 8192;
 
 /// Push constants of a decal piece: view-projection, (first slot vec4 as bits, unused, texture width, height).
 #[repr(C)]

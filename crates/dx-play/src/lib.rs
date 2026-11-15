@@ -1116,9 +1116,10 @@ impl Session {
             candidates.push((dist, a, d));
         }
         candidates.sort_by(|x, y| x.0.total_cmp(&y.0));
-        // decals have a budget of their own, so a splatter does not push the characters out
+        // every decal: `DrawFrame` draws the decals of each surface it draws, however many (a cap on the nearest made
+        // the far ones of a fight's blood and bullet holes pop out); they are not counted against the others
         let (decals, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|(_, _, d)| d.decal.is_some());
-        let chosen: Vec<(u32, ue_vm::animation::MeshDraw)> = others.into_iter().take(1024).chain(decals.into_iter().take(150)).map(|(_, a, d)| (a, d)).collect();
+        let chosen: Vec<(u32, ue_vm::animation::MeshDraw)> = others.into_iter().take(1024).chain(decals).map(|(_, a, d)| (a, d)).collect();
         let mut out: Vec<dx_soft::ActorDraw> = Vec::with_capacity(chosen.len() + 1);
         for (a, d) in chosen {
             let lit = d.sprite.is_none() && !d.unlit;
