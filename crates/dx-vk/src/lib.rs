@@ -32,9 +32,6 @@ pub struct Quality {
     pub filter: u8,
     /// Multisampling: 1 (off), 2, 4 or 8 samples, with alpha-to-coverage for masked textures.
     pub msaa: u32,
-    /// The window system's 2D art (HUD, menus) when scaled: 0 as the original (point sampling where it asks for it),
-    /// 1 crisp (sharp bilinear: texels stay sharp, only their edges are smoothed), 2 smooth (bilinear).
-    pub ui_filter: u8,
     /// 16 bits per channel in the scene, dithered when shown: no banding in fog and dark gradients.
     pub deep_color: bool,
     /// Lightmaps sampled bicubic (smooth shadow edges) instead of bilinear.
@@ -63,7 +60,7 @@ pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 16] {
 }
 
 impl Quality {
-    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, ui_filter: 0, deep_color: false, smooth_lightmaps: false, pixel_lighting: false };
+    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false };
 }
 
 impl Default for Quality {
@@ -320,7 +317,6 @@ impl Context {
         q.msaa = [8u32, 4, 2, 1].into_iter().find(|&n| n <= q.msaa.max(1) && self.sample_counts.contains(vk::SampleCountFlags::from_raw(n))).unwrap_or(1);
         q.deep_color &= self.deep_color_ok;
         q.filter = q.filter.min(5);
-        q.ui_filter = q.ui_filter.min(2);
         self.quality.set(q);
         q
     }

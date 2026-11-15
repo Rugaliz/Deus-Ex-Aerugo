@@ -7,6 +7,6 @@ defaultproperties
 {
 	Action=MA_MenuScreen
 	Invoke=Class'MenuScreenAerugoGraphics'
-	HelpText="Texture filtering, anti-aliasing, color depth, lighting and HUD filtering."
+	HelpText="Texture filtering, anti-aliasing, color depth and lighting."
 	actionText="Advanced |&Graphics..."
 }

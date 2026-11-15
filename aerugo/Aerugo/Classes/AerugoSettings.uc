@@ -14,14 +14,12 @@ var config int OutputRate;
 // the mouse's counts per inch: movement is scaled to the 400 DPI mice the game was tuned for
 var config int MouseDPI;
 // picture options (the Advanced Graphics screen): texture filtering 0 original, 1 trilinear, 2..5 anisotropic
-// 2x..16x; multisampling 1, 2, 4, 8; 16-bit scene; bicubic lightmaps; per-pixel mesh lighting; HUD filtering 0
-// original, 1 crisp, 2 smooth
+// 2x..16x; multisampling 1, 2, 4, 8; 16-bit scene; bicubic lightmaps; per-pixel mesh lighting
 var config int TextureFilter;
 var config int AntiAliasing;
 var config int DeepColor;
 var config int SmoothLightmaps;
 var config int PixelLighting;
-var config int SmoothHUD;
 
 defaultproperties
 {
@@ -34,5 +32,4 @@ defaultproperties
 	DeepColor=1
 	SmoothLightmaps=1
 	PixelLighting=1
-	SmoothHUD=2
 }

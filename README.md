@@ -14,8 +14,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a frame rate limit.
 - **A sharper, smoother picture.** Every texture and effect at full quality, plus modern options in *Display →
   Advanced Graphics*: anisotropic texture filtering, anti-aliasing (MSAA, with smooth grates and fences), 16-bit colour
-  (no banding in fog and dark areas), smooth lightmap shadows, per-pixel lighting on characters and objects, and
-  smooth scaling of the HUD and menus. A field-of-view setting too. Each option can be set back to the original look.
+  (no banding in fog and dark areas), smooth lightmap shadows and per-pixel lighting on characters and objects. A
+  field-of-view setting too. Each option can be set back to the original look.
 - **Precise mouse aiming.** Tell the game your mouse's DPI, and the sensitivity slider shows how far you move the
   mouse for a full turn, so aiming feels the same on any mouse.
 - **Better sound.** 128 sound channels instead of 16, so sounds no longer cut each other off, at your system's own

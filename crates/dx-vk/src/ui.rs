@@ -172,14 +172,7 @@ impl UiRenderer {
             let Some(mips) = view.texture_mips_by_path_masked(path, masked) else { return Ok(None) };
             mips
         };
-        let mut first = mips[..1].to_vec();
-        // filtered HUD art (the HUD filtering option): transparent texels take their opaque neighbours' colour, so the
-        // filter blends edges towards the art's own colour rather than black
-        if cx.quality().ui_filter > 0 && dynamic.is_none() {
-            let (w, h, ref mut rgba) = first[0];
-            bleed_transparent(w, h, rgba);
-        }
-        let first = &first[..];
+        let first = &mips[..1];
         // the size the game measures the texture by (a mod's replacement picture may be bigger)
         let size = view.texture_size_by_path(path).filter(|_| dynamic.is_none()).map(|(w, h)| (w as f32, h as f32)).unwrap_or((first[0].0 as f32, first[0].1 as f32));
         let texture = GpuTexture::new(cx, first)?;
@@ -253,10 +246,7 @@ impl UiRenderer {
                     d.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipe);
                     bound = Some(pipe);
                 }
-                // the HUD filtering option: point sampling where the drawing asks for it (the original), or always
-                // filtered (crisp: sharp bilinear in the shader; smooth: bilinear)
-                let ui_filter = cx.quality().ui_filter;
-                let set = if flags & PF_NO_SMOOTH != 0 && ui_filter == 0 { tex.set_nearest } else { tex.set_linear };
+                let set = if flags & PF_NO_SMOOTH != 0 { tex.set_nearest } else { tex.set_linear };
                 // a modulated tile is drawn white (the device sets the vertex colour to 0xFFFFFFFF)
                 let color = if flags & PF_MODULATED != 0 { [1.0; 3] } else { q.color };
                 d.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[set], &[]);
@@ -265,7 +255,7 @@ impl UiRenderer {
                     rect: q.rect,
                     uv: [q.uv[0] / tw, q.uv[1] / th, (q.uv[0] + q.uv[2]) / tw, (q.uv[1] + q.uv[3]) / th],
                     color: [color[0], color[1], color[2], if flags & PF_MASKED != 0 { 1.0 } else { 0.0 }],
-                    viewport: [width as f32, height as f32, (ui_filter == 1) as u32 as f32, 0.0],
+                    viewport: [width as f32, height as f32, 0.0, 0.0],
                 };
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 d.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
@@ -325,53 +315,5 @@ impl UiRenderer {
             cx.device.destroy_sampler(self.linear, None);
             cx.device.destroy_sampler(self.nearest, None);
         }
-    }
-}
-
-/// Gives every fully transparent texel next to visible ones their average colour (alpha stays 0), twice, so bilinear
-/// filtering at the edges of masked art blends towards the art's colour instead of the transparent black.
-pub fn bleed_transparent(w: u32, h: u32, rgba: &mut [u8]) {
-    let (w, h) = (w as i32, h as i32);
-    for _ in 0..2 {
-        let src = rgba.to_vec();
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * w + x) * 4) as usize;
-                if src[i + 3] != 0 {
-                    continue;
-                }
-                let (mut acc, mut n) = ([0u32; 3], 0u32);
-                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx < 0 || ny < 0 || nx >= w || ny >= h {
-                        continue;
-                    }
-                    let j = ((ny * w + nx) * 4) as usize;
-                    // a visible texel, or one an earlier pass already coloured
-                    if src[j + 3] != 0 || src[j] | src[j + 1] | src[j + 2] != 0 {
-                        for c in 0..3 {
-                            acc[c] += src[j + c] as u32;
-                        }
-                        n += 1;
-                    }
-                }
-                if n > 0 {
-                    for c in 0..3 {
-                        rgba[i + c] = (acc[c] / n) as u8;
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn transparent_texels_take_the_colour_of_their_visible_neighbours() {
-        // a white texel in the middle of a 3x1 strip of transparent black
-        let mut px = vec![0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0];
-        super::bleed_transparent(3, 1, &mut px);
-        assert_eq!(px, [255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 0]);
     }
 }

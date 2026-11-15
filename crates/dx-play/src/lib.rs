@@ -611,7 +611,6 @@ impl Session {
             deep_color: get("DeepColor", 1) != 0,
             smooth_lightmaps: get("SmoothLightmaps", 1) != 0,
             pixel_lighting: get("PixelLighting", 1) != 0,
-            ui_filter: get("SmoothHUD", 2).clamp(0, 2) as u8,
         };
         AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality }
     }
@@ -619,11 +618,11 @@ impl Session {
     /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
     /// the original's for headless pictures and tests unless asked otherwise.
     pub fn quality(&mut self) -> dx_vk::Quality {
-        // `DX_QUALITY=filter,msaa,ui,deep,lightmaps,pixel` (numbers): for comparing the options one by one
+        // `DX_QUALITY=filter,msaa,deep,lightmaps,pixel` (numbers): for comparing the options one by one
         if let Some(v) = std::env::var("DX_QUALITY").ok() {
             let n: Vec<u32> = v.split(',').map(|x| x.trim().parse().unwrap_or(0)).collect();
             let g = |i: usize| n.get(i).copied().unwrap_or(0);
-            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), ui_filter: g(2) as u8, deep_color: g(3) != 0, smooth_lightmaps: g(4) != 0, pixel_lighting: g(5) != 0 };
+            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), deep_color: g(2) != 0, smooth_lightmaps: g(3) != 0, pixel_lighting: g(4) != 0 };
         }
         if self.settings_quality {
             self.aerugo_settings().quality
