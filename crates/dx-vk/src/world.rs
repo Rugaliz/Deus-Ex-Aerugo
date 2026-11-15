@@ -936,13 +936,13 @@ impl World {
     }
 
     /// Draws the model through the lists from now on (`Some`: the fragments the walk drew this frame, in world space)
-    /// or whole again (`None`). Only call while no submitted frame still reads the old geometry.
+    /// or whole again (`None`). The old geometry is freed once no frame in flight reads it.
     pub fn set_fragments(&mut self, cx: &Context, frags: Option<Vec<Fragment>>) -> Result<()> {
         let Some(frags) = frags else {
             if let Some(f) = self.fragments.take() {
                 if let Some((vb, ib)) = f.buffers {
-                    cx.destroy_buffer(vb);
-                    cx.destroy_buffer(ib);
+                    cx.retire_buffer(vb);
+                    cx.retire_buffer(ib);
                 }
             }
             return Ok(());

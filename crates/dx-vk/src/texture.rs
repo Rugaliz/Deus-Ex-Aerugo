@@ -88,12 +88,14 @@ impl GpuTexture {
     }
 }
 
-/// Host memory for a texture whose pixels change every frame (procedural textures): written by the CPU once the GPU
-/// has finished the previous frame, then copied into level 0 of the texture by commands recorded into the next frame.
+/// Host memory for a texture whose pixels change every frame (procedural textures): written by the CPU, then copied
+/// into level 0 of the texture by commands recorded into the same frame.
 /// Uploads of rectangles into a texture (one level): pixels gathered in a host buffer, then one copy per rectangle.
 pub struct RectStaging {
-    buffer: crate::Buffer,
-    mapped: *mut u8,
+    /// One host buffer for each frame that may be in flight (`FRAMES_IN_FLIGHT`), used in turn: a frame's pixels go
+    /// into the next one, so the frame before it can still be copying from its own.
+    buffers: Vec<(crate::Buffer, *mut u8)>,
+    slot: usize,
     capacity: usize,
     used: usize,
     rects: Vec<vk::BufferImageCopy>,
@@ -101,21 +103,30 @@ pub struct RectStaging {
 
 impl RectStaging {
     pub fn new(cx: &Context, capacity: usize) -> Result<RectStaging> {
-        let buffer = cx.create_buffer(capacity as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
-        let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-        Ok(RectStaging { buffer, mapped, capacity, used: 0, rects: Vec::new() })
+        let mut buffers = Vec::new();
+        for _ in 0..crate::FRAMES_IN_FLIGHT {
+            let buffer = cx.create_buffer(capacity as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
+            buffers.push((buffer, mapped));
+        }
+        Ok(RectStaging { buffers, slot: 0, capacity, used: 0, rects: Vec::new() })
     }
 
     /// Stages `rgba` (`w * h * 4` bytes) for texels `x..x+w`, `y..y+h`; false when the buffer is full for this frame.
-    /// Only call while no submitted frame still reads this buffer.
+    /// Call after the frame's slot was waited for (the frame `FRAMES_IN_FLIGHT` before is done).
     pub fn push(&mut self, x: u32, y: u32, w: u32, h: u32, rgba: &[u8]) -> bool {
+        // a frame's first rectangle: the next buffer
+        if self.rects.is_empty() {
+            self.slot = (self.slot + 1) % self.buffers.len();
+            self.used = 0;
+        }
         let n = (w * h * 4) as usize;
         // copy offsets must be multiples of the texel size
         let at = (self.used + 3) & !3;
         if rgba.len() != n || n == 0 || at + n > self.capacity {
             return false;
         }
-        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.mapped.add(at), n) };
+        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1.add(at), n) };
         self.used = at + n;
         self.rects.push(
             vk::BufferImageCopy::default()
@@ -143,7 +154,7 @@ impl RectStaging {
                 .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                 .subresource_range(range)];
             cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&to_dst));
-            cx.device.cmd_copy_buffer_to_image(cb, self.buffer.buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &self.rects);
+            cx.device.cmd_copy_buffer_to_image(cb, self.buffers[self.slot].0.buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &self.rects);
             let to_read = [vk::ImageMemoryBarrier2::default()
                 .image(texture.image)
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
@@ -160,14 +171,17 @@ impl RectStaging {
     }
 
     pub fn destroy(self, cx: &Context) {
-        unsafe { cx.device.unmap_memory(self.buffer.memory) };
-        cx.destroy_buffer(self.buffer);
+        for (b, _) in self.buffers {
+            unsafe { cx.device.unmap_memory(b.memory) };
+            cx.destroy_buffer(b);
+        }
     }
 }
 
 pub struct Staging {
-    buffer: crate::Buffer,
-    mapped: *mut u8,
+    /// One host buffer for each frame that may be in flight, used in turn as `RectStaging`'s.
+    buffers: Vec<(crate::Buffer, *mut u8)>,
+    slot: usize,
     width: u32,
     height: u32,
     dirty: bool,
@@ -176,16 +190,24 @@ pub struct Staging {
 impl Staging {
     pub fn new(cx: &Context, width: u32, height: u32) -> Result<Staging> {
         let size = (width * height * 4) as u64;
-        let buffer = cx.create_buffer(size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
-        let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-        Ok(Staging { buffer, mapped, width, height, dirty: false })
+        let mut buffers = Vec::new();
+        for _ in 0..crate::FRAMES_IN_FLIGHT {
+            let buffer = cx.create_buffer(size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
+            buffers.push((buffer, mapped));
+        }
+        Ok(Staging { buffers, slot: 0, width, height, dirty: false })
     }
 
-    /// New pixels (`width * height * 4` bytes). Only call while no submitted frame still reads this buffer.
+    /// New pixels (`width * height * 4` bytes): the frame's first write goes into the next buffer. Call after the
+    /// frame's slot was waited for.
     pub fn write(&mut self, rgba: &[u8]) {
         let n = (self.width * self.height * 4) as usize;
         if rgba.len() == n {
-            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.mapped, n) };
+            if !self.dirty {
+                self.slot = (self.slot + 1) % self.buffers.len();
+            }
+            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1, n) };
             self.dirty = true;
         }
     }
@@ -211,7 +233,7 @@ impl Staging {
             let region = [vk::BufferImageCopy::default()
                 .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
                 .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 })];
-            cx.device.cmd_copy_buffer_to_image(cb, self.buffer.buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &region);
+            cx.device.cmd_copy_buffer_to_image(cb, self.buffers[self.slot].0.buffer, texture.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &region);
             let to_read = [vk::ImageMemoryBarrier2::default()
                 .image(texture.image)
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
@@ -226,7 +248,9 @@ impl Staging {
     }
 
     pub fn destroy(self, cx: &Context) {
-        unsafe { cx.device.unmap_memory(self.buffer.memory) };
-        cx.destroy_buffer(self.buffer);
+        for (b, _) in self.buffers {
+            unsafe { cx.device.unmap_memory(b.memory) };
+            cx.destroy_buffer(b);
+        }
     }
 }

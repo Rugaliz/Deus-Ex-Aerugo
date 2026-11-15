@@ -37,16 +37,16 @@ struct LodVertex {
 /// `LodVertex::light` of a corner drawn with its own colour.
 const NO_LIGHTS: u32 = u32::MAX;
 
-/// Copies `v` into the per-frame slot buffer at `cursor` (in slots); returns its first vec4's index, `None` when the
-/// frame's slots are used up.
-fn push_slots(cursor: &mut usize, ptr: *mut [f32; 4], v: &[[f32; 4]]) -> Option<u32> {
+/// Copies `v` into the per-frame slot buffer at `cursor` (in slots, below `end`: the frame slot's part); returns its
+/// first vec4's index, `None` when the frame's slots are used up.
+fn push_slots(cursor: &mut usize, end: usize, ptr: *mut [f32; 4], v: &[[f32; 4]]) -> Option<u32> {
     let slots = v.len().div_ceil(SLOT_VEC4S);
-    if *cursor + slots > MAX_SLOTS {
+    if *cursor + slots > end {
         return None;
     }
     let first = *cursor * SLOT_VEC4S;
     *cursor += slots;
-    // SAFETY: the mapped slot buffer holds MAX_SLOTS * SLOT_VEC4S vec4s; this range is inside it
+    // SAFETY: the mapped slot buffer holds FRAMES_IN_FLIGHT * MAX_SLOTS * SLOT_VEC4S vec4s and `end` is within it
     unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), ptr.add(first), v.len()) };
     Some(first as u32)
 }
@@ -71,8 +71,8 @@ struct LodPush {
     clip: [f32; 4],
 }
 
-/// Mesh triangle corners one frame can hold (the buffer is rewritten every frame; one frame is in flight).
-const MAX_LOD_VERTICES: usize = 1 << 21;
+/// Mesh triangle corners one frame can hold (the buffer has a part for each frame slot, rewritten by its frames).
+const MAX_LOD_VERTICES: usize = 1 << 20;
 
 /// Float4s per slot of the per-frame slot buffer (decal pieces fill consecutive slots).
 const SLOT_VEC4S: usize = 54;
@@ -160,6 +160,9 @@ pub struct ActorRenderer {
     light_set: vk::DescriptorSet,
     light_ptr: *mut [f32; 4],
     light_cursor: usize,
+    /// Where this frame slot's part of the slot buffer and of the triangle buffer ends.
+    light_end: usize,
+    lod_end: usize,
     /// The main frame's detail texture layers (D3D's detail pass of the solid surfaces), set by the session per frame.
     pub details: Vec<DetailPoly>,
     /// The layers of its translucent and modulated third-list surfaces, by node (drawn right after each).
@@ -280,15 +283,15 @@ impl ActorRenderer {
             let tex_set_layout = cx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&tex_b), None)?;
             let tex_sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(MAX_TEXTURES)];
             let tex_pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(MAX_TEXTURES).pool_sizes(&tex_sizes), None)?;
-            // the mesh triangles of a frame (rewritten every frame; one frame is in flight)
+            // the mesh triangles of a frame (a part for each frame slot)
             let lod_buf = cx.create_buffer(
-                (MAX_LOD_VERTICES * std::mem::size_of::<LodVertex>()) as u64,
+                (crate::FRAMES_IN_FLIGHT * MAX_LOD_VERTICES * std::mem::size_of::<LodVertex>()) as u64,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
             let lod_ptr = cx.device.map_memory(lod_buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut LodVertex;
 
-            // per-draw lighting (rewritten every frame; one frame is in flight)
+            // per-draw lighting (a part for each frame slot)
             let light_b = [vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -298,7 +301,7 @@ impl ActorRenderer {
             let light_sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1)];
             let light_pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&light_sizes), None)?;
             let light_buf = cx.create_buffer(
-                (MAX_SLOTS * SLOT_VEC4S * 16) as u64,
+                (crate::FRAMES_IN_FLIGHT * MAX_SLOTS * SLOT_VEC4S * 16) as u64,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
@@ -508,6 +511,8 @@ impl ActorRenderer {
                 light_set,
                 light_ptr,
                 light_cursor: 0,
+                light_end: MAX_SLOTS,
+                lod_end: MAX_LOD_VERTICES,
                 meshes: HashMap::new(),
                 textures: HashMap::new(),
                 tex_set_layout,
@@ -858,7 +863,7 @@ impl ActorRenderer {
                     v.push([p[0], p[1], p[2], inv_r]);
                     v.push([c[0], c[1], c[2], 0.0]);
                 }
-                push_slots(&mut self.light_cursor, self.light_ptr, &v)
+                push_slots(&mut self.light_cursor, self.light_end, self.light_ptr, &v)
             }
             _ => None,
         };
@@ -892,7 +897,7 @@ impl ActorRenderer {
                 _ => runs.push((set, kind, masked, first, 3)),
             }
         }
-        if verts.is_empty() || self.lod_cursor + verts.len() > MAX_LOD_VERTICES {
+        if verts.is_empty() || self.lod_cursor + verts.len() > self.lod_end {
             return false;
         }
         let base = self.lod_cursor;
@@ -956,7 +961,7 @@ impl ActorRenderer {
                 _ => runs.push((tex.set, first, n)),
             }
         }
-        if verts.is_empty() || self.lod_cursor + verts.len() > MAX_LOD_VERTICES {
+        if verts.is_empty() || self.lod_cursor + verts.len() > self.lod_end {
             return;
         }
         let base = self.lod_cursor;
@@ -975,10 +980,13 @@ impl ActorRenderer {
         }
     }
 
-    /// Starts a new frame of lighting slots (call once per frame, before the first `draw`).
-    pub fn begin_frame(&mut self) {
-        self.light_cursor = 0;
-        self.lod_cursor = 0;
+    /// Starts a new frame of lighting slots and triangles in frame slot `slot`'s parts of the buffers (call once per
+    /// frame, before the first `draw`).
+    pub fn begin_frame(&mut self, slot: usize) {
+        self.light_cursor = slot * MAX_SLOTS;
+        self.light_end = self.light_cursor + MAX_SLOTS;
+        self.lod_cursor = slot * MAX_LOD_VERTICES;
+        self.lod_end = self.lod_cursor + MAX_LOD_VERTICES;
     }
 
     /// Writes one actor's lighting into the next slot: model matrix, eye, ambient and scale, lights (position and
@@ -999,7 +1007,7 @@ impl ActorRenderer {
             return;
         }
         let slots = verts.len().div_ceil(SLOT_VEC4S);
-        if self.light_cursor + slots > MAX_SLOTS {
+        if self.light_cursor + slots > self.light_end {
             return;
         }
         let first = self.light_cursor * SLOT_VEC4S;

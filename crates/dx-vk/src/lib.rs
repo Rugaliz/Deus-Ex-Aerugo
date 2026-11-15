@@ -182,7 +182,15 @@ pub struct Context {
     deep_color_ok: bool,
     /// Ray queries and acceleration structures (`VK_KHR_ray_query`), when the device has them.
     pub rt: Option<rt::RtSupport>,
+    /// Which of the `FRAMES_IN_FLIGHT` sets of per-frame data the frame being recorded writes (`set_frame_slot`).
+    frame_slot: std::cell::Cell<usize>,
+    /// Buffers given up while frames may still read them (`retire_buffer`), by the frame slot that gave them up.
+    retired: std::cell::RefCell<[Vec<Buffer>; FRAMES_IN_FLIGHT]>,
 }
+
+/// Frames the GPU may still be drawing while the next is recorded: data the CPU writes for a frame (mesh triangles,
+/// lighting, staged texture pixels, ray tracing input) comes in this many sets, one per frame slot.
+pub const FRAMES_IN_FLIGHT: usize = 2;
 
 unsafe extern "system" fn debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -342,6 +350,8 @@ impl Context {
                 sample_counts,
                 deep_color_ok,
                 rt,
+                frame_slot: std::cell::Cell::new(0),
+                retired: Default::default(),
             })
         }
     }
@@ -349,6 +359,34 @@ impl Context {
     /// The picture options in effect.
     pub fn quality(&self) -> Quality {
         self.quality.get()
+    }
+
+    /// The frame slot being recorded (0..`FRAMES_IN_FLIGHT`).
+    pub fn frame_slot(&self) -> usize {
+        self.frame_slot.get()
+    }
+
+    /// Starts recording a frame into slot `slot`: the caller has waited for the frame that last used it (and so for
+    /// every frame before: the buffers that frame's slot gave up are freed now).
+    pub fn set_frame_slot(&self, slot: usize) {
+        let slot = slot % FRAMES_IN_FLIGHT;
+        self.frame_slot.set(slot);
+        for b in std::mem::take(&mut self.retired.borrow_mut()[slot]) {
+            self.destroy_buffer(b);
+        }
+    }
+
+    /// Frees `b` once no frame in flight can read it any more (when this frame slot comes round again).
+    pub fn retire_buffer(&self, b: Buffer) {
+        self.retired.borrow_mut()[self.frame_slot.get()].push(b);
+    }
+
+    /// Frees every retired buffer: the GPU is idle (after a frame drawn and waited for, with none in flight).
+    pub fn free_retired(&self) {
+        let all: Vec<Buffer> = self.retired.borrow_mut().iter_mut().flat_map(std::mem::take).collect();
+        for b in all {
+            self.destroy_buffer(b);
+        }
     }
 
     /// Sets the picture options, limited to what the device can do; returns what is in effect. Samplers, pipelines and
@@ -503,6 +541,7 @@ impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            self.free_retired();
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
             if let Some((loader, m)) = self.debug.take() {
@@ -645,7 +684,9 @@ impl Offscreen {
                 .image(image)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(new)
-                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                // after whatever earlier frames still do with it (the window's pass reads the colour)
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
                 .dst_stage_mask(dst_stage)
                 .dst_access_mask(dst_access)
                 .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(aspect).level_count(1).layer_count(1))
@@ -659,7 +700,14 @@ impl Offscreen {
             barriers.push(barrier(img, vk::ImageAspectFlags::COLOR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE));
         }
         if let Some((img, _, _)) = self.depth_resolve {
-            barriers.push(barrier(img, DEPTH_ASPECTS, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth_stages, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE));
+            // (resolves write at the colour output stage)
+            barriers.push(barrier(
+                img,
+                DEPTH_ASPECTS,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                depth_stages | vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            ));
         }
         unsafe { cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&barriers)) };
         self.start(cx, cb, Some(clear));

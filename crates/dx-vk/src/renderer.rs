@@ -614,13 +614,15 @@ pub struct Renderer {
     pub coronas: Vec<UiQuad>,
     /// Two timestamps around each frame's scene (GPU time) and whether a frame's are waiting to be read.
     timer: vk::QueryPool,
-    timer_pending: bool,
+    timer_pending: [bool; crate::FRAMES_IN_FLIGHT],
     /// The GPU time of the last frame whose timestamps were read, in milliseconds.
     pub gpu_ms: Option<f64>,
     /// CPU time of this renderer's own phases in the last frame (milliseconds), for measurements.
     pub cpu_ms: Vec<(&'static str, f64)>,
     /// The ray tracing (with the ray-traced picture options): this frame's acceleration structures and the screen passes.
-    rt: Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>,
+    rt: Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>,
+    /// `render_queued`'s frames: a command buffer and a fence for each frame slot, and the frames begun.
+    queued: Option<([vk::CommandBuffer; crate::FRAMES_IN_FLIGHT], [vk::Fence; crate::FRAMES_IN_FLIGHT], usize)>,
 }
 
 impl Renderer {
@@ -642,9 +644,9 @@ impl Renderer {
         let actors = ActorRenderer::new(&cx)?;
         let ui = UiRenderer::new(&cx)?;
         let sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
-        let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2), None)? };
+        let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2 * crate::FRAMES_IN_FLIGHT as u32), None)? };
         let rt = if cx.quality().ray_traced() { Renderer::make_rt(&cx)? } else { None };
-        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: false, gpu_ms: None, cpu_ms: Vec::new(), rt })
+        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: [false; crate::FRAMES_IN_FLIGHT], gpu_ms: None, cpu_ms: Vec::new(), rt, queued: None })
     }
 
     /// Replaces the map being drawn (level travel): the world, the movers and the sky position. Meshes and textures
@@ -663,12 +665,14 @@ impl Renderer {
         Ok(())
     }
 
-    fn make_rt(cx: &Context) -> Result<Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>> {
-        let Some(frame) = crate::rt::RtFrame::new(cx) else { return Ok(None) };
+    /// The ray tracing's structures (one set for each frame slot: they are rebuilt every frame) and screen passes.
+    fn make_rt(cx: &Context) -> Result<Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>> {
+        let frames: Option<Vec<crate::rt::RtFrame>> = (0..crate::FRAMES_IN_FLIGHT).map(|_| crate::rt::RtFrame::new(cx)).collect();
+        let Some(frames) = frames else { return Ok(None) };
         match crate::rt_post::RtPost::new(cx)? {
-            Some(post) => Ok(Some((frame, post))),
+            Some(post) => Ok(Some((frames, post))),
             None => {
-                frame.destroy(cx);
+                frames.into_iter().for_each(|f| f.destroy(cx));
                 Ok(None)
             }
         }
@@ -704,7 +708,7 @@ impl Renderer {
         }
         self.target_layout = None;
         if let Some((f, p)) = self.rt.take() {
-            f.destroy(&self.cx);
+            f.into_iter().for_each(|f| f.destroy(&self.cx));
             p.destroy(&self.cx);
         }
         if now.ray_traced() {
@@ -825,7 +829,7 @@ impl Renderer {
     /// viewport windows' views (and their child frames) and the window system's actors, and the window system's
     /// textures.
     fn prepare_frame(&mut self, view: &mut MapView, actors: &[ActorDraw]) -> Result<()> {
-        self.actors.begin_frame();
+        self.actors.begin_frame(self.cx.frame_slot());
         self.actors.prepare(&self.cx, view, actors)?;
         let sub_children = self.ui_views.iter().filter_map(|v| v.lists.as_ref()).flat_map(|l| l.children.iter());
         for c in self.child_views.iter().flatten().chain(sub_children) {
@@ -856,31 +860,103 @@ impl Renderer {
 
     /// Reads the GPU time of the last timed frame if its timestamps are ready (`gpu_ms`).
     fn read_timer(&mut self) {
-        if !self.timer_pending {
+        let slot = self.cx.frame_slot();
+        if !self.timer_pending[slot] {
             return;
         }
         let mut t = [0u64; 2];
-        let ok = unsafe { self.cx.device.get_query_pool_results(self.timer, 0, &mut t, vk::QueryResultFlags::TYPE_64) };
+        let ok = unsafe { self.cx.device.get_query_pool_results(self.timer, 2 * slot as u32, &mut t, vk::QueryResultFlags::TYPE_64) };
         if ok.is_ok() {
             self.gpu_ms = Some(t[1].wrapping_sub(t[0]) as f64 * self.cx.timestamp_period as f64 / 1e6);
-            self.timer_pending = false;
+            self.timer_pending[slot] = false;
         }
     }
 
     fn timer_start(cx: &Context, timer: vk::QueryPool, cb: vk::CommandBuffer) {
         unsafe {
-            cx.device.cmd_reset_query_pool(cb, timer, 0, 2);
-            cx.device.cmd_write_timestamp(cb, vk::PipelineStageFlags::TOP_OF_PIPE, timer, 0);
+            let first = 2 * cx.frame_slot() as u32;
+            cx.device.cmd_reset_query_pool(cb, timer, first, 2);
+            cx.device.cmd_write_timestamp(cb, vk::PipelineStageFlags::TOP_OF_PIPE, timer, first);
         }
     }
 
     fn timer_end(cx: &Context, timer: vk::QueryPool, cb: vk::CommandBuffer) {
-        unsafe { cx.device.cmd_write_timestamp(cb, vk::PipelineStageFlags::BOTTOM_OF_PIPE, timer, 1) };
+        unsafe { cx.device.cmd_write_timestamp(cb, vk::PipelineStageFlags::BOTTOM_OF_PIPE, timer, 2 * cx.frame_slot() as u32 + 1) };
+    }
+
+    /// Waits for the frames drawn into the window that may still be in flight (a picture drawn and waited for at once
+    /// writes the current frame slot's data).
+    fn wait_presented(&self) -> Result<()> {
+        if let Some((_, fences, _)) = &self.queued {
+            unsafe { self.cx.device.wait_for_fences(fences, true, u64::MAX)? };
+        }
+        match &self.presenter {
+            Some(p) => p.wait_all(&self.cx),
+            None => Ok(()),
+        }
+    }
+
+    /// Draws one frame offscreen as `render_present` does, without waiting for it: the GPU draws it while the next
+    /// frame is prepared (`FRAMES_IN_FLIGHT`, as in the window). For measurements of the window's frame rate (`gpu_ms`
+    /// is that of the frame drawn `FRAMES_IN_FLIGHT` before, `cpu_ms` this frame's phases).
+    pub fn render_queued(&mut self, view: &mut MapView, cam: &Camera, actors: &[ActorDraw], width: u32, height: u32) -> Result<()> {
+        const N: usize = crate::FRAMES_IN_FLIGHT;
+        if self.queued.is_none() {
+            let cbs = unsafe {
+                self.cx.device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(self.cx.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(N as u32))?
+            };
+            let mut fences = [vk::Fence::null(); N];
+            for f in fences.iter_mut() {
+                *f = unsafe { self.cx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)? };
+            }
+            self.queued = Some((std::array::from_fn(|i| cbs[i]), fences, 0));
+        }
+        self.cpu_ms.clear();
+        let t = std::time::Instant::now();
+        let (cbs, fences, frames) = self.queued.unwrap();
+        let slot = frames % N;
+        unsafe { self.cx.device.wait_for_fences(&[fences[slot]], true, u64::MAX)? };
+        self.cx.set_frame_slot(slot);
+        self.read_timer();
+        self.cpu_ms.push(("wait for the slot", t.elapsed().as_secs_f64() * 1000.0));
+        let t = std::time::Instant::now();
+        self.ensure_target(width, height, false)?;
+        self.prepare_frame(view, actors)?;
+        self.update_procedurals(view);
+        self.cpu_ms.push(("prepare", t.elapsed().as_secs_f64() * 1000.0));
+        let t = std::time::Instant::now();
+        let cb = cbs[slot];
+        unsafe {
+            self.cx.device.reset_fences(&[fences[slot]])?;
+            self.cx.device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())?;
+            self.cx.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+        }
+        Renderer::timer_start(&self.cx, self.timer, cb);
+        Renderer::record_procedural_uploads(&self.cx, &mut self.world, &mut self.mover_worlds, &mut self.actors, &mut self.ui, cb);
+        let rt_result = record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, cam.pos, cb);
+        let post = rt_post(&self.cx, &mut self.rt, &rt_result);
+        let (target, rb) = self.target.take().unwrap();
+        record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
+        target.end_for_sampling(&self.cx, cb);
+        Renderer::timer_end(&self.cx, self.timer, cb);
+        self.target = Some((target, rb));
+        self.target_layout = Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        self.timer_pending[slot] = true;
+        let cbs_ = [cb];
+        let submitted = unsafe {
+            self.cx.device.end_command_buffer(cb).and_then(|_| self.cx.device.queue_submit(self.cx.queue, &[vk::SubmitInfo::default().command_buffers(&cbs_)], fences[slot]))
+        };
+        self.queued = Some((cbs, fences, frames + 1));
+        self.cpu_ms.push(("record and submit", t.elapsed().as_secs_f64() * 1000.0));
+        rt_result?;
+        submitted?;
+        Ok(())
     }
 
     /// Draws one frame offscreen the way `render_present` does (no read back) and waits for it: for measurements
     /// (`gpu_ms`, `cpu_ms`).
     pub fn render_offscreen(&mut self, view: &mut MapView, cam: &Camera, actors: &[ActorDraw], width: u32, height: u32) -> Result<()> {
+        self.wait_presented()?;
         self.cpu_ms.clear();
         let t = std::time::Instant::now();
         self.ensure_target(width, height, false)?;
@@ -903,7 +979,7 @@ impl Renderer {
             Renderer::timer_start(cx, timer, cb);
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
             rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
-            let post = rt_post(rt, &rt_result);
+            let post = rt_post(cx, rt, &rt_result);
             record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_for_sampling(cx, cb);
             Renderer::timer_end(cx, timer, cb);
@@ -914,9 +990,10 @@ impl Renderer {
         self.cpu_ms.push(("submit and wait", total - record_ms));
         self.target = Some((target, rb));
         self.target_layout = Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        self.cx.free_retired();
         r?;
         rt_result.map(|_| ())?;
-        self.timer_pending = true;
+        self.timer_pending[self.cx.frame_slot()] = true;
         self.read_timer();
         Ok(())
     }
@@ -944,6 +1021,7 @@ impl Renderer {
 
     /// Draws one frame and returns `width * height * 4` RGBA8 bytes (top row first).
     pub fn render(&mut self, view: &mut MapView, cam: &Camera, actors: &[ActorDraw], width: u32, height: u32) -> Result<Vec<u8>> {
+        self.wait_presented()?;
         self.ensure_target(width, height, true)?;
         self.prepare_frame(view, actors)?;
         self.update_procedurals(view);
@@ -958,11 +1036,12 @@ impl Renderer {
         let r = cx.one_shot(|cb| {
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
             rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
-            let post = rt_post(rt, &rt_result);
+            let post = rt_post(cx, rt, &rt_result);
             record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_and_copy(cx, cb, rb);
         });
         let pixels = r.and_then(|_| rt_result.map(|_| ())).and_then(|_| target.read_pixels(&self.cx, rb));
+        self.cx.free_retired();
         self.target = Some((target, readback));
         self.target_layout = Some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         pixels
@@ -978,7 +1057,7 @@ impl Renderer {
                 presenter.resize(&self.cx, window_size)?;
             }
             let Some(frame) = presenter.begin_frame(&self.cx, window_size)? else { return Ok(false) };
-            // the previous frame is done (its fence waited for): its GPU time
+            // the frame that last used this slot is done (its fence waited for): its GPU time
             self.read_timer();
             let (w, h) = self.render_size.unwrap_or((presenter.extent.width, presenter.extent.height));
             self.ensure_target(w, h, false)?;
@@ -987,13 +1066,13 @@ impl Renderer {
             Renderer::timer_start(&self.cx, self.timer, frame.cb);
             Renderer::record_procedural_uploads(&self.cx, &mut self.world, &mut self.mover_worlds, &mut self.actors, &mut self.ui, frame.cb);
             let rt_result = record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, cam.pos, frame.cb);
-            let post = rt_post(&mut self.rt, &rt_result);
+            let post = rt_post(&self.cx, &mut self.rt, &rt_result);
             rt_result?;
             let (target, rb) = self.target.take().unwrap();
             record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_for_sampling(&self.cx, frame.cb);
             Renderer::timer_end(&self.cx, self.timer, frame.cb);
-            self.timer_pending = true;
+            self.timer_pending[self.cx.frame_slot()] = true;
             self.target_layout = Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             let gamma_exp = crate::brightness_exponent(brightness);
             let r = presenter.end_frame(&self.cx, frame, &target, gamma_exp, crosshair);
@@ -1012,6 +1091,14 @@ impl Renderer {
         if let Some(p) = self.presenter.take() {
             p.destroy(&self.cx);
         }
+        if let Some((cbs, fences, _)) = self.queued.take() {
+            unsafe {
+                for f in fences {
+                    self.cx.device.destroy_fence(f, None);
+                }
+                self.cx.device.free_command_buffers(self.cx.pool, &cbs);
+            }
+        }
         unsafe { self.cx.device.destroy_query_pool(self.timer, None) };
         if let Some((t, b)) = self.target.take() {
             t.destroy(&self.cx);
@@ -1023,7 +1110,7 @@ impl Renderer {
             w.destroy(&self.cx);
         }
         if let Some((f, p)) = self.rt.take() {
-            f.destroy(&self.cx);
+            f.into_iter().for_each(|f| f.destroy(&self.cx));
             p.destroy(&self.cx);
         }
         self.ui.destroy(&self.cx);
@@ -1036,9 +1123,9 @@ impl Renderer {
 type RtPass<'a> = Option<(&'a mut crate::rt_post::RtPost, vk::AccelerationStructureKHR)>;
 
 /// The screen passes when this frame's structures were recorded.
-fn rt_post<'a>(rt: &'a mut Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>, recorded: &Result<bool>) -> RtPass<'a> {
+fn rt_post<'a>(cx: &Context, rt: &'a mut Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>, recorded: &Result<bool>) -> RtPass<'a> {
     match (rt.as_mut(), recorded) {
-        (Some((frame, post)), Ok(true)) => frame.tlas().map(|t| (post, t)),
+        (Some((frames, post)), Ok(true)) => frames[cx.frame_slot()].tlas().map(|t| (post, t)),
         _ => None,
     }
 }
@@ -1066,8 +1153,9 @@ const LIGHT_SIZE: f32 = 12.0;
 /// they stand and the world into the structures; the casters for the screen passes. Returns whether there is
 /// something to trace against.
 #[allow(clippy::too_many_arguments)]
-fn record_rt(cx: &Context, rt: &mut Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], eye: [f32; 3], cb: vk::CommandBuffer) -> Result<bool> {
-    let Some((frame, post)) = rt.as_mut() else { return Ok(false) };
+fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], eye: [f32; 3], cb: vk::CommandBuffer) -> Result<bool> {
+    let Some((frames, post)) = rt.as_mut() else { return Ok(false) };
+    let frame = &mut frames[cx.frame_slot()];
     // each mesh its own geometry; its bounds and its lights make its casters
     let (mut tris, mut parts) = (Vec::new(), Vec::new());
     let mut casters: Vec<(f32, crate::rt_post::Caster)> = Vec::new();

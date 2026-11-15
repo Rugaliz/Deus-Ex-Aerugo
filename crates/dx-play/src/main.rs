@@ -354,9 +354,15 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
     let mut last = Instant::now();
     let mut title_at = Instant::now();
     let mut frames_since = 0u32;
+    // with `--frames`: the frame rate after the first 60 frames, printed at the end
+    let (mut drawn_frames, mut measure_from) = (0u64, None);
     'running: loop {
         if max_frames.map(|m| session.frames >= m).unwrap_or(false) {
             break;
+        }
+        drawn_frames += 1;
+        if drawn_frames == 60 {
+            measure_from = Some(Instant::now());
         }
         for e in events.poll_iter() {
             match e {
@@ -481,6 +487,11 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
             title_at = Instant::now();
             frames_since = 0;
         }
+    }
+    if let (Some(_), Some(t)) = (max_frames, measure_from) {
+        let n = drawn_frames - 60;
+        let s = t.elapsed().as_secs_f64();
+        println!("{n} frames in {s:.2} s: {:.0} fps (GPU {:.2} ms)", n as f64 / s, renderer.gpu_ms.unwrap_or(0.0));
     }
     // `XGameEngineExt::Destroy`: the windows go before the engine
     session.vm.ui_destroy_all_windows();

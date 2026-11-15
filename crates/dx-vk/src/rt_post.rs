@@ -15,6 +15,7 @@ const APPLY_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rt_apply.fra
 const DIST_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rt_dist.frag.spv"));
 /// Each pixel's distance from the eye (full size).
 const DIST_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
+const N: usize = crate::FRAMES_IN_FLIGHT;
 /// The traced factor and the distance from the eye.
 const HALF_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
 
@@ -72,14 +73,18 @@ pub struct RtPost {
     /// Trace, blur, apply, distance.
     set_layouts: [vk::DescriptorSetLayout; 4],
     pool: vk::DescriptorPool,
-    sets: [vk::DescriptorSet; 4],
+    /// The sets of each frame slot (rewritten every frame).
+    sets: [[vk::DescriptorSet; 4]; N],
     layouts: [vk::PipelineLayout; 4],
     pipelines: [vk::Pipeline; 4],
     sampler: vk::Sampler,
     /// The images for a target size: half size (traced, blurred), full size (distance).
     images: Option<(u32, u32, [Image; 3])>,
-    casters: Option<(Buffer, *mut Caster, usize)>,
+    /// Each frame slot's casters (buffer, mapping, capacity).
+    casters: [Option<(Buffer, *mut Caster, usize)>; N],
     pub caster_count: u32,
+    /// The frame slot being recorded (from `set_casters`).
+    slot: usize,
 }
 
 impl RtPost {
@@ -101,13 +106,16 @@ impl RtPost {
             let mk = |b: &[vk::DescriptorSetLayoutBinding]| cx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(b), None);
             let set_layouts = [mk(&trace_b)?, mk(&blur_b)?, mk(&apply_b)?, mk(&dist_b)?];
             let sizes = [
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(6),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(6 * N as u32),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(N as u32),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(N as u32),
             ];
-            let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(4).pool_sizes(&sizes), None)?;
-            let s = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&set_layouts))?;
-            let sets = [s[0], s[1], s[2], s[3]];
+            let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(4 * N as u32).pool_sizes(&sizes), None)?;
+            let mut sets = [[vk::DescriptorSet::null(); 4]; N];
+            for slot in sets.iter_mut() {
+                let s = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&set_layouts))?;
+                *slot = [s[0], s[1], s[2], s[3]];
+            }
             let push_size = |n: usize| [vk::PushConstantRange::default().stage_flags(frag).size(n as u32)];
             let pl = |set: vk::DescriptorSetLayout, size: usize| {
                 let sl = [set];
@@ -186,15 +194,17 @@ impl RtPost {
                     .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                 None,
             )?;
-            Ok(Some(RtPost { set_layouts, pool, sets, layouts, pipelines, sampler, images: None, casters: None, caster_count: 0 }))
+            Ok(Some(RtPost { set_layouts, pool, sets, layouts, pipelines, sampler, images: None, casters: [const { None }; N], caster_count: 0, slot: 0 }))
         }
     }
 
-    /// This frame's casters.
+    /// This frame's casters (the frame starts here: its slot is the context's).
     pub fn set_casters(&mut self, cx: &Context, casters: &[Caster]) -> Result<()> {
+        self.slot = cx.frame_slot();
         let need = casters.len().max(1);
-        if !self.casters.as_ref().is_some_and(|(_, _, cap)| *cap >= need) {
-            if let Some((b, _, _)) = self.casters.take() {
+        let own = &mut self.casters[self.slot];
+        if !own.as_ref().is_some_and(|(_, _, cap)| *cap >= need) {
+            if let Some((b, _, _)) = own.take() {
                 cx.destroy_buffer(b);
             }
             let cap = need.next_power_of_two().max(64);
@@ -204,9 +214,9 @@ impl RtPost {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
             let p = unsafe { cx.device.map_memory(b.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut Caster };
-            self.casters = Some((b, p, cap));
+            *own = Some((b, p, cap));
         }
-        let (_, p, _) = self.casters.as_ref().unwrap();
+        let (_, p, _) = own.as_ref().unwrap();
         unsafe { std::ptr::copy_nonoverlapping(casters.as_ptr(), *p, casters.len()) };
         self.caster_count = casters.len() as u32;
         Ok(())
@@ -215,6 +225,10 @@ impl RtPost {
     fn ensure_images(&mut self, cx: &Context, width: u32, height: u32) -> Result<()> {
         if self.images.as_ref().is_some_and(|(fw, fh, _)| (*fw, *fh) == (width, height)) {
             return Ok(());
+        }
+        if self.images.is_some() {
+            // earlier frames may still use them
+            unsafe { cx.device.device_wait_idle()? };
         }
         self.destroy_images(cx);
         let (hw, hh) = (width.div_ceil(2).max(1), height.div_ceil(2).max(1));
@@ -273,7 +287,8 @@ impl RtPost {
         let (fw, fh, images) = self.images.as_ref().unwrap();
         let (fw, fh) = (*fw, *fh);
         let (w, h) = (fw.div_ceil(2).max(1), fh.div_ceil(2).max(1));
-        let casters = self.casters.as_ref().map(|c| c.0.buffer).unwrap_or_default();
+        let casters = self.casters[self.slot].as_ref().map(|c| c.0.buffer).unwrap_or_default();
+        let sets = self.sets[self.slot];
         unsafe {
             // the sets (rewritten every frame: the target, the structure or the casters' buffer may be new)
             let depth_info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(depth).image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
@@ -284,20 +299,20 @@ impl RtPost {
             let casters_info = [vk::DescriptorBufferInfo::default().buffer(casters).range(vk::WHOLE_SIZE)];
             let handles = [tlas];
             let mut accel_info = vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&handles);
-            let mut accel_write = vk::WriteDescriptorSet::default().dst_set(self.sets[0]).dst_binding(1).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).push_next(&mut accel_info);
+            let mut accel_write = vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(1).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).push_next(&mut accel_info);
             accel_write.descriptor_count = 1;
             fn image_write(set: vk::DescriptorSet, binding: u32, info: &[vk::DescriptorImageInfo]) -> vk::WriteDescriptorSet<'_> {
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(binding).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(info)
             }
             let writes = [
-                image_write(self.sets[0], 0, &depth_info),
+                image_write(sets[0], 0, &depth_info),
                 accel_write,
-                vk::WriteDescriptorSet::default().dst_set(self.sets[0]).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&casters_info),
-                image_write(self.sets[1], 0, &traced_info),
-                image_write(self.sets[2], 0, &blurred_info),
-                image_write(self.sets[2], 1, &dist_info),
-                image_write(self.sets[3], 0, &depth_info),
-                image_write(self.sets[3], 1, &stencil_info),
+                vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&casters_info),
+                image_write(sets[1], 0, &traced_info),
+                image_write(sets[2], 0, &blurred_info),
+                image_write(sets[2], 1, &dist_info),
+                image_write(sets[3], 0, &depth_info),
+                image_write(sets[3], 1, &stencil_info),
             ];
             cx.device.update_descriptor_sets(&writes, &[]);
 
@@ -338,11 +353,11 @@ impl RtPost {
                 cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&to_read));
             };
             let push_bytes = std::slice::from_raw_parts(push as *const Push as *const u8, std::mem::size_of::<Push>());
-            pass(&images[2], (fw, fh), self.pipelines[3], self.layouts[3], self.sets[3], push_bytes);
-            pass(&images[0], (w, h), self.pipelines[0], self.layouts[0], self.sets[0], push_bytes);
+            pass(&images[2], (fw, fh), self.pipelines[3], self.layouts[3], sets[3], push_bytes);
+            pass(&images[0], (w, h), self.pipelines[0], self.layouts[0], sets[0], push_bytes);
             let size = [w as f32, h as f32, 0.0, 0.0];
             let size_bytes = std::slice::from_raw_parts(size.as_ptr() as *const u8, 16);
-            pass(&images[1], (w, h), self.pipelines[1], self.layouts[1], self.sets[1], size_bytes);
+            pass(&images[1], (w, h), self.pipelines[1], self.layouts[1], sets[1], size_bytes);
         }
         Ok(())
     }
@@ -352,7 +367,7 @@ impl RtPost {
     pub fn apply(&self, cx: &Context, cb: vk::CommandBuffer, push: &Push) {
         unsafe {
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipelines[2]);
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layouts[2], 0, &[self.sets[2]], &[]);
+            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layouts[2], 0, &[self.sets[self.slot][2]], &[]);
             let bytes = std::slice::from_raw_parts(push as *const Push as *const u8, std::mem::size_of::<Push>());
             cx.device.cmd_push_constants(cb, self.layouts[2], vk::ShaderStageFlags::FRAGMENT, 0, bytes);
             cx.device.cmd_draw(cb, 3, 1, 0, 0);
@@ -361,7 +376,7 @@ impl RtPost {
 
     pub fn destroy(mut self, cx: &Context) {
         self.destroy_images(cx);
-        if let Some((b, _, _)) = self.casters.take() {
+        for (b, _, _) in self.casters.iter_mut().filter_map(Option::take) {
             cx.destroy_buffer(b);
         }
         unsafe {

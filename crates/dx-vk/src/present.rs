@@ -21,7 +21,11 @@ struct Push {
 pub struct Frame {
     pub cb: vk::CommandBuffer,
     image: u32,
+    /// The frame slot (`Context::frame_slot`).
+    slot: usize,
 }
+
+const N: usize = crate::FRAMES_IN_FLIGHT;
 
 pub struct Presenter {
     surface_loader: ash::khr::surface::Instance,
@@ -32,13 +36,16 @@ pub struct Presenter {
     views: Vec<vk::ImageView>,
     format: vk::Format,
     pub extent: vk::Extent2D,
-    image_available: vk::Semaphore,
+    /// Per frame slot: the acquired image's semaphore, the frame's fence, command buffer and descriptor set.
+    image_available: [vk::Semaphore; N],
     render_finished: Vec<vk::Semaphore>,
-    in_flight: vk::Fence,
-    cb: vk::CommandBuffer,
+    in_flight: [vk::Fence; N],
+    cb: [vk::CommandBuffer; N],
     set_layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
+    set: [vk::DescriptorSet; N],
+    /// Frames begun so far (the slot is this modulo `N`).
+    frames: usize,
     sampler: vk::Sampler,
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
@@ -81,10 +88,11 @@ impl Presenter {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
             let set_layout = cx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)?;
-            let sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1)];
-            let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None)?;
+            let sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(N as u32)];
+            let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(N as u32).pool_sizes(&sizes), None)?;
             let layouts = [set_layout];
-            let set = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts))?[0];
+            let sets = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&[set_layout; N]))?;
+            let set: [vk::DescriptorSet; N] = std::array::from_fn(|i| sets[i]);
 
             let push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::FRAGMENT).size(std::mem::size_of::<Push>() as u32)];
             let layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&push), None)?;
@@ -120,11 +128,16 @@ impl Presenter {
             cx.device.destroy_shader_module(vs, None);
             cx.device.destroy_shader_module(fs, None);
 
-            let cb = cx.device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default().command_pool(cx.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1),
-            )?[0];
-            let image_available = cx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
-            let in_flight = cx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
+            let cbs = cx.device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default().command_pool(cx.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(N as u32),
+            )?;
+            let cb: [vk::CommandBuffer; N] = std::array::from_fn(|i| cbs[i]);
+            let mut image_available = [vk::Semaphore::null(); N];
+            let mut in_flight = [vk::Fence::null(); N];
+            for i in 0..N {
+                image_available[i] = cx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
+                in_flight[i] = cx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
+            }
             let mut p = Presenter {
                 surface_loader,
                 swapchain_loader,
@@ -141,6 +154,7 @@ impl Presenter {
                 set_layout,
                 pool,
                 set,
+                frames: 0,
                 sampler,
                 layout,
                 pipeline,
@@ -230,16 +244,19 @@ impl Presenter {
         self.create_swapchain(cx, size)
     }
 
-    /// Waits for the previous frame, acquires the next swapchain image and starts the command buffer. `None`: nothing to draw now
-    /// (minimised window, or the swapchain had to be rebuilt: call again).
+    /// Waits for the frame that last used the next frame slot (`FRAMES_IN_FLIGHT` frames ago; the one just submitted
+    /// may still be drawing), makes it the context's slot, acquires the next swapchain image and starts the slot's
+    /// command buffer. `None`: nothing to draw now (minimised window, or the swapchain had to be rebuilt: call again).
     pub fn begin_frame(&mut self, cx: &Context, window_size: (u32, u32)) -> Result<Option<Frame>> {
         unsafe {
             if self.extent.width == 0 || self.extent.height == 0 || self.swapchain == vk::SwapchainKHR::null() || self.images.is_empty() {
                 self.create_swapchain(cx, window_size)?;
                 return Ok(None);
             }
-            cx.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
-            let image = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
+            let slot = self.frames % N;
+            cx.device.wait_for_fences(&[self.in_flight[slot]], true, u64::MAX)?;
+            cx.set_frame_slot(slot);
+            let image = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available[slot], vk::Fence::null()) {
                 Ok((i, _suboptimal)) => i,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     self.create_swapchain(cx, window_size)?;
@@ -247,10 +264,12 @@ impl Presenter {
                 }
                 Err(e) => return Err(e.into()),
             };
-            cx.device.reset_fences(&[self.in_flight])?;
-            cx.device.reset_command_buffer(self.cb, vk::CommandBufferResetFlags::empty())?;
-            cx.device.begin_command_buffer(self.cb, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-            Ok(Some(Frame { cb: self.cb, image }))
+            cx.device.reset_fences(&[self.in_flight[slot]])?;
+            let cb = self.cb[slot];
+            cx.device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())?;
+            cx.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            self.frames += 1;
+            Ok(Some(Frame { cb, image, slot }))
         }
     }
 
@@ -272,7 +291,7 @@ impl Presenter {
             cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&to_color));
             let info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(scene.color_view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             cx.device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&info)],
+                &[vk::WriteDescriptorSet::default().dst_set(self.set[frame.slot]).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&info)],
                 &[],
             );
             // the scene keeps its aspect ratio: scaled to fit, centred, black bars around it
@@ -288,7 +307,7 @@ impl Presenter {
             cx.device.cmd_set_viewport(cb, 0, &[vk::Viewport { x, y, width: w, height: h, min_depth: 0.0, max_depth: 1.0 }]);
             cx.device.cmd_set_scissor(cb, 0, &[area]);
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.set], &[]);
+            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.set[frame.slot]], &[]);
             // the 16-bit scene is dithered down to the swapchain's steps, so gradients do not band
             let steps = if matches!(self.format, vk::Format::A2B10G10R10_UNORM_PACK32 | vk::Format::A2R10G10B10_UNORM_PACK32) { 1023.0 } else { 255.0 };
             let dither = if scene.format == crate::DEEP_COLOR_FORMAT { 1.0 / steps } else { 0.0 };
@@ -307,11 +326,11 @@ impl Presenter {
                 .subresource_range(range)];
             cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&to_present));
             cx.device.end_command_buffer(cb)?;
-            let wait = [self.image_available];
+            let wait = [self.image_available[frame.slot]];
             let stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let cbs = [cb];
             let signal = [self.render_finished[frame.image as usize]];
-            cx.device.queue_submit(cx.queue, &[vk::SubmitInfo::default().wait_semaphores(&wait).wait_dst_stage_mask(&stages).command_buffers(&cbs).signal_semaphores(&signal)], self.in_flight)?;
+            cx.device.queue_submit(cx.queue, &[vk::SubmitInfo::default().wait_semaphores(&wait).wait_dst_stage_mask(&stages).command_buffers(&cbs).signal_semaphores(&signal)], self.in_flight[frame.slot])?;
             let swapchains = [self.swapchain];
             let indices = [frame.image];
             match self.swapchain_loader.queue_present(cx.queue, &vk::PresentInfoKHR::default().wait_semaphores(&signal).swapchains(&swapchains).image_indices(&indices)) {
@@ -320,6 +339,13 @@ impl Presenter {
                 Err(e) => Err(e.into()),
             }
         }
+    }
+
+    /// Waits until the GPU is done with every frame submitted here (before the CPU rewrites data of any slot outside
+    /// the frame loop: a picture drawn and read back at once).
+    pub fn wait_all(&self, cx: &Context) -> Result<()> {
+        unsafe { cx.device.wait_for_fences(&self.in_flight, true, u64::MAX)? };
+        Ok(())
     }
 
     pub fn destroy(mut self, cx: &Context) {
@@ -332,8 +358,10 @@ impl Presenter {
                 cx.device.destroy_semaphore(s, None);
             }
             self.swapchain_loader.destroy_swapchain(self.swapchain, None);
-            cx.device.destroy_semaphore(self.image_available, None);
-            cx.device.destroy_fence(self.in_flight, None);
+            for i in 0..N {
+                cx.device.destroy_semaphore(self.image_available[i], None);
+                cx.device.destroy_fence(self.in_flight[i], None);
+            }
             cx.device.destroy_pipeline(self.pipeline, None);
             cx.device.destroy_pipeline_layout(self.layout, None);
             cx.device.destroy_descriptor_pool(self.pool, None);

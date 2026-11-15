@@ -2002,14 +2002,19 @@ impl Session {
         Ok(drawn)
     }
 
-    /// One frame as the window draws it, offscreen and waited for (no presentation, no read back): for measurements.
+    /// One frame as the window draws it, offscreen (no presentation, no read back): for measurements.
     /// `prep_ms` gets the session's preparation phases (milliseconds); the renderer's own are in `renderer.cpu_ms`,
     /// the GPU time in `renderer.gpu_ms`.
     pub fn render_vk_bench(&mut self, renderer: &mut dx_vk::renderer::Renderer, size: (u32, u32), prep_ms: &mut Vec<(&'static str, f64)>) -> Result<(), String> {
         self.prep_ms.clear();
         let (cam, actors) = self.prepare_vk_frame(renderer, size, size);
         *prep_ms = std::mem::take(&mut self.prep_ms);
-        renderer.render_offscreen(&mut self.view, &cam, &actors, size.0, size.1).map_err(|e| e.to_string())?;
+        // as the window draws (frames in flight), unless `DX_BENCH_SYNC` asks for each frame to be waited for
+        if std::env::var_os("DX_BENCH_SYNC").is_some() {
+            renderer.render_offscreen(&mut self.view, &cam, &actors, size.0, size.1).map_err(|e| e.to_string())?;
+        } else {
+            renderer.render_queued(&mut self.view, &cam, &actors, size.0, size.1).map_err(|e| e.to_string())?;
+        }
         self.meshes_drawn = renderer.actors.drawn;
         Ok(())
     }
