@@ -8,6 +8,7 @@ use std::path::Path;
 
 pub mod bytecode;
 pub mod object;
+pub mod mods;
 
 pub const PACKAGE_TAG: u32 = 0x9E2A_83C1;
 
@@ -231,6 +232,11 @@ impl ObjectRef {
 impl Package {
     pub fn open(path: impl AsRef<Path>) -> Result<Package> {
         Package::parse(std::fs::read(path)?)
+    }
+
+    /// Opens a package from the disk or from a mod's zip file.
+    pub fn open_source(source: &mods::Source) -> Result<Package> {
+        Package::parse(source.read()?)
     }
 
     pub fn parse(data: Vec<u8>) -> Result<Package> {

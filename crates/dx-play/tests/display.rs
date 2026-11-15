@@ -98,7 +98,8 @@ fn shots_at_every_aspect_ratio() {
 }
 
 /// The port's menus (`Aerugo`, `Vm::apply_port_menus`): the Display screen lists brightness, full screen, resolution,
-/// vertical sync, frame rate limit and mouse DPI, the Sound screen no sample format, channel or 3D hardware choice,
+/// vertical sync, frame rate limit, mouse DPI, field of view and the Advanced Graphics button (its screen: the picture
+/// options), the Sound screen no sample format, channel or 3D hardware choice,
 /// the Controls screen the half-step sensitivity slider. What the choices save is what the host reads
 /// (`Session::aerugo_settings`, `follow_settings`): vertical sync, frame limit, mouse DPI (the mouse scale), output rate,
 /// the sensitivity, and the brightness the Brightness screen saves.
@@ -128,7 +129,7 @@ fn the_port_menus_set_what_the_host_reads() {
     };
     let names = |v: &[(String, u32)]| v.iter().map(|(n, _)| n.trim_start_matches("MenuChoice_").to_string()).collect::<Vec<_>>();
     let display = choices(&mut s, "MenuScreenDisplay");
-    assert_eq!(names(&display), ["Brightness", "FullScreen", "Resolution", "AerugoVSync", "AerugoFrameLimit", "AerugoMouseDPI"]);
+    assert_eq!(names(&display), ["Brightness", "FullScreen", "Resolution", "AerugoVSync", "AerugoFrameLimit", "AerugoMouseDPI", "AerugoFOV", "AerugoGraphics"]);
     let set = |s: &mut Session, c: u32, v: i32| {
         s.vm.call_by_name(c, "SetValue", vec![Value::Int(v)]).unwrap();
         s.vm.call_by_name(c, "SaveSetting", vec![]).unwrap();
@@ -140,6 +141,10 @@ fn the_port_menus_set_what_the_host_reads() {
     assert_eq!((st.vsync, st.frame_limit, st.mouse_dpi), (3, -1, 1600));
     s.follow_settings();
     assert_eq!(s.mouse_scale, 0.25, "1600 DPI moves a quarter of a 400 DPI count");
+    // the field of view: the game's own DefaultFOV, and the class default a scope restores
+    set(&mut s, display[6].1, 3);
+    assert_eq!(s.vm.get_prop(s.player, "DefaultFOV", 0).ok(), Some(Value::Float(90.0)));
+    assert_eq!(s.vm.default_value_of("JCDentonMale", "DefaultFOV", 0), Some(Value::Float(90.0)));
     s.exec("ShowMainMenu");
     let sound = choices(&mut s, "MenuScreenSound");
     assert_eq!(names(&sound), ["MusicVolume", "SoundVolume", "SpeechVolume", "AerugoSpacer", "AerugoOutputRate", "ReverseStereo", "SurroundSound"]);
@@ -155,4 +160,25 @@ fn the_port_menus_set_what_the_host_reads() {
     s.exec("set ini:Engine.Engine.ViewportManager Brightness 0.8");
     s.follow_settings();
     assert!((s.brightness - 0.8).abs() < 1e-4, "brightness {}", s.brightness);
+    // the Advanced Graphics screen, through its button: the picture options the renderer gets (the root's window
+    // stack holds six screens: emptied first, as the menus' back buttons would)
+    let root = s.vm.ui_root(s.player);
+    s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
+    s.exec("ShowMainMenu");
+    let display = choices(&mut s, "MenuScreenDisplay");
+    s.vm.call_by_name(display[7].1, "ButtonActivated", vec![Value::Obj(0)]).unwrap();
+    s.step_bound(DT);
+    let root = s.vm.ui_root(s.player);
+    assert_ne!(find_window(&mut s, root, "MenuScreenAerugoGraphics"), 0, "the button opens the screen");
+    s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
+    s.exec("ShowMainMenu");
+    let gfx = choices(&mut s, "MenuScreenAerugoGraphics");
+    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoHUDFilter"]);
+    s.settings_quality = true;
+    let enhanced = dx_vk::Quality { filter: 5, msaa: 4, ui_filter: 2, deep_color: true, smooth_lightmaps: true, pixel_lighting: true };
+    assert_eq!(s.quality(), enhanced, "the defaults");
+    for (i, v) in [(0, 1), (1, 3), (2, 0), (3, 0), (4, 0), (5, 1)] {
+        set(&mut s, gfx[i].1, v);
+    }
+    assert_eq!(s.quality(), dx_vk::Quality { filter: 1, msaa: 8, ui_filter: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false });
 }

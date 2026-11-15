@@ -97,6 +97,15 @@ impl Config {
         }
         let (names, user_name) = layer_names(logical);
         let mut layers: Vec<Ini> = names.iter().map(|n| read_ini(&self.system_dir.join(format!("{n}.ini")))).collect();
+        // the mods' ini files of the same names go over the game's (the player's own layer still wins)
+        let mods = ue_package::mods::current();
+        for n in &names {
+            for src in mods.inis.get(&n.to_ascii_lowercase()).into_iter().flatten() {
+                if let Ok(b) = src.read() {
+                    layers.push(Ini::parse(&decode(&b)));
+                }
+            }
+        }
         let user = self.user_dir.as_ref().map(|d| read_ini(&d.join(format!("{user_name}.ini")))).unwrap_or_default();
         layers.push(user.clone());
         self.stacks.insert(key, Stack { layers, user, dirty: false, user_name });
@@ -179,6 +188,9 @@ impl Config {
             .loc
             .entry(package.to_ascii_lowercase())
             .or_insert_with(|| {
+                if let Some(src) = ue_package::mods::current().ints.get(&package.to_ascii_lowercase()) {
+                    return src.read().ok().map(|b| Ini::parse(&decode(&b)));
+                }
                 let p = std::fs::read_dir(&self.system_dir).ok()?.flatten().map(|e| e.path()).find(|p| {
                     p.extension().map(|e| e.eq_ignore_ascii_case("int")).unwrap_or(false) && p.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case(package)).unwrap_or(false)
                 })?;

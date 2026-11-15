@@ -32,8 +32,10 @@ pub fn render_lod_mesh(game: &Path, package: &str, export: usize, frame: usize, 
         tex.push((|| {
             let (pkg, exp) = files.resolve(&loaded, *slot)?;
             let t = Texture::load(&pkg.pkg, exp).ok()?;
-            let (ppkg, pexp) = files.resolve(&pkg, t.palette)?;
-            let pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+            let pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+                let (ppkg, pexp) = files.resolve(&pkg, t.palette)?;
+                Palette::load(&ppkg.pkg, pexp).ok()?
+            };
             Some((t.mips[0].u_size, t.mips[0].v_size, t.mip_rgba(0, &pal).ok()?))
         })());
     }

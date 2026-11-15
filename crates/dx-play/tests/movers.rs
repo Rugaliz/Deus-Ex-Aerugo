@@ -163,9 +163,9 @@ fn drawn_mover_surfaces_are_lit_where_the_mover_stands() {
     let maps = dx_light::generate(&mm, &lighting);
     let mut compared = 0;
     for (_, (x, y, w, h, rgba)) in &first {
-        let k = maps.surfaces.iter().position(|sm| sm.map(|sm| (sm.x - 1, sm.y - 1)) == Some((*x, *y))).expect("a rectangle at a polygon's atlas place");
+        let k = maps.surfaces.iter().position(|sm| sm.map(|sm| (sm.x - dx_light::BORDER, sm.y - dx_light::BORDER)) == Some((*x, *y))).expect("a rectangle at a polygon's atlas place");
         let sm = maps.surfaces[k].unwrap();
-        assert_eq!((*w, *h), (sm.w + 2, sm.h + 2));
+        assert_eq!((*w, *h), (sm.w + 2 * dx_light::BORDER, sm.h + 2 * dx_light::BORDER));
         // only lists of static lights (the per-frame ones are not in the bake)
         let all_static = dx_light::lightmap_lights(&b, polys[k].i_brush_poly as usize).iter().all(|(at, _)| lighting.lights[*at].map(|l| dx_light::manager::is_static_light(&l) || dx_light::manager::light_kind(&l) == dx_light::manager::LightKind::None).unwrap_or(true));
         if !all_static {
@@ -174,7 +174,8 @@ fn drawn_mover_surfaces_are_lit_where_the_mover_stands() {
         let want = maps.texels(k).unwrap();
         for j in 0..sm.h as usize {
             for i in 0..sm.w as usize {
-                let o = ((j + 1) * *w as usize + i + 1) * 4;
+                let b = dx_light::BORDER as usize;
+                let o = ((j + b) * *w as usize + i + b) * 4;
                 let d = (0..3).map(|c| (rgba[o + c] as i32 - want[j * sm.w as usize + i][c] as i32).abs()).max().unwrap();
                 assert!(d <= 1, "polygon {k} texel ({i}, {j}): {:?} vs {:?}", &rgba[o..o + 3], want[j * sm.w as usize + i]);
             }

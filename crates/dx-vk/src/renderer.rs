@@ -626,7 +626,13 @@ impl Renderer {
     /// `instance_extensions`: what the window system needs (from SDL); then call `attach_window` with a surface made from
     /// `renderer.cx.instance`.
     pub fn with_extensions(view: &mut MapView, lighting: Option<&dx_light::MapLighting>, validation: bool, instance_extensions: &[*const c_char]) -> Result<Renderer> {
+        Renderer::with_quality(view, lighting, validation, instance_extensions, crate::Quality::ORIGINAL)
+    }
+
+    /// `with_extensions` with picture options other than the original's (`Quality`).
+    pub fn with_quality(view: &mut MapView, lighting: Option<&dx_light::MapLighting>, validation: bool, instance_extensions: &[*const c_char], quality: crate::Quality) -> Result<Renderer> {
         let cx = Context::new(validation, instance_extensions)?;
+        cx.set_quality(quality);
         let world = World::new(&cx, view, lighting)?;
         let actors = ActorRenderer::new(&cx)?;
         let ui = UiRenderer::new(&cx)?;
@@ -649,6 +655,38 @@ impl Renderer {
         self.movers.clear();
         self.sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         Ok(())
+    }
+
+    /// The picture options in effect.
+    pub fn quality(&self) -> crate::Quality {
+        self.cx.quality()
+    }
+
+    /// Changes the picture options (limited to what the device can do). When they change, the samplers, pipelines and
+    /// the scene target are made again: the actor and window-system renderers here (their textures load again as they
+    /// are drawn), the world and the movers by the caller giving the map again (`replace_world`). Returns whether the
+    /// caller has to.
+    pub fn set_quality(&mut self, q: crate::Quality) -> Result<bool> {
+        let before = self.cx.quality();
+        let now = self.cx.set_quality(q);
+        if now == before {
+            return Ok(false);
+        }
+        unsafe {
+            let _ = self.cx.device.device_wait_idle();
+        }
+        let flash = self.ui.flash;
+        std::mem::replace(&mut self.actors, ActorRenderer::new(&self.cx)?).destroy(&self.cx);
+        std::mem::replace(&mut self.ui, UiRenderer::new(&self.cx)?).destroy(&self.cx);
+        self.ui.flash = flash;
+        if let Some((t, b)) = self.target.take() {
+            t.destroy(&self.cx);
+            if let Some(b) = b {
+                self.cx.destroy_buffer(b);
+            }
+        }
+        self.target_layout = None;
+        Ok(true)
     }
 
     /// Shows frame `index` of an animated surface texture on the world and the movers.

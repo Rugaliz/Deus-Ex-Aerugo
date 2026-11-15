@@ -3,14 +3,15 @@
 use crate::Payload;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
+use ue_package::mods::Source;
 use ue_package::{ObjectRef, Package};
 
 /// Sub-folders of the game folder that hold packages.
 const FOLDERS: &[&str] = &["Textures", "Maps", "System", "Sounds", "Music"];
 /// File extensions of packages (the System folder also holds .dll, .ini, .int files with the same stems).
-const PACKAGE_EXTENSIONS: &[&str] = &["u", "utx", "dx", "uax", "umx", "unr", "ut", "usa"];
+const PACKAGE_EXTENSIONS: &[&str] = ue_package::mods::PACKAGE_EXTENSIONS;
 
 /// A package together with a path index of its exports (`Group.Name` without the package name).
 pub struct Loaded {
@@ -28,7 +29,7 @@ impl Loaded {
 
 /// The game folder: finds packages by name and caches them.
 pub struct GameFiles {
-    files: HashMap<String, PathBuf>,
+    files: HashMap<String, Source>,
     cache: RefCell<HashMap<String, Rc<Loaded>>>,
 }
 
@@ -44,9 +45,13 @@ impl GameFiles {
                     continue;
                 }
                 if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    files.entry(stem.to_ascii_lowercase()).or_insert(p);
+                    files.entry(stem.to_ascii_lowercase()).or_insert(Source::File(p));
                 }
             }
+        }
+        // packages of the mods folder replace the game's of the same name, or add new ones
+        for (name, m) in &ue_package::mods::init(root).packages {
+            files.insert(name.clone(), m.source.clone());
         }
         GameFiles { files, cache: RefCell::new(HashMap::new()) }
     }
@@ -57,8 +62,8 @@ impl GameFiles {
         if let Some(l) = self.cache.borrow().get(&key) {
             return Some(l.clone());
         }
-        let path = self.files.get(&key)?;
-        let pkg = Package::open(path).ok()?;
+        let source = self.files.get(&key)?;
+        let pkg = Package::open_source(source).ok()?;
         let mut paths = HashMap::new();
         for i in 0..pkg.exports.len() {
             if let Some(p) = pkg.object_path(ObjectRef::Export(i)) {

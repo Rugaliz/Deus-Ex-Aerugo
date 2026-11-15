@@ -12,6 +12,9 @@ struct Push {
     gamma_exp: f32,
     crosshair: f32,
     size: [f32; 2],
+    /// Amplitude of the dither added before the swapchain's quantisation (one output step), 0 = none.
+    dither: f32,
+    _pad: [f32; 3],
 }
 
 /// One frame being recorded; get it from `Presenter::begin_frame`, finish with `Presenter::end_frame`.
@@ -56,10 +59,11 @@ impl Presenter {
                 return Err(crate::Error("the graphics queue cannot present to this window".into()));
             }
             let formats = surface_loader.get_physical_device_surface_formats(cx.physical, surface)?;
-            // our colours are final display values (gamma is applied by us): use a non-sRGB format
-            let format = [vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
+            // our colours are final display values (gamma is applied by us): use a non-sRGB format, 10 bits per channel
+            // when the display offers it (finer steps for the 16-bit scene), else 8
+            let format = [vk::Format::A2B10G10R10_UNORM_PACK32, vk::Format::A2R10G10B10_UNORM_PACK32, vk::Format::B8G8R8A8_UNORM, vk::Format::R8G8B8A8_UNORM]
                 .into_iter()
-                .find(|f| formats.iter().any(|s| s.format == *f))
+                .find(|f| formats.iter().any(|s| s.format == *f && s.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR))
                 .unwrap_or(formats[0].format);
 
             let sampler = cx.device.create_sampler(
@@ -285,7 +289,10 @@ impl Presenter {
             cx.device.cmd_set_scissor(cb, 0, &[area]);
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.set], &[]);
-            let push = Push { gamma_exp, crosshair: crosshair as u32 as f32, size: [self.extent.width as f32, self.extent.height as f32] };
+            // the 16-bit scene is dithered down to the swapchain's steps, so gradients do not band
+            let steps = if matches!(self.format, vk::Format::A2B10G10R10_UNORM_PACK32 | vk::Format::A2R10G10B10_UNORM_PACK32) { 1023.0 } else { 255.0 };
+            let dither = if scene.format == crate::DEEP_COLOR_FORMAT { 1.0 / steps } else { 0.0 };
+            let push = Push { gamma_exp, crosshair: crosshair as u32 as f32, size: [self.extent.width as f32, self.extent.height as f32], dither, _pad: [0.0; 3] };
             let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
             cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::FRAGMENT, 0, bytes);
             cx.device.cmd_draw(cb, 3, 1, 0, 0);

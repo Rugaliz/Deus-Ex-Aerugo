@@ -7,6 +7,7 @@ pub mod clock;
 pub mod corona;
 pub mod detail;
 pub mod display;
+pub mod mods;
 mod mover_light;
 mod savegame;
 mod visibility;
@@ -63,6 +64,8 @@ pub struct Session {
     pub mouse_scale: f32,
     /// `brightness` was given on the command line: the ini's setting does not replace it.
     pub brightness_fixed: bool,
+    /// Renderers use the player's picture options (`quality`); off for headless pictures and tests (the original's).
+    pub settings_quality: bool,
     /// The last frame's preparation phases (`prepare_vk_frame`), in milliseconds.
     prep_ms: Vec<(&'static str, f64)>,
     /// Mesh actors' world bounding boxes during one visibility pass (`compute_visibility` empties it).
@@ -165,6 +168,10 @@ impl Session {
     /// Loads the map into the VM (running its start-up events) and drops the player at the first `PlayerStart`.
     pub fn open(game: &Path, map: &str) -> Result<Session, String> {
         let mut reg = Registry::load_game(game).map_err(|e| e.to_string())?;
+        let mods = ue_package::mods::current();
+        if !mods.names.is_empty() {
+            eprintln!("mods: {} ({} packages, {} replacement textures)", mods.names.join(", "), mods.packages.len(), mods.textures.len());
+        }
         // class defaults come from the game's ini files and the port's own per-user layer, localised text from the .int files
         reg.set_config(ue_config::Config::new(&game.join("System"), config_dir().as_deref()));
         let mut vm = Vm::new(reg);
@@ -182,7 +189,7 @@ impl Session {
         let rot = view.find_actor("PlayerStart").map(|(_, r)| r).unwrap_or([0.0; 3]);
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
-        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false };
+        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false };
         s.install_key_commands();
         s.apply_yaw();
         s.vm.ui_after_browse(s.player);
@@ -453,9 +460,7 @@ impl Session {
             self.issues.push(LoadIssue { actor: self.player, class: "travel".into(), event: "Travel".into(), error: format!("cannot use the URL {:?}", req.url) });
             return;
         };
-        let maps = self.game.join("Maps");
-        let found = std::fs::read_dir(&maps).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case(&map)).unwrap_or(false) && p.extension().map(|x| x.eq_ignore_ascii_case("dx")).unwrap_or(false)));
-        let Some(path) = found else {
+        let Some(path) = self.find_map_file(&map) else {
             self.issues.push(LoadIssue { actor: self.player, class: "travel".into(), event: "Travel".into(), error: format!("no map {map}") });
             return;
         };
@@ -600,7 +605,44 @@ impl Session {
     /// menus set and save, so a change shows at once.
     pub fn aerugo_settings(&mut self) -> AerugoSettings {
         let mut get = |k: &str, d: i32| self.vm.default_value_of("AerugoSettings", k, 0).and_then(|v| v.as_i32()).unwrap_or(d);
-        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800) }
+        let quality = dx_vk::Quality {
+            filter: get("TextureFilter", 5).clamp(0, 5) as u8,
+            msaa: get("AntiAliasing", 4).clamp(1, 8) as u32,
+            deep_color: get("DeepColor", 1) != 0,
+            smooth_lightmaps: get("SmoothLightmaps", 1) != 0,
+            pixel_lighting: get("PixelLighting", 1) != 0,
+            ui_filter: get("SmoothHUD", 2).clamp(0, 2) as u8,
+        };
+        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality }
+    }
+
+    /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
+    /// the original's for headless pictures and tests unless asked otherwise.
+    pub fn quality(&mut self) -> dx_vk::Quality {
+        // `DX_QUALITY=filter,msaa,ui,deep,lightmaps,pixel` (numbers): for comparing the options one by one
+        if let Some(v) = std::env::var("DX_QUALITY").ok() {
+            let n: Vec<u32> = v.split(',').map(|x| x.trim().parse().unwrap_or(0)).collect();
+            let g = |i: usize| n.get(i).copied().unwrap_or(0);
+            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), ui_filter: g(2) as u8, deep_color: g(3) != 0, smooth_lightmaps: g(4) != 0, pixel_lighting: g(5) != 0 };
+        }
+        if self.settings_quality {
+            self.aerugo_settings().quality
+        } else {
+            dx_vk::Quality::ORIGINAL
+        }
+    }
+
+    /// Follows a change of the picture options: the renderer remakes its pipelines and targets, and gets the map again
+    /// (with the world's lighting sent again in full).
+    pub fn follow_quality(&mut self, r: &mut dx_vk::renderer::Renderer) -> Result<(), String> {
+        let q = self.quality();
+        if r.set_quality(q).map_err(|e| e.to_string())? {
+            self.reload_vk_world(r)?;
+            self.world_light = None;
+            self.wants_world_light = true;
+            eprintln!("picture options: {:?}", r.quality());
+        }
+        Ok(())
     }
 
     /// Follows settings that can change while playing: the brightness (`[WinDrv.WindowsClient] Brightness`, which the
@@ -1714,7 +1756,11 @@ impl Session {
     /// A Vulkan renderer for this map that can present into a window (`instance_extensions` from the windowing library).
     pub fn make_vk_renderer(&mut self, instance_extensions: &[*const std::ffi::c_char]) -> Result<dx_vk::renderer::Renderer, String> {
         let lighting = dx_light::collect(&mut self.vm.reg, self.map_pkg, &self.view.model);
-        let mut r = dx_vk::renderer::Renderer::with_extensions(&mut self.view, Some(&lighting), vk_validation(), instance_extensions).map_err(|e| e.to_string())?;
+        let quality = self.quality();
+        let mut r = dx_vk::renderer::Renderer::with_quality(&mut self.view, Some(&lighting), vk_validation(), instance_extensions, quality).map_err(|e| e.to_string())?;
+        if r.quality() != dx_vk::Quality::ORIGINAL {
+            eprintln!("picture options: {:?}", r.quality());
+        }
         self.wants_world_light = true;
         r.world.use_lightmaps = self.lightmaps && r.world.lightmap_info.is_some();
         r.world.time = self.level_time();
@@ -2026,7 +2072,12 @@ impl Session {
         if renderer.is_none() {
             self.wants_world_light = true;
             let lighting = dx_light::collect(&mut self.vm.reg, self.map_pkg, &self.view.model);
-            *renderer = Some(dx_vk::renderer::Renderer::new(&mut self.view, Some(&lighting), vk_validation()).map_err(|e| e.to_string())?);
+            let quality = self.quality();
+            let r = dx_vk::renderer::Renderer::with_quality(&mut self.view, Some(&lighting), vk_validation(), &[], quality).map_err(|e| e.to_string())?;
+            if r.quality() != dx_vk::Quality::ORIGINAL {
+                eprintln!("picture options: {:?}", r.quality());
+            }
+            *renderer = Some(r);
         }
         let corona_rect = rect.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]).unwrap_or([0, 0, w as i32, h as i32]);
         let coronas = self.corona_quads(&cam, corona_rect);
@@ -2244,5 +2295,7 @@ pub struct AerugoSettings {
     pub output_rate: i32,
     /// The mouse's counts per inch.
     pub mouse_dpi: i32,
+    /// The picture options of the Advanced Graphics screen.
+    pub quality: dx_vk::Quality,
 }
 

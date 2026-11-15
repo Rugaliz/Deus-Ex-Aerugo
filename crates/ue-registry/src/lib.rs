@@ -315,6 +315,18 @@ impl Registry {
                 names.push(name.to_string());
             }
         }
+        // script packages a mod adds (not replacing one of the game's): their classes too, after the game's
+        let mods = ue_package::mods::init(game_dir);
+        let game_u: std::collections::HashSet<String> = std::fs::read_dir(&sys)
+            .map(|rd| rd.flatten().filter_map(|e| e.file_name().to_str().map(str::to_ascii_lowercase)).filter_map(|n| n.strip_suffix(".u").map(str::to_string)).collect())
+            .unwrap_or_default();
+        let mut added: Vec<&String> = mods.packages.iter().filter(|(n, m)| m.ext == "u" && !game_u.contains(*n)).map(|(n, _)| n).collect();
+        added.sort();
+        for n in added {
+            if !names.iter().any(|x| x.eq_ignore_ascii_case(n)) {
+                names.push(n.clone());
+            }
+        }
         let mut reg = Registry::load_packages(&sys, &names)?;
         reg.game_dir = Some(game_dir.to_path_buf());
         Ok(reg)
@@ -346,9 +358,11 @@ impl Registry {
         for n in names {
             let path = system_dir.join(format!("{n}.u"));
             let builtin = BUILTIN_PACKAGES.iter().find(|(b, _)| b.eq_ignore_ascii_case(n)).map(|(_, bytes)| *bytes);
-            let pkg = match builtin {
+            let pkg = match (ue_package::mods::package(n), builtin) {
+                // a mod's package first
+                (Some(m), _) => Package::open_source(&m.source).map_err(|e| Error::Package(PathBuf::from(m.source.describe()), e))?,
                 // a built-in package unless the folder has its own (a development build of it)
-                Some(bytes) if !path.exists() => Package::parse(bytes.to_vec()).map_err(|e| Error::Package(path.clone(), e))?,
+                (None, Some(bytes)) if !path.exists() => Package::parse(bytes.to_vec()).map_err(|e| Error::Package(path.clone(), e))?,
                 _ => Package::open(&path).map_err(|e| Error::Package(path.clone(), e))?,
             };
             let name_map = pkg.names.iter().map(|e| reg.names.intern(&e.name)).collect();
@@ -382,7 +396,11 @@ impl Registry {
         // with the name `dx` is `dx`, as in the original's paths)
         let id = self.names.intern(name);
         let name = &self.names.str(id).to_string();
-        let pkg = Package::open(path).map_err(|e| Error::Package(path.to_path_buf(), e))?;
+        // a mod's package of that name first (a replaced map, a replaced resource package)
+        let pkg = match ue_package::mods::package(name) {
+            Some(m) => Package::open_source(&m.source).map_err(|e| Error::Package(PathBuf::from(m.source.describe()), e))?,
+            None => Package::open(path).map_err(|e| Error::Package(path.to_path_buf(), e))?,
+        };
         let name_map = pkg.names.iter().map(|e| self.names.intern(&e.name)).collect();
         self.packages.push(LoadedPackage { name: name.to_string(), pkg, name_map });
         let pi = self.packages.len() - 1;
@@ -397,6 +415,9 @@ impl Registry {
         let Some((pkg, _)) = path.split_once('.') else { return false };
         if self.packages.iter().any(|p| p.name.eq_ignore_ascii_case(pkg)) {
             return true;
+        }
+        if ue_package::mods::package(pkg).is_some() {
+            return self.add_package(Path::new(pkg), pkg).is_ok();
         }
         let Some(game) = self.game_dir.clone() else { return false };
         for dir in ["Textures", "Sounds", "Music", "System", "Maps"] {

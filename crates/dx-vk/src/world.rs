@@ -1,6 +1,6 @@
 //! The world BSP drawn with Vulkan: one vertex/index buffer for all visible faces, one draw per (texture, masked) batch.
 use crate::texture::{GpuTexture, RectStaging, Staging};
-use crate::{Context, Offscreen, Result, COLOR_FORMAT, DEPTH_FORMAT};
+use crate::{Context, Offscreen, Result, DEPTH_FORMAT};
 use ash::vk;
 use dx_soft::{Camera, MapView};
 use ue_assets::model::Model;
@@ -305,6 +305,8 @@ pub struct World {
     indices: crate::Buffer,
     batches: Vec<Batch>,
     textures: Vec<GpuTexture>,
+    /// Per texture slot: a mod's replacement picture's scale (`replacement_scale`).
+    uv_scale: Vec<u32>,
     /// Animated surface textures: head slot -> the slots of its chain (head first), the head's key -> slot, and the
     /// frame each head shows now (index into its chain).
     anim: HashMap<usize, Vec<usize>>,
@@ -565,6 +567,8 @@ impl World {
         // 2. textures; an undecodable one becomes a 1x1 magenta so it is visible
         let mut textures = Vec::new();
         let mut dynamic = Vec::new();
+        // per texture slot: a mod's replacement picture's size over the texture's own, as f32 bits (0: the same)
+        let mut uv_scale: Vec<u32> = Vec::new();
         for &raw in &tex_raw {
             // a procedural texture: one level at its own size, refreshed every frame (`update_procedurals`)
             if let Some(key) = view.texture_key(raw).filter(|k| view.is_procedural(k)) {
@@ -580,6 +584,8 @@ impl World {
                 .map(|m| m.into_iter().take_while(|(w, h, px)| px.len() == (*w * *h * 4) as usize).collect::<Vec<_>>())
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| vec![(1, 1, vec![255, 0, 255, 255])]);
+            uv_scale.resize(textures.len(), 0);
+            uv_scale.push(replacement_scale(mips[0].0, view.texture_size(raw)));
             textures.push(GpuTexture::new(cx, &mips)?);
         }
         // animated textures (`AnimNext` chains): every frame after a surface texture gets a slot of its own; the
@@ -599,6 +605,8 @@ impl World {
                     .filter(|m| !m.is_empty())
                     .unwrap_or_else(|| vec![(1, 1, vec![255, 0, 255, 255])]);
                 slots.push(textures.len());
+                uv_scale.resize(textures.len(), 0);
+                uv_scale.push(replacement_scale(mips[0].0, view.texture_size_by_key(key)));
                 textures.push(GpuTexture::new(cx, &mips)?);
             }
             if let Some(k) = view.texture_key(raw) {
@@ -609,15 +617,7 @@ impl World {
 
         unsafe {
             let sampler = cx.device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::LINEAR)
-                    .min_filter(vk::Filter::LINEAR)
-                    .mipmap_mode(crate::MIP_MODE)
-                    .mip_lod_bias(crate::MIP_LOD_BIAS)
-                    .address_mode_u(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_v(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_w(vk::SamplerAddressMode::REPEAT)
-                    .max_lod(vk::LOD_CLAMP_NONE),
+                &cx.texture_sampler_info(false),
                 None,
             )?;
             let bindings = [vk::DescriptorSetLayoutBinding::default()
@@ -689,10 +689,20 @@ impl World {
             let layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts).push_constant_ranges(&push), None)?;
             let vs = cx.shader_module(WORLD_VERT)?;
             let fs = cx.shader_module(WORLD_FRAG)?;
+            // the picture options as specialization constants; the opaque pipeline with multisampling also draws masked
+            // texels by alpha-to-coverage
+            let q = cx.quality();
+            let a2c = q.msaa > 1;
+            let spec_map = crate::SCENE_SPEC;
+            let (data, data_a2c) = (crate::scene_spec_data(q, false), crate::scene_spec_data(q, true));
+            let spec = vk::SpecializationInfo::default().map_entries(&spec_map).data(&data);
+            let spec_a2c = vk::SpecializationInfo::default().map_entries(&spec_map).data(&data_a2c);
             let stages = [
                 vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vs).name(c"main"),
-                vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(fs).name(c"main"),
+                vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(fs).name(c"main").specialization_info(&spec),
             ];
+            let stages_a2c = [stages[0], stages[1].specialization_info(&spec_a2c)];
+            let ms_a2c = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples()).alpha_to_coverage_enable(true);
             let bindings = [vk::VertexInputBindingDescription::default().stride(std::mem::size_of::<WorldVertex>() as u32).input_rate(vk::VertexInputRate::VERTEX)];
             let attrs = [
                 vk::VertexInputAttributeDescription::default().location(0).format(vk::Format::R32G32B32_SFLOAT).offset(0),
@@ -707,9 +717,10 @@ impl World {
             let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
             let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
             let raster = vk::PipelineRasterizationStateCreateInfo::default().polygon_mode(vk::PolygonMode::FILL).cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
-            let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples());
             // blended surfaces use the drivers' factors and do not write depth
-            let make_with = |factors: Option<(vk::BlendFactor, vk::BlendFactor)>, color: bool, depth_write: bool, compare: vk::CompareOp| -> Result<vk::Pipeline> {
+            let make_full = |factors: Option<(vk::BlendFactor, vk::BlendFactor)>, color: bool, depth_write: bool, compare: vk::CompareOp, a2c: bool| -> Result<vk::Pipeline> {
+                let (stages, ms) = if a2c { (&stages_a2c, &ms_a2c) } else { (&stages, &ms) };
                 let ds = vk::PipelineDepthStencilStateCreateInfo::default()
                     .depth_test_enable(true)
                     .depth_write_enable(depth_write)
@@ -729,15 +740,15 @@ impl World {
                 let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_att);
                 let dyn_states = crate::SCENE_DYNAMIC_STATES;
                 let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
-                let color_formats = [COLOR_FORMAT];
+                let color_formats = [cx.color_format()];
                 let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats).depth_attachment_format(DEPTH_FORMAT).stencil_attachment_format(DEPTH_FORMAT);
                 let info = vk::GraphicsPipelineCreateInfo::default()
-                    .stages(&stages)
+                    .stages(stages)
                     .vertex_input_state(&vertex_input)
                     .input_assembly_state(&input_asm)
                     .viewport_state(&viewport)
                     .rasterization_state(&raster)
-                    .multisample_state(&ms)
+                    .multisample_state(ms)
                     .depth_stencil_state(&ds)
                     .color_blend_state(&blend)
                     .dynamic_state(&dynamic)
@@ -745,8 +756,9 @@ impl World {
                     .push_next(&mut rendering);
                 Ok(cx.device.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None).map_err(|(_, e)| e)?[0])
             };
+            let make_with = |factors, color, depth_write, compare| make_full(factors, color, depth_write, compare, false);
             let make = |factors: Option<(vk::BlendFactor, vk::BlendFactor)>, color: bool, depth_write: bool| make_with(factors, color, depth_write, vk::CompareOp::LESS);
-            let pipeline = make(None, true, true)?;
+            let pipeline = make_full(None, true, true, vk::CompareOp::LESS, a2c)?;
             let translucent = make(Some((vk::BlendFactor::ONE, vk::BlendFactor::ONE_MINUS_SRC_COLOR)), true, false)?;
             let modulated = make(Some((vk::BlendFactor::DST_COLOR, vk::BlendFactor::SRC_COLOR)), true, false)?;
             let backdrop = make(None, false, true)?;
@@ -761,7 +773,7 @@ impl World {
 
             let vb = cx.upload(&vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
             let ib = cx.upload(&indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
-            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, 8 << 20)?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, 4 << 20)?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, solid_nodes })
+            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, uv_scale, dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, 8 << 20)?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, 4 << 20)?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, solid_nodes })
         }
     }
 
@@ -858,6 +870,7 @@ impl World {
                     bound = b.texture;
                 }
                 push.misc[0] = b.masked as u32;
+                push.vis[3] = self.uv_scale_of(b.texture);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, count, 1, first, 0, 0);
@@ -887,6 +900,7 @@ impl World {
                     bound = b.texture;
                 }
                 push.misc[0] = b.masked as u32;
+                push.vis[3] = self.uv_scale_of(b.texture);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, count, 1, first, 0, 0);
@@ -990,6 +1004,7 @@ impl World {
                     bound = d.slot;
                 }
                 push.misc[0] = d.masked as u32;
+                push.vis[3] = self.uv_scale_of(d.slot);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, count, 1, d.first, 0, 0);
@@ -1030,6 +1045,7 @@ impl World {
                     bound = d.slot;
                 }
                 push.misc[0] = d.masked as u32;
+                push.vis[3] = self.uv_scale_of(d.slot);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, d.count, 1, d.first, 0, 0);
@@ -1156,6 +1172,7 @@ impl World {
             for b in draws {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[self.frame_slot(b.texture)]], &[]);
                 push.misc[0] = b.masked as u32;
+                push.vis[3] = self.uv_scale_of(b.texture);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, b.index_count, 1, b.first_index, 0, 0);
@@ -1253,6 +1270,7 @@ impl World {
                     bound = b.texture;
                 }
                 push.misc[0] = b.masked as u32;
+                push.vis[3] = self.uv_scale_of(b.texture);
                 let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                 cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw_indexed(cb, b.index_count, 1, b.first_index, 0, 0);
@@ -1270,6 +1288,11 @@ impl World {
         if let Some(&slot) = self.anim_keys.get(key) {
             self.anim_frame.insert(slot, index);
         }
+    }
+
+    /// The replacement scale of the texture shown in `slot` (see `replacement_scale`), for the push constants.
+    fn uv_scale_of(&self, slot: usize) -> u32 {
+        self.uv_scale.get(self.frame_slot(slot)).copied().unwrap_or(0)
     }
 
     fn frame_slot(&self, slot: usize) -> usize {
@@ -1553,3 +1576,12 @@ mod tests {
     }
 }
 
+/// A mod's replacement picture `width` texels wide for a texture the game knows as `own` (`MapView::texture_size`):
+/// how much bigger it is, as f32 bits for the shader (0: the texture's own picture). World texture coordinates count
+/// in the game's texels, so the shader divides by the picture's size over this.
+fn replacement_scale(width: u32, own: Option<(u32, u32)>) -> u32 {
+    match own {
+        Some((w, _)) if w > 0 && w != width => (width as f32 / w as f32).to_bits(),
+        _ => 0,
+    }
+}

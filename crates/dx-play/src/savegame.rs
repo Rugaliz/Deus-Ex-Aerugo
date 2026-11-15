@@ -127,6 +127,10 @@ impl Session {
 
     pub(crate) fn find_map_file(&self, map: &str) -> Option<std::path::PathBuf> {
         let maps = self.game.join("Maps");
+        // a map of the mods folder (it replaces or adds one): opened by name, wherever it is (`Registry::add_package`)
+        if ue_package::mods::package(map).is_some_and(|m| m.ext == "dx") {
+            return Some(maps.join(format!("{map}.dx")));
+        }
         std::fs::read_dir(&maps)
             .ok()?
             .flatten()

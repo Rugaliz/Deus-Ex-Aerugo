@@ -205,8 +205,15 @@ impl Texture {
     /// masked on request, whatever the texture's own flag).
     pub fn mip_rgba_with(&self, level: usize, palette: &Palette, masked: bool) -> Result<Vec<u8>> {
         let m = self.mips.get(level).ok_or_else(|| Error::Invalid(format!("no mip level {level}")))?;
-        if self.format != Format::P8 {
-            return Err(Error::Invalid(format!("decoding {:?} is not implemented", self.format)));
+        match self.format {
+            Format::P8 => {}
+            // high-colour textures of mods (texture packs): no palette
+            Format::Dxt1 => return Ok(decode_dxt1(&m.data, m.u_size, m.v_size)),
+            Format::Rgb32 if m.data.len() >= (m.u_size * m.v_size * 4) as usize => {
+                // stored B, G, R, A
+                return Ok(m.data.chunks_exact(4).take((m.u_size * m.v_size) as usize).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect());
+            }
+            _ => return Err(Error::Invalid(format!("decoding {:?} is not implemented", self.format))),
         }
         let mut out = Vec::with_capacity(m.data.len() * 4);
         for &i in &m.data {
@@ -221,3 +228,61 @@ impl Texture {
     }
 }
 
+/// DXT1 (S3TC BC1) blocks to RGBA8: each 4x4 block two RGB565 end colours and 2-bit indices; when the first colour is
+/// not above the second, index 3 is transparent black (1-bit alpha).
+pub fn decode_dxt1(data: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let bw = w.div_ceil(4).max(1);
+    let rgb = |c: u16| [((c >> 11) & 31) as u32 * 255 / 31, ((c >> 5) & 63) as u32 * 255 / 63, (c & 31) as u32 * 255 / 31];
+    for (bi, block) in data.chunks_exact(8).enumerate() {
+        let (bx, by) = ((bi % bw) * 4, (bi / bw) * 4);
+        if by >= h {
+            break;
+        }
+        let (c0, c1) = (u16::from_le_bytes([block[0], block[1]]), u16::from_le_bytes([block[2], block[3]]));
+        let (a, b) = (rgb(c0), rgb(c1));
+        let mut pal = [[a[0], a[1], a[2], 255], [b[0], b[1], b[2], 255], [0; 4], [0; 4]];
+        if c0 > c1 {
+            pal[2] = [(2 * a[0] + b[0]) / 3, (2 * a[1] + b[1]) / 3, (2 * a[2] + b[2]) / 3, 255];
+            pal[3] = [(a[0] + 2 * b[0]) / 3, (a[1] + 2 * b[1]) / 3, (a[2] + 2 * b[2]) / 3, 255];
+        } else {
+            pal[2] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, 255];
+        }
+        let bits = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+        for i in 0..16 {
+            let (x, y) = (bx + i % 4, by + i / 4);
+            if x < w && y < h {
+                let c = pal[((bits >> (2 * i)) & 3) as usize];
+                let o = (y * w + x) * 4;
+                for k in 0..4 {
+                    out[o + k] = c[k] as u8;
+                }
+            }
+        }
+    }
+    out
+}
+
+impl Palette {
+    /// No colours: what a texture without a palette (DXT1, RGB32) decodes with.
+    pub fn none() -> Palette {
+        Palette { colors: Vec::new() }
+    }
+}
+
+#[cfg(test)]
+mod dxt1_tests {
+    #[test]
+    fn a_block_decodes_its_end_colours_and_transparency() {
+        // c0 = pure red (0xF800), c1 = pure blue (0x001F); c0 > c1: four opaque colours; indices 0,1,2,3 in row 0
+        let block = [0x00, 0xF8, 0x1F, 0x00, 0b11_10_01_00, 0, 0, 0];
+        let px = super::decode_dxt1(&block, 4, 4);
+        assert_eq!(&px[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&px[4..8], &[0, 0, 255, 255]);
+        assert_eq!(&px[8..12], &[170, 0, 85, 255]);
+        // c0 <= c1: index 3 transparent
+        let block = [0x1F, 0x00, 0x00, 0xF8, 0b11_00_00_00, 0, 0, 0];
+        assert_eq!(&super::decode_dxt1(&block, 4, 4)[12..16], &[0, 0, 0, 0]);
+    }
+}

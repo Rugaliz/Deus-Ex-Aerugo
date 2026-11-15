@@ -85,6 +85,10 @@ pub struct Corner {
     /// `SPECULARENABLE` set by `SetBlending` 10008270): only for `PF_RenderFog` faces that are neither translucent
     /// nor modulated; zero otherwise.
     pub fog: [f32; 3],
+    /// The vertex's unit normal, and whether its colour is the actor's lights at the vertex (`vertex_light`): such
+    /// corners can be lit per pixel instead (the picture option), the others keep their colour (unlit glow, no lights).
+    pub normal: [f32; 3],
+    pub lit: bool,
 }
 
 /// A triangle as 10b0bab0 gets it: material index (`DrawLodMesh`), mesh texture slot, poly flags (material or
@@ -320,12 +324,13 @@ fn shade_vertices(verts: &mut [[f32; 3]], normals: &[[f32; 3]], used: &[bool], a
 fn corner(v: usize, uv: [u8; 2], flags: u32, verts: &[[f32; 3]], unit: &[[f32; 3]], lit: &[[f32; 3]], fog: &[[f32; 3]], actor: &MeshActor, view: &MeshView) -> Corner {
     // translucent (0x4) or modulated (0x40) faces get no fog pass
     let fogged = if flags & 0x44 == 0 { fog[v] } else { [0.0; 3] };
-    let mut c = Corner { pos: verts[v], uv: [uv[0] as f32 / 256.0, uv[1] as f32 / 256.0], color: lit[v], fog: fogged };
+    let mut c = Corner { pos: verts[v], uv: [uv[0] as f32 / 256.0, uv[1] as f32 / 256.0], color: lit[v], fog: fogged, normal: unit[v], lit: true };
     if flags & PF_ENVIRONMENT != 0 {
         c.uv = env_uv(verts[v], unit[v], view.eye);
     }
     if flags & PF_UNLIT != 0 {
         c.color = [actor.glow; 3];
+        c.lit = false;
     }
     c
 }

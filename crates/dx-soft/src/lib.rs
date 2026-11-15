@@ -5,6 +5,7 @@ pub mod mesh;
 mod actors;
 mod procedural;
 
+pub mod replace;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -209,8 +210,10 @@ impl MapView {
         }
         let tex = (|| {
             let t = Texture::load(&pkg.pkg, export).ok()?;
-            let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
-            let pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+            let pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+                let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
+                Palette::load(&ppkg.pkg, pexp).ok()?
+            };
             let rgba = t.mip_rgba(0, &pal).ok()?;
             Some(Rc::new(Tex { w: t.mips[0].u_size, h: t.mips[0].v_size, rgba }))
         })();
@@ -314,9 +317,14 @@ impl MapView {
         let (pkg_name, rest) = path.split_once('.')?;
         let pkg = self.files.package(pkg_name)?;
         let export = pkg.find(rest)?;
+        if let Some(m) = self.replacement(&pkg, export) {
+            return Some(m);
+        }
         let t = Texture::load(&pkg.pkg, export).ok()?;
-        let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
-        let pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+        let pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+            let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
+            Palette::load(&ppkg.pkg, pexp).ok()?
+        };
         let masked = force || t.masked;
         (0..t.mips.len()).map(|i| Some((t.mips[i].u_size, t.mips[i].v_size, t.mip_rgba_with(i, &pal, masked).ok()?))).collect()
     }
@@ -328,8 +336,10 @@ impl MapView {
         let pkg = self.files.package(pkg_name)?;
         let export = pkg.find(rest)?;
         let t = Texture::load(&pkg.pkg, export).ok()?;
-        let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
-        let mut pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+        let mut pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+            let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
+            Palette::load(&ppkg.pkg, pexp).ok()?
+        };
         if let Some(c) = pal.colors.get_mut(0) {
             *c = [255, 255, 255, 255];
         }
@@ -371,6 +381,9 @@ impl MapView {
     }
 
     fn mips_of(&self, pkg: &Rc<Loaded>, export: usize) -> Option<Vec<(u32, u32, Vec<u8>)>> {
+        if let Some(m) = self.replacement(pkg, export) {
+            return Some(m);
+        }
         let t = Texture::load(&pkg.pkg, export).ok()?;
         // a wet texture's own pixels are generated at run time (the water simulation is not ported yet): show the
         // picture it distorts, undistorted
@@ -380,9 +393,43 @@ impl MapView {
                 return self.mips_of(&spkg, sexp);
             }
         }
-        let (ppkg, pexp) = self.files.resolve(pkg, t.palette)?;
-        let pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+        let pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+            let (ppkg, pexp) = self.files.resolve(pkg, t.palette)?;
+            Palette::load(&ppkg.pkg, pexp).ok()?
+        };
         (0..t.mips.len()).map(|i| Some((t.mips[i].u_size, t.mips[i].v_size, t.mip_rgba(i, &pal).ok()?))).collect()
+    }
+
+    /// A mod's replacement picture for a texture (`replace::replacement_mips`).
+    fn replacement(&self, pkg: &Rc<Loaded>, export: usize) -> Option<Vec<(u32, u32, Vec<u8>)>> {
+        if ue_package::mods::current().textures.is_empty() {
+            return None;
+        }
+        let path = format!("{}.{}", pkg.name, pkg.pkg.object_path(ObjectRef::Export(export))?);
+        replace::replacement_mips(&path)
+    }
+
+    /// The size the game knows a texture by (its first mip level in the package), whatever picture a mod puts in its
+    /// place: what sprites and the canvas measure, and what world texture coordinates count in.
+    pub fn texture_size_by_path(&self, path: &str) -> Option<(u32, u32)> {
+        let (pkg_name, rest) = path.split_once('.')?;
+        let pkg = self.files.package(pkg_name)?;
+        let t = Texture::load_any(&pkg.pkg, pkg.find(rest)?).ok()?;
+        Some((t.u_size, t.v_size))
+    }
+
+    /// The size of a texture given by its key (`texture_key`, `anim_chain`) as the game knows it.
+    pub fn texture_size_by_key(&self, key: &(String, usize)) -> Option<(u32, u32)> {
+        let pkg = self.files.package(&key.0)?;
+        let t = Texture::load_any(&pkg.pkg, key.1).ok()?;
+        Some((t.u_size, t.v_size))
+    }
+
+    /// The size of a surface texture as the game knows it (see `texture_size_by_path`).
+    pub fn texture_size(&self, raw: i32) -> Option<(u32, u32)> {
+        let (pkg, export) = self.files.resolve(&self.map, raw)?;
+        let t = Texture::load_any(&pkg.pkg, export).ok()?;
+        Some((t.u_size, t.v_size))
     }
 
     /// Texture by object path (`Package.Group.Name`), cached.
@@ -395,8 +442,10 @@ impl MapView {
             let pkg = self.files.package(pkg_name)?;
             let export = pkg.find(rest)?;
             let t = Texture::load(&pkg.pkg, export).ok()?;
-            let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
-            let pal = Palette::load(&ppkg.pkg, pexp).ok()?;
+            let pal = if t.palette == 0 && t.format != ue_assets::texture::Format::P8 { Palette::none() } else {
+                let (ppkg, pexp) = self.files.resolve(&pkg, t.palette)?;
+                Palette::load(&ppkg.pkg, pexp).ok()?
+            };
             let rgba = t.mip_rgba(0, &pal).ok()?;
             Some(Rc::new(Tex { w: t.mips[0].u_size, h: t.mips[0].v_size, rgba }))
         })();

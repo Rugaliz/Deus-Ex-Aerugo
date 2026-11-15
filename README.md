@@ -12,14 +12,18 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   view on wider screens instead of a stretched picture.
 - **Smooth and fast.** Hundreds of frames per second on a modern PC, ready for high refresh rate monitors. Choose how
   vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a frame rate limit.
-- **Best picture, no fiddling.** Every texture, detail and effect at full quality; the old renderer and texture
-  options are gone. Lighting, fog, reflections, water and fire look as the original intended.
+- **A sharper, smoother picture.** Every texture and effect at full quality, plus modern options in *Display →
+  Advanced Graphics*: anisotropic texture filtering, anti-aliasing (MSAA, with smooth grates and fences), 16-bit colour
+  (no banding in fog and dark areas), smooth lightmap shadows, per-pixel lighting on characters and objects, and
+  smooth scaling of the HUD and menus. A field-of-view setting too. Each option can be set back to the original look.
 - **Precise mouse aiming.** Tell the game your mouse's DPI, and the sensitivity slider shows how far you move the
   mouse for a full turn, so aiming feels the same on any mouse.
 - **Better sound.** 128 sound channels instead of 16, so sounds no longer cut each other off, at your system's own
   audio quality. The original's sound and music engine is recreated faithfully.
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
+- **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
+  overwritten game files.
 
 > **Status: the engine is complete, but the game has not been played through yet.** The intro, the training mission
 > and Liberty Island have been played; the later missions and the endings load and run but have not been played from
@@ -46,6 +50,22 @@ uninstall, delete the file you copied, and that folder if you want your saves go
 
 Extras, from a command prompt in the game folder: `deusex --windowed` plays in a window, `deusex --size 1920x1080`
 sets its size, and `deusex --import-save "Save/Save0001/<map>.dxs"` continues a game saved by the original.
+
+## Mods
+
+Make a folder called **`Mods`** inside your Deus Ex folder and put each mod in it, as a `.zip` file or as a folder.
+Mods are applied in alphabetical order, and a later one wins over an earlier one (put a number in front of a name to
+change the order). To switch a mod off without deleting it, start its name with `_`.
+
+- **Mods made as Deus Ex packages** (`.utx` texture packs, `.u` script and model packages, `.dx` maps): replace the
+  game's file of the same name, or add new ones. Settings a mod needs can come as its own `DeusEx.ini` or `User.ini`,
+  which go on top of the game's.
+- **Your own textures:** a PNG of any size, placed at `Textures/<Package>/<Group>/<Name>.png` inside the mod, replaces
+  that texture. To get every texture of the game already named that way, run `deusex --export-textures <folder>` in
+  the game folder, edit or upscale what you like, and put the result in `Mods`.
+
+Mods that come with their own `.exe` or `.dll` files (launchers, renderers) do not apply to Aerugo. Big mods that
+change the game's scripts should work too, but have not been tested yet.
 
 ## How to build it yourself
 

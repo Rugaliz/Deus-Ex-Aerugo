@@ -300,12 +300,13 @@ impl Vm {
 
     /// The port's menus (`Aerugo`): the display and sound screens without the choices of 2000's hardware (render device,
     /// texture depth and detail, detail textures, decals, effect channels, sample format, 3D hardware), with vertical
-    /// sync, frame rate limit, mouse DPI and output rate of the port's own; the controls screen's mouse sensitivity in
+    /// sync, frame rate limit, mouse DPI, field of view, a button to the Advanced Graphics screen (`MenuScreenAerugoGraphics`)
+    /// and output rate of the port's own; the controls screen's mouse sensitivity in
     /// half steps labelled with the travel of a full turn. Choices are listed in the screens' `choices` defaults (a
     /// `None` is skipped and the others close up; an empty row keeps the Sound screen's art lined up).
     pub fn apply_port_menus(&mut self) {
         let screens: [(&str, &[&str]); 2] = [
-            ("MenuScreenDisplay", &["MenuChoice_Brightness", "MenuChoice_FullScreen", "MenuChoice_Resolution", "MenuChoice_AerugoVSync", "MenuChoice_AerugoFrameLimit", "MenuChoice_AerugoMouseDPI"]),
+            ("MenuScreenDisplay", &["MenuChoice_Brightness", "MenuChoice_FullScreen", "MenuChoice_Resolution", "MenuChoice_AerugoVSync", "MenuChoice_AerugoFrameLimit", "MenuChoice_AerugoMouseDPI", "MenuChoice_AerugoFOV", "MenuChoice_AerugoGraphics"]),
             ("MenuScreenSound", &["MenuChoice_MusicVolume", "MenuChoice_SoundVolume", "MenuChoice_SpeechVolume", "MenuChoice_AerugoSpacer", "MenuChoice_AerugoOutputRate", "MenuChoice_ReverseStereo", "MenuChoice_SurroundSound"]),
         ];
         let class_ref = |vm: &mut Vm, name: &str| -> Option<Value> {

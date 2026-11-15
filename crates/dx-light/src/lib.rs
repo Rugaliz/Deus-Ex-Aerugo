@@ -155,7 +155,7 @@ impl MapLighting {
 /// Where a surface's texels live in the atlas, and how texture-space coordinates map onto them.
 #[derive(Debug, Clone, Copy)]
 pub struct SurfaceMap {
-    /// Top-left texel of the surface's rectangle in the atlas (one replicated border texel surrounds it).
+    /// Top-left texel of the surface's rectangle in the atlas (`BORDER` replicated texels surround it).
     pub x: u32,
     pub y: u32,
     pub w: u32,
@@ -179,14 +179,15 @@ impl SurfaceMap {
 /// The atlas rectangle of a surface with its replicated border (x, y, w, h, RGBA8) for `texels` (`w * h`, row-major).
 pub fn atlas_rect(sm: &SurfaceMap, texels: &[[u8; 3]]) -> (u32, u32, u32, u32, Vec<u8>) {
     let (w, h) = (sm.w as i32, sm.h as i32);
-    let mut rgba = Vec::with_capacity(((w + 2) * (h + 2) * 4) as usize);
-    for j in -1..=h {
-        for i in -1..=w {
+    let b = BORDER as i32;
+    let mut rgba = Vec::with_capacity(((w + 2 * b) * (h + 2 * b) * 4) as usize);
+    for j in -b..h + b {
+        for i in -b..w + b {
             let t = texels[(j.clamp(0, h - 1) * w + i.clamp(0, w - 1)) as usize];
             rgba.extend_from_slice(&[t[0], t[1], t[2], 255]);
         }
     }
-    (sm.x - 1, sm.y - 1, sm.w + 2, sm.h + 2, rgba)
+    (sm.x - BORDER, sm.y - BORDER, sm.w + 2 * BORDER, sm.h + 2 * BORDER, rgba)
 }
 
 /// The fog atlas rectangle of a surface (same place as its lightmap) for its 7-bit RGBA fog map, as the Direct3D
@@ -194,14 +195,15 @@ pub fn atlas_rect(sm: &SurfaceMap, texels: &[[u8; 3]]) -> (u32, u32, u32, u32, V
 /// `None` writes zeros: the fog pass then leaves the pixel unchanged (blend `ONE, INVSRCALPHA`).
 pub fn fog_atlas_rect(sm: &SurfaceMap, texels: Option<&[[u8; 4]]>) -> (u32, u32, u32, u32, Vec<u8>) {
     let (w, h) = (sm.w as i32, sm.h as i32);
-    let mut rgba = Vec::with_capacity(((w + 2) * (h + 2) * 4) as usize);
-    for j in -1..=h {
-        for i in -1..=w {
+    let b = BORDER as i32;
+    let mut rgba = Vec::with_capacity(((w + 2 * b) * (h + 2 * b) * 4) as usize);
+    for j in -b..h + b {
+        for i in -b..w + b {
             let t = texels.map(|t| t[(j.clamp(0, h - 1) * w + i.clamp(0, w - 1)) as usize]).unwrap_or([0; 4]);
             rgba.extend_from_slice(&t.map(|c| c << 1));
         }
     }
-    (sm.x - 1, sm.y - 1, sm.w + 2, sm.h + 2, rgba)
+    (sm.x - BORDER, sm.y - BORDER, sm.w + 2 * BORDER, sm.h + 2 * BORDER, rgba)
 }
 
 impl Lightmaps {
@@ -382,7 +384,11 @@ pub fn generate(model: &Model, lighting: &MapLighting) -> Lightmaps {
     Lightmaps { width, height, rgba, surfaces }
 }
 
-/// Shelf packing of lightmap rectangles `(w, h)` (in surface order), tallest first, one replicated texel of border around
+/// Replicated texels around every lightmap rectangle in the atlas: one is all bilinear sampling needs (positions are held
+/// half a texel inside); two let bicubic sampling (the smooth-lightmaps option) stay inside its own surface.
+pub const BORDER: u32 = 2;
+
+/// Shelf packing of lightmap rectangles `(w, h)` (in surface order), tallest first, `BORDER` replicated texels around
 /// every rectangle: atlas width, height and each rectangle's index and top-left texel.
 fn pack(sizes: &[(usize, usize)]) -> (u32, u32, Vec<(usize, u32, u32)>) {
     let mut order: Vec<usize> = (0..sizes.len()).collect();
@@ -391,13 +397,13 @@ fn pack(sizes: &[(usize, usize)]) -> (u32, u32, Vec<(usize, u32, u32)>) {
     let (mut x, mut y, mut shelf) = (0u32, 0u32, 0u32);
     let mut placed = Vec::new();
     for k in order {
-        let (pw, ph) = (sizes[k].0 as u32 + 2, sizes[k].1 as u32 + 2);
+        let (pw, ph) = (sizes[k].0 as u32 + 2 * BORDER, sizes[k].1 as u32 + 2 * BORDER);
         if x + pw > width {
             x = 0;
             y += shelf;
             shelf = 0;
         }
-        placed.push((k, x + 1, y + 1));
+        placed.push((k, x + BORDER, y + BORDER));
         x += pw;
         shelf = shelf.max(ph);
     }
@@ -509,8 +515,8 @@ mod tests {
         let from_generate: Vec<_> = generate(&m, &lighting).surfaces.iter().map(|s| s.map(|s| (s.x, s.y, s.w, s.h))).collect();
         let from_layout: Vec<_> = layout(&m).iter().map(|s| s.map(|s| (s.x, s.y, s.w, s.h))).collect();
         assert_eq!(from_layout, from_generate);
-        // tallest first, then widest; a border texel around each
-        assert_eq!(from_layout, vec![Some((16, 1, 4, 4)), None, Some((1, 1, 4, 9)), Some((7, 1, 7, 4))]);
+        // tallest first, then widest; two border texels around each
+        assert_eq!(from_layout, vec![Some((21, 2, 4, 4)), None, Some((2, 2, 4, 9)), Some((10, 2, 7, 4))]);
     }
 
     #[test]
@@ -556,13 +562,14 @@ mod tests {
     fn fog_rectangles_hold_the_doubled_bytes_with_a_border() {
         let m = SurfaceMap { x: 10, y: 20, w: 2, h: 1, pan: [0.0; 2], scale: [16.0; 2] };
         let (x, y, w, h, rgba) = fog_atlas_rect(&m, Some(&[[1, 2, 3, 127], [64, 0, 127, 10]]));
-        assert_eq!((x, y, w, h), (9, 19, 4, 3));
-        // every row: border copy of the first texel, both texels, border copy of the last
-        let row = [2, 4, 6, 254, 2, 4, 6, 254, 128, 0, 254, 20, 128, 0, 254, 20];
-        assert_eq!(rgba, row.repeat(3));
+        assert_eq!((x, y, w, h), (8, 18, 6, 5));
+        // every row: two border copies of the first texel, both texels, two border copies of the last
+        let (a, b) = ([2, 4, 6, 254], [128, 0, 254, 20]);
+        let row: Vec<u8> = [a, a, a, b, b, b].concat();
+        assert_eq!(rgba, row.repeat(5));
         // no fog: zeros, which the blend leaves as they are
         let (_, _, _, _, z) = fog_atlas_rect(&m, None);
-        assert!(z.len() == 48 && z.iter().all(|&b| b == 0));
+        assert!(z.len() == 6 * 5 * 4 && z.iter().all(|&b| b == 0));
     }
 
     #[test]

@@ -230,14 +230,14 @@ fn movers_seen_through_a_volumetric_light_get_fog_maps() {
             let dynamic: Vec<usize> = s.fog_draws().into_iter().map(|(si, _)| si).filter(|&si| si >= level_surfs).collect();
             // the main view's (frame 0)
             let rects: Vec<(usize, (u32, u32, u32, u32, Vec<u8>))> = s.mover_fog_updates().into_iter().filter(|e| e.1 == 0).map(|(e, _, r)| (e, r)).collect();
-            // every fogged mover surface sent a rectangle (bytes doubled, a one-texel border)
+            // every fogged mover surface sent a rectangle (bytes doubled, a `BORDER`-texel border)
             assert_eq!(rects.len(), dynamic.len());
             if !rects.iter().any(|(_, r)| r.4.chunks(4).any(|t| t[3] > 0)) {
                 continue;
             }
             for &si in &dynamic {
                 let t = s.fog_texels(si).unwrap();
-                assert!(rects.iter().any(|(_, r)| (r.2 - 2) as usize * (r.3 - 2) as usize == t.len()), "surface {si}");
+                assert!(rects.iter().any(|(_, r)| (r.2 - 2 * dx_light::BORDER) as usize * (r.3 - 2 * dx_light::BORDER) as usize == t.len()), "surface {si}");
             }
             // looking the other way: no fog draw on the mover, its rectangles cleared
             s.mark_rendered(&Camera { pos: spot, pitch: 0, yaw: (yaw + 32768) & 0xffff, fov: 90.0, roll: 0 });
@@ -290,7 +290,7 @@ fn mirror_frames_make_their_own_fog_maps() {
         assert_eq!(mine.len(), draws.len());
         for &si in &draws {
             let t = s.frame_fog_texels(fi, si).unwrap();
-            assert!(mine.iter().any(|r| (r.2 - 2) as usize * (r.3 - 2) as usize == t.len()), "surface {si}");
+            assert!(mine.iter().any(|r| (r.2 - 2 * dx_light::BORDER) as usize * (r.3 - 2 * dx_light::BORDER) as usize == t.len()), "surface {si}");
         }
         assert!(mine.iter().any(|r| r.4.chunks(4).any(|t| t[3] > 0)), "no fog in the mirror frame's maps");
         // the frame's own fog maps take its detail layers away

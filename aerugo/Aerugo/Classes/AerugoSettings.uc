@@ -1,6 +1,6 @@
 //=============================================================================
 // AerugoSettings: the port's own settings, kept in Aerugo.ini. Read by the port's host (vertical sync, frame rate
-// limit, sound output rate, mouse DPI); written by the menu choices of this package.
+// limit, sound output rate, mouse DPI, picture options); written by the menu choices of this package.
 // Our own code (MIT), compiled against the retail packages with the SDK's UCC.
 //=============================================================================
 class AerugoSettings extends Object config(Aerugo);
@@ -13,6 +13,15 @@ var config int FrameLimit;
 var config int OutputRate;
 // the mouse's counts per inch: movement is scaled to the 400 DPI mice the game was tuned for
 var config int MouseDPI;
+// picture options (the Advanced Graphics screen): texture filtering 0 original, 1 trilinear, 2..5 anisotropic
+// 2x..16x; multisampling 1, 2, 4, 8; 16-bit scene; bicubic lightmaps; per-pixel mesh lighting; HUD filtering 0
+// original, 1 crisp, 2 smooth
+var config int TextureFilter;
+var config int AntiAliasing;
+var config int DeepColor;
+var config int SmoothLightmaps;
+var config int PixelLighting;
+var config int SmoothHUD;
 
 defaultproperties
 {
@@ -20,4 +29,10 @@ defaultproperties
 	FrameLimit=0
 	OutputRate=0
 	MouseDPI=800
+	TextureFilter=5
+	AntiAliasing=4
+	DeepColor=1
+	SmoothLightmaps=1
+	PixelLighting=1
+	SmoothHUD=2
 }

@@ -75,6 +75,13 @@ fn main() {
     let (game, map) = (&game, &map);
     let flag = |f: &str| args.iter().any(|a| a == f);
     let value = |f: &str| args.iter().position(|a| a == f).and_then(|i| args.get(i + 1)).cloned();
+    // `--export-textures <folder>`: every texture of the game as PNG, named as the mods folder expects
+    if let Some(out) = value("--export-textures") {
+        match dx_play::mods::export_textures(Path::new(game), Path::new(&out)) {
+            Ok(n) => return println!("{n} textures written to {out} (as Textures/<Package>/<Group>/<Name>.png)"),
+            Err(e) => fatal(&format!("error: {e}"), 1),
+        }
+    }
     let mut session = match Session::open(Path::new(game), map) {
         Ok(s) => s,
         Err(e) => fatal(&format!("error: {e}"), 1),
@@ -96,6 +103,8 @@ fn main() {
     }
     session.show_markers = flag("--markers");
     session.lightmaps = !flag("--nolight");
+    // the player's picture options in a window; headless pictures draw as the original unless `--enhanced`
+    session.settings_quality = !flag("--headless") || flag("--enhanced");
     if let Some(b) = value("--brightness").and_then(|v| v.parse().ok()) {
         session.brightness = b;
         session.brightness_fixed = true;
@@ -428,6 +437,7 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
             if now.vsync != settings.vsync {
                 renderer.set_vsync(dx_vk::present::VSync::from_setting(now.vsync)).map_err(|e| e.to_string())?;
             }
+            session.follow_quality(&mut renderer)?;
             settings = now;
         }
         // the frame rate limit: Auto is 3 below the display's refresh rate (inside a FreeSync/G-Sync range)

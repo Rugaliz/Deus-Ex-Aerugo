@@ -19,7 +19,58 @@ pub use ash;
 use ash::vk;
 use std::ffi::{c_char, CStr};
 
+/// The scene target's format as the original draws (8 bits per channel); `Quality::deep_color` uses `DEEP_COLOR_FORMAT`.
 pub const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
+/// 16 bits per channel, still clamped to 0..1 like the original's frame buffer (blends saturate the same way).
+pub const DEEP_COLOR_FORMAT: vk::Format = vk::Format::R16G16B16A16_UNORM;
+
+/// Picture options over the original's look (the port's settings menu). `Quality::ORIGINAL` draws as Deus Ex does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quality {
+    /// Texture filtering: 0 the original's (bilinear, nearest mip level, LOD bias -0.5), 1 trilinear, 2..=5
+    /// trilinear with 2x, 4x, 8x, 16x anisotropy.
+    pub filter: u8,
+    /// Multisampling: 1 (off), 2, 4 or 8 samples, with alpha-to-coverage for masked textures.
+    pub msaa: u32,
+    /// The window system's 2D art (HUD, menus) when scaled: 0 as the original (point sampling where it asks for it),
+    /// 1 crisp (sharp bilinear: texels stay sharp, only their edges are smoothed), 2 smooth (bilinear).
+    pub ui_filter: u8,
+    /// 16 bits per channel in the scene, dithered when shown: no banding in fog and dark gradients.
+    pub deep_color: bool,
+    /// Lightmaps sampled bicubic (smooth shadow edges) instead of bilinear.
+    pub smooth_lightmaps: bool,
+    /// Meshes lit per pixel from the actor's light list instead of per vertex.
+    pub pixel_lighting: bool,
+}
+
+/// Specialization constants of the scene's fragment shaders: 0 `A2C` (masked texels by alpha-to-coverage: the opaque
+/// pipelines with multisampling), 1 `DEEP` (16-bit scene: no 8-bit frame-buffer rounding), 2 `SMOOTH_LM` (bicubic
+/// lightmaps), 3 `PIXEL_LIGHT` (meshes lit per pixel). A shader declares the ones it uses.
+pub const SCENE_SPEC: [vk::SpecializationMapEntry; 4] = [
+    vk::SpecializationMapEntry { constant_id: 0, offset: 0, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 1, offset: 4, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 2, offset: 8, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 3, offset: 12, size: 4 },
+];
+
+/// The specialization data for `SCENE_SPEC` (`map`) from the picture options; `a2c` for an opaque pipeline.
+pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 16] {
+    let mut d = [0u8; 16];
+    for (i, on) in [a2c && q.msaa > 1, q.deep_color, q.smooth_lightmaps, q.pixel_lighting].into_iter().enumerate() {
+        d[i * 4..i * 4 + 4].copy_from_slice(&(on as u32).to_ne_bytes());
+    }
+    d
+}
+
+impl Quality {
+    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, ui_filter: 0, deep_color: false, smooth_lightmaps: false, pixel_lighting: false };
+}
+
+impl Default for Quality {
+    fn default() -> Quality {
+        Quality::ORIGINAL
+    }
+}
 /// Depth with a stencil (the stencil marks where mirror surfaces are visible, so reflections are drawn only there).
 pub const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT_S8_UINT;
 const DEPTH_ASPECTS: vk::ImageAspectFlags = vk::ImageAspectFlags::from_raw(vk::ImageAspectFlags::DEPTH.as_raw() | vk::ImageAspectFlags::STENCIL.as_raw());
@@ -111,6 +162,13 @@ pub struct Context {
     memory_budget: bool,
     /// Nanoseconds per timestamp tick.
     pub timestamp_period: f32,
+    /// The picture options in effect (`set_quality`), already limited to what the device can do.
+    quality: std::cell::Cell<Quality>,
+    /// The device's largest anisotropy (1 without the feature), the sample counts its colour and depth targets both
+    /// take, and whether `DEEP_COLOR_FORMAT` can be a blended colour attachment.
+    max_anisotropy: f32,
+    sample_counts: vk::SampleCountFlags,
+    deep_color_ok: bool,
 }
 
 unsafe extern "system" fn debug_callback(
@@ -197,6 +255,13 @@ impl Context {
             let priorities = [1.0f32];
             let queue_info = [vk::DeviceQueueCreateInfo::default().queue_family_index(queue_family).queue_priorities(&priorities)];
             let mut f13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true).synchronization2(true).shader_demote_to_helper_invocation(true);
+            // anisotropic filtering, multisampling and the 16-bit target when the device has them (picture options)
+            let feats = instance.get_physical_device_features(physical);
+            let max_anisotropy = if feats.sampler_anisotropy == vk::TRUE { props.limits.max_sampler_anisotropy } else { 1.0 };
+            let sample_counts = props.limits.framebuffer_color_sample_counts & props.limits.framebuffer_depth_sample_counts & props.limits.framebuffer_stencil_sample_counts;
+            let deep = instance.get_physical_device_format_properties(physical, DEEP_COLOR_FORMAT).optimal_tiling_features;
+            let deep_color_ok = deep.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR | vk::FormatFeatureFlags::TRANSFER_SRC);
+            let enabled_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(feats.sampler_anisotropy == vk::TRUE);
             // the memory budget (what this process uses of each heap) when the driver has it: for measurements
             let available = instance.enumerate_device_extension_properties(physical)?;
             let has = |name: &CStr| available.iter().any(|e| e.extension_name_as_c_str().map(|n| n == name).unwrap_or(false));
@@ -211,6 +276,7 @@ impl Context {
             let dev_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_info)
                 .enabled_extension_names(&dev_exts)
+                .enabled_features(&enabled_features)
                 .push_next(&mut f13);
             let device = instance.create_device(physical, &dev_info, None)?;
             let queue = device.get_device_queue(queue_family, 0);
@@ -222,8 +288,74 @@ impl Context {
             )?;
             let mem_props = instance.get_physical_device_memory_properties(physical);
             let timestamp_period = props.limits.timestamp_period;
-            Ok(Context { entry, instance, physical, device, queue, queue_family, pool, mem_props, debug, device_name, memory_budget, timestamp_period })
+            Ok(Context {
+                entry,
+                instance,
+                physical,
+                device,
+                queue,
+                queue_family,
+                pool,
+                mem_props,
+                debug,
+                device_name,
+                memory_budget,
+                timestamp_period,
+                quality: std::cell::Cell::new(Quality::ORIGINAL),
+                max_anisotropy,
+                sample_counts,
+                deep_color_ok,
+            })
         }
+    }
+
+    /// The picture options in effect.
+    pub fn quality(&self) -> Quality {
+        self.quality.get()
+    }
+
+    /// Sets the picture options, limited to what the device can do; returns what is in effect. Samplers, pipelines and
+    /// targets read them when they are made, so the renderer remakes them after a change (`Renderer::set_quality`).
+    pub fn set_quality(&self, mut q: Quality) -> Quality {
+        q.msaa = [8u32, 4, 2, 1].into_iter().find(|&n| n <= q.msaa.max(1) && self.sample_counts.contains(vk::SampleCountFlags::from_raw(n))).unwrap_or(1);
+        q.deep_color &= self.deep_color_ok;
+        q.filter = q.filter.min(5);
+        q.ui_filter = q.ui_filter.min(2);
+        self.quality.set(q);
+        q
+    }
+
+    /// The scene target's colour format.
+    pub fn color_format(&self) -> vk::Format {
+        if self.quality.get().deep_color {
+            DEEP_COLOR_FORMAT
+        } else {
+            COLOR_FORMAT
+        }
+    }
+
+    /// The scene's samples per pixel.
+    pub fn samples(&self) -> vk::SampleCountFlags {
+        vk::SampleCountFlags::from_raw(self.quality.get().msaa.max(1))
+    }
+
+    /// The sampler of textures drawn on the world and meshes: the original's (`MIP_MODE`, `MIP_LOD_BIAS`) or trilinear
+    /// with the chosen anisotropy. `nearest`: point sampling (`PF_NoSmooth`) for magnify and minify.
+    pub fn texture_sampler_info(&self, nearest: bool) -> vk::SamplerCreateInfo<'static> {
+        let q = self.quality.get();
+        let filter = if nearest { vk::Filter::NEAREST } else { vk::Filter::LINEAR };
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(filter)
+            .min_filter(filter)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .max_lod(vk::LOD_CLAMP_NONE);
+        if q.filter == 0 {
+            return info.mipmap_mode(MIP_MODE).mip_lod_bias(MIP_LOD_BIAS);
+        }
+        let aniso = if q.filter >= 2 { (1u32 << (q.filter - 1)) as f32 } else { 1.0 }.min(self.max_anisotropy);
+        info.mipmap_mode(vk::SamplerMipmapMode::LINEAR).anisotropy_enable(aniso > 1.0 && !nearest).max_anisotropy(aniso.max(1.0))
     }
 
     /// Bytes this process uses of the device-local heaps, and their budget (`VK_EXT_memory_budget`); `None` without it.
@@ -327,17 +459,23 @@ impl Drop for Context {
 pub struct Offscreen {
     pub width: u32,
     pub height: u32,
+    /// The picture: what is shown, read back and copied (with multisampling, the samples resolved into it).
     pub color: vk::Image,
     pub color_view: vk::ImageView,
     color_mem: vk::DeviceMemory,
     pub depth: vk::Image,
     pub depth_view: vk::ImageView,
     depth_mem: vk::DeviceMemory,
+    /// With multisampling: the multisampled colour image drawn into (resolved into `color` when rendering ends).
+    msaa: Option<(vk::Image, vk::ImageView, vk::DeviceMemory)>,
+    /// The colour format (`Context::color_format`) and its bytes per pixel.
+    pub format: vk::Format,
 }
 
 impl Offscreen {
     pub fn new(cx: &Context, width: u32, height: u32) -> Result<Offscreen> {
-        let make = |format, usage, aspect| -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+        let samples = cx.samples();
+        let make = |format, usage, aspect, samples| -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
             unsafe {
                 let img = cx.device.create_image(
                     &vk::ImageCreateInfo::default()
@@ -346,7 +484,7 @@ impl Offscreen {
                         .extent(vk::Extent3D { width, height, depth: 1 })
                         .mip_levels(1)
                         .array_layers(1)
-                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .samples(samples)
                         .tiling(vk::ImageTiling::OPTIMAL)
                         .usage(usage)
                         .initial_layout(vk::ImageLayout::UNDEFINED),
@@ -369,11 +507,30 @@ impl Offscreen {
                 Ok((img, mem, view))
             }
         };
-        let (color, color_mem, color_view) =
-            make(COLOR_FORMAT, vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED, vk::ImageAspectFlags::COLOR)?;
-        let (depth, depth_mem, depth_view) =
-            make(DEPTH_FORMAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, DEPTH_ASPECTS)?;
-        Ok(Offscreen { width, height, color, color_view, color_mem, depth, depth_view, depth_mem })
+        let format = cx.color_format();
+        let (color, color_mem, color_view) = make(
+            format,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageAspectFlags::COLOR,
+            vk::SampleCountFlags::TYPE_1,
+        )?;
+        let (depth, depth_mem, depth_view) = make(DEPTH_FORMAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, DEPTH_ASPECTS, samples)?;
+        let msaa = if samples != vk::SampleCountFlags::TYPE_1 {
+            let (img, mem, view) = make(format, vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT, vk::ImageAspectFlags::COLOR, samples)?;
+            Some((img, view, mem))
+        } else {
+            None
+        };
+        Ok(Offscreen { width, height, color, color_view, color_mem, depth, depth_view, depth_mem, msaa, format })
+    }
+
+    /// Bytes per pixel of the colour image.
+    fn pixel_bytes(&self) -> usize {
+        if self.format == DEEP_COLOR_FORMAT {
+            8
+        } else {
+            4
+        }
     }
 
     pub fn extent(&self) -> vk::Extent2D {
@@ -392,7 +549,7 @@ impl Offscreen {
                 .dst_access_mask(dst_access)
                 .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(aspect).level_count(1).layer_count(1))
         };
-        let barriers = [
+        let mut barriers = vec![
             barrier(
                 self.color,
                 vk::ImageAspectFlags::COLOR,
@@ -408,12 +565,23 @@ impl Offscreen {
                 vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ),
         ];
-        let color_att = [vk::RenderingAttachmentInfo::default()
+        let mut color_att = vk::RenderingAttachmentInfo::default()
             .image_view(self.color_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: clear } })];
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: clear } });
+        // multisampled: drawn into the samples, averaged into the picture when rendering ends
+        if let Some((img, view, _)) = self.msaa {
+            barriers.push(barrier(img, vk::ImageAspectFlags::COLOR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE));
+            color_att = color_att
+                .image_view(view)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+                .resolve_image_view(self.color_view)
+                .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        }
+        let color_att = [color_att];
         let depth_att = vk::RenderingAttachmentInfo::default()
             .image_view(self.depth_view)
             .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
@@ -525,21 +693,25 @@ impl Offscreen {
     /// A host-visible buffer sized for the colour image.
     pub fn readback_buffer(&self, cx: &Context) -> Result<Buffer> {
         cx.create_buffer(
-            self.width as u64 * self.height as u64 * 4,
+            self.width as u64 * self.height as u64 * self.pixel_bytes() as u64,
             vk::BufferUsageFlags::TRANSFER_DST,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )
     }
 
+    /// The read-back picture as RGBA8 (a 16-bit one rounded to 8 bits).
     pub fn read_pixels(&self, cx: &Context, buf: &Buffer) -> Result<Vec<u8>> {
-        let n = (self.width * self.height * 4) as usize;
-        let mut out = vec![0u8; n];
+        let n = (self.width * self.height) as usize * self.pixel_bytes();
+        let mut raw = vec![0u8; n];
         unsafe {
             let p = cx.device.map_memory(buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *const u8;
-            std::ptr::copy_nonoverlapping(p, out.as_mut_ptr(), n);
+            std::ptr::copy_nonoverlapping(p, raw.as_mut_ptr(), n);
             cx.device.unmap_memory(buf.memory);
         }
-        Ok(out)
+        if self.pixel_bytes() == 8 {
+            return Ok(raw.chunks_exact(2).map(|c| ((u16::from_le_bytes([c[0], c[1]]) as u32 * 255 + 32767) / 65535) as u8).collect());
+        }
+        Ok(raw)
     }
 
     pub fn destroy(self, cx: &Context) {
@@ -550,6 +722,11 @@ impl Offscreen {
             cx.device.destroy_image_view(self.depth_view, None);
             cx.device.destroy_image(self.depth, None);
             cx.device.free_memory(self.depth_mem, None);
+            if let Some((img, view, mem)) = self.msaa {
+                cx.device.destroy_image_view(view, None);
+                cx.device.destroy_image(img, None);
+                cx.device.free_memory(mem, None);
+            }
         }
     }
 }
@@ -590,13 +767,13 @@ impl TrianglePipeline {
             let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
             let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
             let raster = vk::PipelineRasterizationStateCreateInfo::default().polygon_mode(vk::PolygonMode::FILL).cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
-            let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples());
             let ds = vk::PipelineDepthStencilStateCreateInfo::default().depth_test_enable(true).depth_write_enable(true).depth_compare_op(vk::CompareOp::LESS);
             let blend_att = [vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA)];
             let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_att);
             let dyn_states = crate::SCENE_DYNAMIC_STATES;
             let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
-            let color_formats = [COLOR_FORMAT];
+            let color_formats = [cx.color_format()];
             let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats).depth_attachment_format(DEPTH_FORMAT).stencil_attachment_format(DEPTH_FORMAT);
             let info = vk::GraphicsPipelineCreateInfo::default()
                 .stages(&stages)

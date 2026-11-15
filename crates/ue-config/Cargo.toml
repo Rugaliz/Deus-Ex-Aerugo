@@ -6,3 +6,4 @@ license.workspace = true
 description = "Ini files (configuration) and .int files (localised text) of the engine, with a per-user layer that is the only thing ever written"
 
 [dependencies]
+ue-package = { path = "../ue-package" }

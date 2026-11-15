@@ -4,7 +4,7 @@
 //! decals are drawn from push constants and the per-frame slot buffer.
 use crate::lodmesh::{self, MeshActor, MeshLights, MeshView, PF_ENVIRONMENT, PF_MASKED, PF_MODULATED, PF_NO_SMOOTH, PF_TRANSLUCENT};
 use crate::texture::{GpuTexture, Staging};
-use crate::{Buffer, Context, Result, COLOR_FORMAT, DEPTH_FORMAT};
+use crate::{Buffer, Context, Result, DEPTH_FORMAT};
 use ash::vk;
 use dx_soft::mesh::MeshData;
 use dx_soft::{ActorDraw, Camera, MapView};
@@ -28,6 +28,27 @@ struct LodVertex {
     color: [f32; 3],
     /// D3D's specular colour: the vertex fog, added after texturing.
     fog: [f32; 3],
+    /// The unit normal, and the first vec4 of the actor's light list in the slot buffer when this corner is lit per
+    /// pixel (`Quality::pixel_lighting`), else `NO_LIGHTS` (the vertex colour as it is).
+    normal: [f32; 3],
+    light: u32,
+}
+
+/// `LodVertex::light` of a corner drawn with its own colour.
+const NO_LIGHTS: u32 = u32::MAX;
+
+/// Copies `v` into the per-frame slot buffer at `cursor` (in slots); returns its first vec4's index, `None` when the
+/// frame's slots are used up.
+fn push_slots(cursor: &mut usize, ptr: *mut [f32; 4], v: &[[f32; 4]]) -> Option<u32> {
+    let slots = v.len().div_ceil(SLOT_VEC4S);
+    if *cursor + slots > MAX_SLOTS {
+        return None;
+    }
+    let first = *cursor * SLOT_VEC4S;
+    *cursor += slots;
+    // SAFETY: the mapped slot buffer holds MAX_SLOTS * SLOT_VEC4S vec4s; this range is inside it
+    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), ptr.add(first), v.len()) };
+    Some(first as u32)
 }
 
 /// One layer of a surface's detail texture as D3DDrv draws it (`DrawComplexSurface`'s detail pass): a triangle fan of
@@ -244,27 +265,11 @@ impl ActorRenderer {
     pub fn new(cx: &Context) -> Result<ActorRenderer> {
         unsafe {
             let sampler = cx.device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::LINEAR)
-                    .min_filter(vk::Filter::LINEAR)
-                    .mipmap_mode(crate::MIP_MODE)
-                    .mip_lod_bias(crate::MIP_LOD_BIAS)
-                    .address_mode_u(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_v(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_w(vk::SamplerAddressMode::REPEAT)
-                    .max_lod(vk::LOD_CLAMP_NONE),
+                &cx.texture_sampler_info(false),
                 None,
             )?;
             let sampler_nearest = cx.device.create_sampler(
-                &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::NEAREST)
-                    .min_filter(vk::Filter::NEAREST)
-                    .mipmap_mode(crate::MIP_MODE)
-                    .mip_lod_bias(crate::MIP_LOD_BIAS)
-                    .address_mode_u(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_v(vk::SamplerAddressMode::REPEAT)
-                    .address_mode_w(vk::SamplerAddressMode::REPEAT)
-                    .max_lod(vk::LOD_CLAMP_NONE),
+                &cx.texture_sampler_info(true),
                 None,
             )?;
             let tex_b = [vk::DescriptorSetLayoutBinding::default()
@@ -288,7 +293,7 @@ impl ActorRenderer {
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX)];
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)];
             let light_set_layout = cx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&light_b), None)?;
             let light_sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1)];
             let light_pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&light_sizes), None)?;
@@ -308,7 +313,8 @@ impl ActorRenderer {
             let lod_push = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(std::mem::size_of::<LodPush>() as u32)];
-            let lod_sets = [tex_set_layout];
+            // set 1: the slot buffer (light lists for per-pixel lighting)
+            let lod_sets = [tex_set_layout, light_set_layout];
             let lod_layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&lod_sets).push_constant_ranges(&lod_push), None)?;
             let vs = cx.shader_module(LODMESH_VERT)?;
             let fs = cx.shader_module(LODMESH_FRAG)?;
@@ -319,18 +325,26 @@ impl ActorRenderer {
             let sprite_layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&sprite_set_layouts).push_constant_ranges(&sprite_push), None)?;
             let svs = cx.shader_module(SPRITE_VERT)?;
             let sfs = cx.shader_module(SPRITE_FRAG)?;
+            let q = cx.quality();
+            let spec_map = crate::SCENE_SPEC;
+            let (data, data_a2c) = (crate::scene_spec_data(q, false), crate::scene_spec_data(q, true));
+            let spec = vk::SpecializationInfo::default().map_entries(&spec_map).data(&data);
+            let spec_a2c = vk::SpecializationInfo::default().map_entries(&spec_map).data(&data_a2c);
             let make = |sprite: bool, blend: Option<(vk::BlendFactor, vk::BlendFactor)>| -> Result<vk::Pipeline> {
                 let (vs, fs, layout) = if sprite { (svs, sfs, sprite_layout) } else { (vs, fs, lod_layout) };
-                let stages = [
-                    vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vs).name(c"main"),
-                    vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(fs).name(c"main"),
-                ];
+                // the picture options as specialization constants; opaque draws with multisampling also draw masked
+                // texels by alpha-to-coverage (`A2C` in the shaders)
+                let a2c = blend.is_none() && q.msaa > 1;
+                let frag = vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(fs).name(c"main").specialization_info(if a2c { &spec_a2c } else { &spec });
+                let stages = [vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vs).name(c"main"), frag];
                 let bindings = [vk::VertexInputBindingDescription::default().stride(std::mem::size_of::<LodVertex>() as u32).input_rate(vk::VertexInputRate::VERTEX)];
                 let attrs = [
                     vk::VertexInputAttributeDescription::default().location(0).format(vk::Format::R32G32B32_SFLOAT).offset(0),
                     vk::VertexInputAttributeDescription::default().location(1).format(vk::Format::R32G32_SFLOAT).offset(12),
                     vk::VertexInputAttributeDescription::default().location(2).format(vk::Format::R32G32B32_SFLOAT).offset(20),
                     vk::VertexInputAttributeDescription::default().location(3).format(vk::Format::R32G32B32_SFLOAT).offset(32),
+                    vk::VertexInputAttributeDescription::default().location(4).format(vk::Format::R32G32B32_SFLOAT).offset(44),
+                    vk::VertexInputAttributeDescription::default().location(5).format(vk::Format::R32_UINT).offset(56),
                 ];
                 let vertex_input = if sprite {
                     vk::PipelineVertexInputStateCreateInfo::default()
@@ -340,7 +354,7 @@ impl ActorRenderer {
                 let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
                 let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
                 let raster = vk::PipelineRasterizationStateCreateInfo::default().polygon_mode(vk::PolygonMode::FILL).cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
-                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples()).alpha_to_coverage_enable(a2c);
                 let ds = vk::PipelineDepthStencilStateCreateInfo::default().depth_test_enable(true).depth_write_enable(blend.is_none()).depth_compare_op(vk::CompareOp::LESS);
                 let mut att = vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA);
                 if let Some((src, dst)) = blend {
@@ -357,7 +371,7 @@ impl ActorRenderer {
                 let blend_state = vk::PipelineColorBlendStateCreateInfo::default().attachments(&atts);
                 let dyn_states = crate::SCENE_DYNAMIC_STATES;
                 let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
-                let color_formats = [COLOR_FORMAT];
+                let color_formats = [cx.color_format()];
                 let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats).depth_attachment_format(DEPTH_FORMAT).stencil_attachment_format(DEPTH_FORMAT);
                 let info = vk::GraphicsPipelineCreateInfo::default()
                     .stages(&stages)
@@ -390,6 +404,8 @@ impl ActorRenderer {
                     vk::VertexInputAttributeDescription::default().location(1).format(vk::Format::R32G32_SFLOAT).offset(12),
                     vk::VertexInputAttributeDescription::default().location(2).format(vk::Format::R32G32B32_SFLOAT).offset(20),
                     vk::VertexInputAttributeDescription::default().location(3).format(vk::Format::R32G32B32_SFLOAT).offset(32),
+                    vk::VertexInputAttributeDescription::default().location(4).format(vk::Format::R32G32B32_SFLOAT).offset(44),
+                    vk::VertexInputAttributeDescription::default().location(5).format(vk::Format::R32_UINT).offset(56),
                 ];
                 let vertex_input = vk::PipelineVertexInputStateCreateInfo::default().vertex_binding_descriptions(&bindings).vertex_attribute_descriptions(&attrs);
                 let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -401,7 +417,7 @@ impl ActorRenderer {
                     .depth_bias_enable(true)
                     .depth_bias_constant_factor(-15.0)
                     .depth_bias_slope_factor(-1.0);
-                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples());
                 let ds = vk::PipelineDepthStencilStateCreateInfo::default().depth_test_enable(true).depth_write_enable(false).depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
                 let att = vk::PipelineColorBlendAttachmentState::default()
                     .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -416,7 +432,7 @@ impl ActorRenderer {
                 let blend_state = vk::PipelineColorBlendStateCreateInfo::default().attachments(&atts);
                 let dyn_states = crate::SCENE_DYNAMIC_STATES;
                 let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
-                let color_formats = [COLOR_FORMAT];
+                let color_formats = [cx.color_format()];
                 let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats).depth_attachment_format(DEPTH_FORMAT).stencil_attachment_format(DEPTH_FORMAT);
                 let info = vk::GraphicsPipelineCreateInfo::default()
                     .stages(&stages)
@@ -451,7 +467,7 @@ impl ActorRenderer {
                 let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
                 let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
                 let raster = vk::PipelineRasterizationStateCreateInfo::default().polygon_mode(vk::PolygonMode::FILL).cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
-                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+                let ms = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(cx.samples());
                 let ds = vk::PipelineDepthStencilStateCreateInfo::default().depth_test_enable(true).depth_write_enable(false).depth_compare_op(vk::CompareOp::LESS);
                 let att = vk::PipelineColorBlendAttachmentState::default()
                     .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -466,7 +482,7 @@ impl ActorRenderer {
                 let blend_state = vk::PipelineColorBlendStateCreateInfo::default().attachments(&atts);
                 let dyn_states = crate::SCENE_DYNAMIC_STATES;
                 let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
-                let color_formats = [COLOR_FORMAT];
+                let color_formats = [cx.color_format()];
                 let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats).depth_attachment_format(DEPTH_FORMAT).stencil_attachment_format(DEPTH_FORMAT);
                 let info = vk::GraphicsPipelineCreateInfo::default()
                     .stages(&stages)
@@ -555,7 +571,7 @@ impl ActorRenderer {
                     &[],
                 );
             }
-            Ok(Some(Tex { _texture: texture, set: sets[0], set_nearest: sets[1], size: (mips[0].0, mips[0].1), style, masked: view.texture_masked_by_path(path), dynamic }))
+            Ok(Some(Tex { _texture: texture, set: sets[0], set_nearest: sets[1], size: view.texture_size_by_path(path).unwrap_or((mips[0].0, mips[0].1)), style, masked: view.texture_masked_by_path(path), dynamic }))
         }
     }
 
@@ -801,6 +817,19 @@ impl ActorRenderer {
         } else {
             lodmesh::build(lod, &world, view, &actor, lights.as_ref())
         };
+        // per-pixel lighting: the actor's light list in the slot buffer (header: ambient and scale, eye and count;
+        // then position and 1/radius, colour for each light)
+        let light_list = match (&lights, cx.quality().pixel_lighting) {
+            (Some(l), true) => {
+                let mut v: Vec<[f32; 4]> = vec![[l.ambient[0], l.ambient[1], l.ambient[2], l.scale], [view.eye[0], view.eye[1], view.eye[2], l.lights.len() as f32]];
+                for &(p, c, inv_r) in &l.lights {
+                    v.push([p[0], p[1], p[2], inv_r]);
+                    v.push([c[0], c[1], c[2], 0.0]);
+                }
+                push_slots(&mut self.light_cursor, self.light_ptr, &v)
+            }
+            _ => None,
+        };
         // each triangle's texture and blend, then runs of equal ones
         let mut runs: Vec<(vk::DescriptorSet, Kind, bool, usize, usize)> = Vec::new();
         let mut verts: Vec<LodVertex> = Vec::with_capacity(tris.len() * 3);
@@ -820,7 +849,11 @@ impl ActorRenderer {
             for c in &t.corners {
                 // modulated faces get a white diffuse colour (`DrawGouraudPolygon`)
                 let color = if kind == Kind::Modulated { [1.0; 3] } else { c.color };
-                verts.push(LodVertex { pos: c.pos, uv: c.uv, color, fog: c.fog });
+                let light = match light_list {
+                    Some(at) if c.lit && kind != Kind::Modulated => at,
+                    _ => NO_LIGHTS,
+                };
+                verts.push(LodVertex { pos: c.pos, uv: c.uv, color, fog: c.fog, normal: c.normal, light });
             }
             match runs.last_mut() {
                 Some(r) if r.0 == set && r.1 == kind && r.2 == masked => r.4 += 3,
@@ -842,7 +875,7 @@ impl ActorRenderer {
                     Kind::Modulated => self.lod_modulated,
                 };
                 cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
-                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set], &[]);
+                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set, self.light_set], &[]);
                 let push = LodPush { vp: *vp, params: [masked as u32, 0, 0, 0], clip: self.clip };
                 let bytes = std::slice::from_raw_parts(&push as *const LodPush as *const u8, std::mem::size_of::<LodPush>());
                 cx.device.cmd_push_constants(cb, self.lod_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
@@ -879,7 +912,7 @@ impl ActorRenderer {
             // D3D's triangle fan
             for k in 1..p.points.len().saturating_sub(1) {
                 for &(pos, uv, a) in [&p.points[0], &p.points[k], &p.points[k + 1]] {
-                    verts.push(LodVertex { pos, uv, color: [a, a, a], fog: [0.0; 3] });
+                    verts.push(LodVertex { pos, uv, color: [a, a, a], fog: [0.0; 3], normal: [0.0; 3], light: NO_LIGHTS });
                 }
             }
             let n = verts.len() - first;
@@ -904,7 +937,7 @@ impl ActorRenderer {
             let bytes = std::slice::from_raw_parts(&push as *const LodPush as *const u8, std::mem::size_of::<LodPush>());
             cx.device.cmd_push_constants(cb, self.lod_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
             for (set, first, count) in runs {
-                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set], &[]);
+                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set, self.light_set], &[]);
                 cx.device.cmd_draw(cb, count as u32, 1, (base + first) as u32, 0);
             }
         }

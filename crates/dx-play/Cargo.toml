@@ -17,6 +17,7 @@ dx-light = { path = "../dx-light" }
 dx-audio = { path = "../dx-audio" }
 ue-assets = { path = "../ue-assets" }
 ue-bsp = { path = "../ue-bsp" }
+ue-package = { path = "../ue-package" }
 sdl3 = "0.20"
 # `--bench --profile FILE`: a sampling profile of the run (timer signals, no perf events); off by default
 pprof = { version = "0.15", optional = true }
@@ -27,4 +28,4 @@ profile = ["dep:pprof"]
 static-sdl = ["sdl3/build-from-source-static", "dx-audio/static-sdl"]
 
 [dev-dependencies]
-ue-package = { path = "../ue-package" }
+zip = { version = "2", default-features = false, features = ["deflate"] }

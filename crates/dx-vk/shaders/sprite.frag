@@ -1,4 +1,6 @@
 #version 450
+// multisampled opaque pipelines: masked texels by alpha-to-coverage (`dx_vk::A2C_SPEC`)
+layout(constant_id = 0) const bool A2C = false;
 layout(push_constant) uniform Push {
     mat4 vp;
     vec4 center;
@@ -12,9 +14,14 @@ layout(location = 0) out vec4 out_color;
 void main() {
     vec4 c = texture(tex, v_uv);
     // transparent texels of masked textures are never drawn, whatever the style (the drivers alpha-test them)
-    if (c.a * 255.0 <= 127.0) discard; // D3D ALPHAFUNC GREATER, ALPHAREF 127
+    float alpha = 1.0;
+    if (A2C) {
+        // multisampled opaque sprites: the texel's alpha sharpened to about one pixel's width, as sample coverage
+        alpha = clamp((c.a - 0.5) / max(fwidth(c.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (alpha <= 0.0) discard;
+    } else if (c.a * 255.0 <= 127.0) discard; // D3D ALPHAFUNC GREATER, ALPHAREF 127
     // `DrawActorSprite`: the tile's colour is ScaleGlow on every channel, capped at 1 (a glow above 1 does not brighten)
     float g = min(pc.params.x, 1.0);
     vec3 col = pc.params.y > 1.5 ? mix(vec3(0.5), c.rgb, clamp(g, 0.0, 1.0)) : c.rgb * g;
-    out_color = vec4(min(col, vec3(1.0)), 1.0);
+    out_color = vec4(min(col, vec3(1.0)), alpha);
 }
