@@ -91,6 +91,12 @@ fn main() {
     if map == "DX" && !flag("--no-menu") && (flag("--headless") || flag("--no-logo")) {
         session.exec("ShowMainMenu");
     }
+    // `--load N`: start in saved game N of the player's save folder (`Save<NNNN>`)
+    if let Some(n) = value("--load").and_then(|v| v.parse::<i32>().ok()) {
+        if let Err(e) = session.load_game(n) {
+            fatal(&format!("error: cannot load saved game {n}: {e}"), 1);
+        }
+    }
     // continue a game saved by the original (`Save/<slot>/<map>.dxs`)
     if let Some(file) = value("--import-save") {
         match session.import_original_save(Path::new(&file)) {

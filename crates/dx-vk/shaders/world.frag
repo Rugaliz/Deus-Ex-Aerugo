@@ -1,7 +1,4 @@
-#version 460
-#ifdef RAYTRACE
-#extension GL_EXT_ray_query : require
-#endif
+#version 450
 // multisampled opaque pipelines: masked texels by alpha-to-coverage (`dx_vk::A2C_SPEC`)
 layout(constant_id = 0) const bool A2C = false;
 // 16-bit scene: no rounding to the original's 8-bit frame buffer
@@ -24,128 +21,7 @@ layout(location = 2) in vec2 v_uv;
 layout(location = 3) flat in uint v_flags;
 layout(location = 4) in vec2 v_lm;
 layout(location = 5) flat in vec3 v_ambient;
-layout(location = 6) flat in uint v_surf;
 layout(location = 0) out vec4 out_color;
-#ifdef RAYTRACE
-// the ray-traced picture options (`dx_vk::SCENE_SPEC`); `rt.rs` for the data
-layout(constant_id = 4) const bool RT_SHADOWS = false;
-layout(constant_id = 5) const bool RT_AO = false;
-layout(constant_id = 6) const bool RT_DEBUG = false;
-layout(set = 3, binding = 0) uniform accelerationStructureEXT tlas;
-struct RtLight { vec4 pos_inv_r; vec4 colour_kind; vec4 axis_cone; };
-layout(std430, set = 3, binding = 1) readonly buffer Lights { RtLight lights[]; };
-layout(std430, set = 3, binding = 2) readonly buffer Lists { uint lists[]; };
-const uint MASK_WORLD = 1u;
-const uint MASK_OBJECT = 2u;
-
-// Whether anything of `mask` lies on the segment from `o` along unit `d` up to `tmax`; the distance to it in `t`.
-bool blocked(vec3 o, vec3 d, float tmax, uint mask, out float t) {
-    rayQueryEXT q;
-    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, mask, o, 0.0, d, tmax);
-    // meshes are not opaque geometries (their own shaders skip themselves): every hit on them counts here
-    while (rayQueryProceedEXT(q)) {
-        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT) rayQueryConfirmIntersectionEXT(q);
-    }
-    bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
-    t = hit ? rayQueryGetIntersectionTEXT(q, true) : tmax;
-    return hit;
-}
-
-// A light's share of the lightmap at `p` (normal `n`), in lightmap units: FLightManager's spatial functions without the
-// shadow mask (omni: (2t^3 - 3t^2 + 1) cos(incidence), t = distance / radius; spot: times ((cos - c) / (1 - c))^2 inside
-// the cone; non-incidence: 1.02 - t), times the light's colour, at most 127/255 (the 7-bit lightmap).
-vec3 light_share(RtLight l, vec3 p, vec3 n) {
-    vec3 d = p - l.pos_inv_r.xyz;
-    float dist = length(d);
-    float t = dist * l.pos_inv_r.w;
-    if (t >= 1.0 || dist < 1e-3) return vec3(0.0);
-    float kind = l.colour_kind.w;
-    float f;
-    if (kind > 1.5) {
-        f = max(1.02 - t, 0.0);
-    } else {
-        f = (2.0 * t * t * t - 3.0 * t * t + 1.0) * abs(dot(n, d)) / dist;
-        if (kind > 0.5) {
-            float c = l.axis_cone.w;
-            float cphi = dot(l.axis_cone.xyz, d) / dist;
-            if (cphi <= c) return vec3(0.0);
-            float tt = (cphi - c) / (1.0 - c);
-            f *= tt * tt;
-        }
-    }
-    return min(f * l.colour_kind.rgb, vec3(127.0 / 255.0));
-}
-
-// How much of a light objects hide from `o`: the light taken as a disc of radius 12 facing `o`, four rays to points of
-// it (turned per pixel), the fraction blocked: soft shadow edges, wider the farther the object is from the surface.
-float object_cover(vec3 o, vec3 light, float dist) {
-    vec3 dir = (light - o) / dist;
-    vec3 a = abs(dir.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tx = normalize(cross(a, dir));
-    vec3 ty = cross(dir, tx);
-    float noise = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    float hidden = 0.0;
-    for (int k = 0; k < 4; k++) {
-        float ang = 6.2831853 * (float(k) * 0.25 + noise);
-        float rad = 12.0 * sqrt((float(k) + 0.5) / 4.0);
-        vec3 to = light + (tx * cos(ang) + ty * sin(ang)) * rad - o;
-        float d = length(to);
-        float t;
-        if (blocked(o, to / d, d - 24.0, MASK_OBJECT, t)) hidden += 0.25;
-    }
-    return hidden;
-}
-
-// Ray-traced shadows of objects (meshes, movers) on a level surface: the share of every light on the surface that an
-// object hides and the world does not (the world's own shadows are in the lightmap already). The segment stops short of
-// the light, so a lamp's own mesh does not hide it.
-vec3 object_shadow(vec3 p, vec3 n) {
-    if (v_surf == 0xffffffffu) return vec3(0.0);
-    uint at = lists[v_surf];
-    if (at == 0u) return vec3(0.0);
-    uint count = lists[at];
-    vec3 lost = vec3(0.0);
-    for (uint i = 0u; i < count; i++) {
-        RtLight l = lights[lists[at + 1u + i]];
-        if (l.colour_kind.w >= 7.5) continue;  // no object within its reach
-        vec3 share = light_share(l, p, n);
-        if (share == vec3(0.0)) continue;
-        vec3 to = l.pos_inv_r.xyz - p;
-        float dist = length(to);
-        vec3 dir = to / dist;
-        vec3 o = p + n * (dot(n, dir) < 0.0 ? -0.5 : 0.5);
-        float tmax = dist - 24.0;
-        if (tmax <= 1.0) continue;
-        // the object rays first (they only walk the few object structures); the world ray, which walks the level,
-        // only where an object hides the light
-        float cover = object_cover(o, l.pos_inv_r.xyz, dist);
-        float t;
-        if (cover > 0.0 && !blocked(o, dir, tmax, MASK_WORLD, t)) lost += share * cover;
-    }
-    return lost;
-}
-
-// Ambient occlusion: two short rays over the hemisphere of `n` (cosine weighted, turned per pixel), closer hits darker.
-float occlusion(vec3 p, vec3 n) {
-    const float R = 48.0;
-    vec3 a = abs(n.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tx = normalize(cross(a, n));
-    vec3 ty = cross(n, tx);
-    float noise = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    vec3 o = p + n * 0.5;
-    float occ = 0.0;
-    for (int i = 0; i < 2; i++) {
-        float u = (float(i) + 0.5) / 2.0;
-        float phi = 6.2831853 * (float(i) * 0.618034 + noise);
-        float r = sqrt(u);
-        vec3 d = normalize(tx * (r * cos(phi)) + ty * (r * sin(phi)) + n * sqrt(1.0 - u));
-        float t;
-        if (blocked(o, d, R, MASK_WORLD | MASK_OBJECT, t)) occ += 1.0 - t / R;
-    }
-    return 1.0 - 0.6 * occ / 2.0;
-}
-#endif
-
 // An atlas map at `pos` (texels, centres at +0.5): bilinear as the original, or a cubic B-spline from four bilinear taps
 // (the atlas keeps two replicated texels around every rectangle, so the wider footprint stays on its own surface).
 vec4 atlas(sampler2D t, vec2 pos) {
@@ -193,36 +69,13 @@ void main() {
     if ((v_flags & 2u) != 0u) {
         // Lightmap texels hold at most 127/255 per channel; cam_pos.w is the modulation factor (2: the texture is doubled).
         vec3 lm = atlas(lightmap, v_lm).rgb;
-#ifdef RAYTRACE
-        if (RT_SHADOWS) {
-            lm = max(lm - object_shadow(v_pos, normalize(v_normal)), vec3(0.0));
-        }
-#endif
         light = pc.misc.y == 1u ? min(vec3(1.0), pc.cam_pos.w * (lm + v_ambient)) : vec3(1.0);
     }
     if (pc.misc.y == 0u) {
         // Without lightmaps: orientation-based shading, same as the CPU renderer.
         light = vec3(0.55 + 0.45 * abs(dot(v_normal, vec3(0.3, 0.5, 0.8))) / (length(v_normal) * 0.99));
     }
-#ifdef RAYTRACE
-    // ambient occlusion near the eye only (it fades out by 1800 units, where it is too small to see)
-    float eye_dist = length(pc.cam_pos.xyz - v_pos);
-    if (RT_AO && (v_flags & 2u) != 0u && eye_dist < 1800.0) {
-        vec3 n = normalize(v_normal);
-        if (dot(n, pc.cam_pos.xyz - v_pos) < 0.0) n = -n;
-        light *= mix(occlusion(v_pos, n), 1.0, smoothstep(1200.0, 1800.0, eye_dist));
-    }
-#endif
     vec3 col = min(c.rgb * light, vec3(1.0));
-#ifdef RAYTRACE
-    if (RT_DEBUG) {
-        // a ray from the eye to this fragment must find no world geometry before it
-        vec3 to = v_pos - pc.cam_pos.xyz;
-        float dist = length(to);
-        float t;
-        if (dist > 8.0 && blocked(pc.cam_pos.xyz, to / dist, dist - 4.0, MASK_WORLD, t)) col = vec3(1.0, 0.0, 0.0);
-    }
-#endif
     // (a surface with a fog map gets no detail pass: DrawComplexSurface drops the detail texture then)
     if ((v_flags & 2u) != 0u && pc.misc.y == 1u && pc.misc.w != 0u) {
         // The device's fog pass over the surface just drawn (D3DDrv DrawComplexSurface: blend ONE, INVSRCALPHA, fog

@@ -1,7 +1,7 @@
 //! Ray queries for the ray-traced picture options (`Quality::rt_shadows`, `Quality::rt_ao`): acceleration structures of
 //! the world (built once per map), the movers (once each, placed every frame) and the meshes drawn (rebuilt every
-//! frame), and the per-frame data the shaders read (`RtFrame`): the top-level structure, the lights and each level
-//! surface's light list.
+//! frame), placed by a top-level structure every frame (`RtFrame`). The rays are traced by the screen-space pass of
+//! `rt_post`.
 //!
 //! Instance masks: `MASK_WORLD` for the level's geometry (whose shadows are already in the lightmaps), `MASK_OBJECT` for
 //! movers and meshes (whose shadows the original never drew).
@@ -12,26 +12,15 @@ use ash::vk;
 pub const MASK_WORLD: u8 = 1;
 pub const MASK_OBJECT: u8 = 2;
 
-/// The device's ray tracing functions and the descriptor set layout of the ray-traced shaders' data (set `RT_SET` of
-/// the world pipelines, set 2 of the mesh pipelines): 0 the top-level acceleration structure, 1 the lights, 2 the
-/// surfaces' light lists.
+/// The device's ray tracing functions.
 pub struct RtSupport {
     pub accel: ash::khr::acceleration_structure::Device,
-    pub set_layout: vk::DescriptorSetLayout,
     scratch_align: u64,
 }
 
 impl RtSupport {
     pub fn new(instance: &ash::Instance, device: &ash::Device) -> Result<RtSupport> {
-        let accel = ash::khr::acceleration_structure::Device::new(instance, device);
-        let stages = vk::ShaderStageFlags::FRAGMENT;
-        let bindings = [
-            vk::DescriptorSetLayoutBinding::default().binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).stage_flags(stages),
-            vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(stages),
-            vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(stages),
-        ];
-        let set_layout = unsafe { device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)? };
-        Ok(RtSupport { accel, set_layout, scratch_align: 256 })
+        Ok(RtSupport { accel: ash::khr::acceleration_structure::Device::new(instance, device), scratch_align: 256 })
     }
 }
 
@@ -159,10 +148,6 @@ impl Growable {
         self.buffer.as_ref().map(|b| b.1).unwrap_or(0)
     }
 
-    fn vk(&self) -> vk::Buffer {
-        self.buffer.as_ref().map(|b| b.0.buffer).unwrap_or_default()
-    }
-
     fn destroy(&mut self, cx: &Context) {
         if let Some((b, _, _)) = self.buffer.take() {
             cx.destroy_buffer(b);
@@ -170,61 +155,25 @@ impl Growable {
     }
 }
 
-/// One light as the ray-traced shaders read it (three vec4): position and `1 / radius`; colour (the lightmap's units:
-/// `light_colour`, with its brightness now) and kind (0 omni, 1 spot, 2 non-incidence); spot axis and cone cosine.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RtLight {
-    pub pos_inv_r: [f32; 4],
-    pub colour_kind: [f32; 4],
-    pub axis_cone: [f32; 4],
-}
-
-/// What the host gives the ray tracing for a frame: the lights, and per level surface drawn the lights on it (indices
-/// into `lights`). Surfaces not listed get no shadows.
-#[derive(Debug, Default, Clone)]
-pub struct RtLights {
-    pub lights: Vec<RtLight>,
-    pub surfaces: Vec<(u32, Vec<u32>)>,
-}
-
-/// The per-frame ray tracing data and its descriptor set.
+/// The per-frame acceleration structures.
 pub struct RtFrame {
-    pool: vk::DescriptorPool,
-    pub set: vk::DescriptorSet,
     mesh_verts: Growable,
     mesh_blas: Option<Accel>,
     instances: Growable,
     tlas: Option<Accel>,
     scratch: Option<(Buffer, u64)>,
-    lights: Growable,
-    lists: Growable,
 }
 
 impl RtFrame {
-    pub fn new(cx: &Context) -> Result<Option<RtFrame>> {
-        let Some(rt) = &cx.rt else { return Ok(None) };
-        unsafe {
-            let sizes = [
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(2),
-            ];
-            let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None)?;
-            let layouts = [rt.set_layout];
-            let set = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts))?[0];
-            let storage = vk::BufferUsageFlags::STORAGE_BUFFER;
-            Ok(Some(RtFrame {
-                pool,
-                set,
-                mesh_verts: Growable::new(vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR),
-                mesh_blas: None,
-                instances: Growable::new(vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR),
-                tlas: None,
-                scratch: None,
-                lights: Growable::new(storage),
-                lists: Growable::new(storage),
-            }))
-        }
+    pub fn new(cx: &Context) -> Option<RtFrame> {
+        cx.rt.as_ref()?;
+        let input = vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
+        Some(RtFrame { mesh_verts: Growable::new(input), mesh_blas: None, instances: Growable::new(input), tlas: None, scratch: None })
+    }
+
+    /// This frame's top-level structure (after `record`).
+    pub fn tlas(&self) -> Option<vk::AccelerationStructureKHR> {
+        self.tlas.as_ref().map(|a| a.handle)
     }
 
     fn ensure_scratch(&mut self, cx: &Context, rt: &RtSupport, size: u64) -> Result<u64> {
@@ -240,22 +189,21 @@ impl RtFrame {
 
     /// Records this frame's builds into `cb` (before the scene's rendering starts): the meshes' structure from
     /// `mesh_triangles` (world space, three corners each), one geometry per mesh (`mesh_parts`: first corner and corner
-    /// count; the shaders skip a mesh's own geometry by its index), the top-level structure over the world (`world`),
-    /// the movers (`movers`: structure address and placement as a row-major 3x4) and the meshes; and writes the lights.
-    /// The GPU must be done with the previous frame's data (one frame in flight).
-    #[allow(clippy::too_many_arguments)]
-    pub fn record(&mut self, cx: &Context, cb: vk::CommandBuffer, world: Option<u64>, movers: &[(u64, [[f32; 4]; 3])], mesh_triangles: &[[f32; 3]], mesh_parts: &[(u32, u32)], lights: &RtLights, surface_count: usize) -> Result<()> {
+    /// count), the top-level structure over the world (`world`),
+    /// the movers (`movers`: structure address and placement as a row-major 3x4) and the meshes. Returns whether the
+    /// top-level structure was made again (descriptors pointing at it must be rewritten). The GPU must be done with
+    /// the previous frame's data (one frame in flight).
+    pub fn record(&mut self, cx: &Context, cb: vk::CommandBuffer, world: Option<u64>, movers: &[(u64, [[f32; 4]; 3])], mesh_triangles: &[[f32; 3]], mesh_parts: &[(u32, u32)]) -> Result<bool> {
         let rt = cx.rt.as_ref().expect("ray queries");
         let mut rewrite = false;
-        // the meshes: one structure for every mesh drawn this frame (a geometry each, not opaque: the shaders confirm
-        // hits on the others), rebuilt
+        // the meshes: one structure for every mesh drawn this frame (a geometry each), rebuilt
         let mut mesh_addr = None;
         if !mesh_parts.is_empty() {
             self.mesh_verts.write(cx, mesh_triangles)?;
             let base = self.mesh_verts.address();
             let geometry: Vec<vk::AccelerationStructureGeometryKHR> = mesh_parts
                 .iter()
-                .map(|&(first, n)| triangles(base + first as u64 * 12, n, None).flags(vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION))
+                .map(|&(first, n)| triangles(base + first as u64 * 12, n, None))
                 .collect();
             let counts: Vec<u32> = mesh_parts.iter().map(|&(_, n)| n / 3).collect();
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
@@ -337,59 +285,7 @@ impl RtFrame {
         }
         // the lights and the surfaces' lists: a table of each level surface's list start (0: none), then the lists
         // (count, then light indices)
-        // lights with no mesh or mover within reach cannot cast an object's shadow: marked (kind + 8) for the shaders to
-        // skip
-        let mut spheres: Vec<([f32; 3], f32)> = mesh_parts
-            .iter()
-            .map(|&(first, n)| {
-                let pts = &mesh_triangles[first as usize..(first + n) as usize];
-                let c = pts.iter().fold([0.0f32; 3], |a, p| [a[0] + p[0], a[1] + p[1], a[2] + p[2]]).map(|v| v / pts.len().max(1) as f32);
-                let r = pts.iter().map(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt()).fold(0.0f32, f32::max);
-                (c, r)
-            })
-            .collect();
-        spheres.extend(movers.iter().map(|(_, m)| ([m[0][3], m[1][3], m[2][3]], 1024.0)));
-        let mut light_data: Vec<RtLight> = lights.lights.clone();
-        for l in &mut light_data {
-            let reach = 1.0 / l.pos_inv_r[3].max(1e-6);
-            let near = spheres.iter().any(|(c, r)| {
-                let d = ((c[0] - l.pos_inv_r[0]).powi(2) + (c[1] - l.pos_inv_r[1]).powi(2) + (c[2] - l.pos_inv_r[2]).powi(2)).sqrt();
-                d < reach + r
-            });
-            if !near {
-                l.colour_kind[3] += 8.0;
-            }
-        }
-        if light_data.is_empty() {
-            light_data.push(RtLight::default());
-        }
-        rewrite |= self.lights.write(cx, &light_data)?;
-        let mut table = vec![0u32; surface_count.max(1)];
-        for (s, list) in &lights.surfaces {
-            if (*s as usize) < table.len() && !list.is_empty() {
-                table[*s as usize] = table.len() as u32;
-                let at = table.len();
-                table.push(list.len() as u32);
-                table.extend_from_slice(list);
-                table[*s as usize] = at as u32;
-            }
-        }
-        rewrite |= self.lists.write(cx, &table)?;
-        if rewrite {
-            let handles = [self.tlas.as_ref().unwrap().handle];
-            let mut accel_info = vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&handles);
-            let lights_info = [vk::DescriptorBufferInfo::default().buffer(self.lights.vk()).range(vk::WHOLE_SIZE)];
-            let lists_info = [vk::DescriptorBufferInfo::default().buffer(self.lists.vk()).range(vk::WHOLE_SIZE)];
-            let mut accel_write = vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(0).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).push_next(&mut accel_info);
-            accel_write.descriptor_count = 1;
-            let writes = [
-                accel_write,
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lights_info),
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lists_info),
-            ];
-            unsafe { cx.device.update_descriptor_sets(&writes, &[]) };
-        }
-        Ok(())
+        Ok(rewrite)
     }
 
     pub fn destroy(mut self, cx: &Context) {
@@ -404,9 +300,6 @@ impl RtFrame {
         }
         self.mesh_verts.destroy(cx);
         self.instances.destroy(cx);
-        self.lights.destroy(cx);
-        self.lists.destroy(cx);
-        unsafe { cx.device.destroy_descriptor_pool(self.pool, None) };
     }
 }
 

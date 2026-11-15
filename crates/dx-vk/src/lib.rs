@@ -9,6 +9,7 @@ pub const MIP_LOD_BIAS: f32 = -0.5;
 
 pub mod texture;
 pub mod rt;
+pub mod rt_post;
 pub mod world;
 pub mod actors;
 pub mod lodmesh;
@@ -48,23 +49,17 @@ pub struct Quality {
 /// Specialization constants of the scene's fragment shaders: 0 `A2C` (masked texels by alpha-to-coverage: the opaque
 /// pipelines with multisampling), 1 `DEEP` (16-bit scene: no 8-bit frame-buffer rounding), 2 `SMOOTH_LM` (bicubic
 /// lightmaps), 3 `PIXEL_LIGHT` (meshes lit per pixel). A shader declares the ones it uses.
-pub const SCENE_SPEC: [vk::SpecializationMapEntry; 7] = [
+pub const SCENE_SPEC: [vk::SpecializationMapEntry; 4] = [
     vk::SpecializationMapEntry { constant_id: 0, offset: 0, size: 4 },
     vk::SpecializationMapEntry { constant_id: 1, offset: 4, size: 4 },
     vk::SpecializationMapEntry { constant_id: 2, offset: 8, size: 4 },
     vk::SpecializationMapEntry { constant_id: 3, offset: 12, size: 4 },
-    vk::SpecializationMapEntry { constant_id: 4, offset: 16, size: 4 },
-    vk::SpecializationMapEntry { constant_id: 5, offset: 20, size: 4 },
-    vk::SpecializationMapEntry { constant_id: 6, offset: 24, size: 4 },
 ];
 
-/// The specialization data for `SCENE_SPEC` (`map`) from the picture options; `a2c` for an opaque pipeline. Constants
-/// 4 `RT_SHADOWS`, 5 `RT_AO` (the ray-traced shader variants only) and 6 `RT_DEBUG` (`DX_RT_DEBUG`: world fragments a
-/// ray from the eye finds hidden behind other geometry are drawn red, to check the ray-traced scene matches the drawn one).
-pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 28] {
-    let mut d = [0u8; 28];
-    let debug = std::env::var_os("DX_RT_DEBUG").is_some_and(|v| v != "0");
-    for (i, on) in [a2c && q.msaa > 1, q.deep_color, q.smooth_lightmaps, q.pixel_lighting, q.rt_shadows, q.rt_ao, debug && q.ray_traced()].into_iter().enumerate() {
+/// The specialization data for `SCENE_SPEC` (`map`) from the picture options; `a2c` for an opaque pipeline.
+pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 16] {
+    let mut d = [0u8; 16];
+    for (i, on) in [a2c && q.msaa > 1, q.deep_color, q.smooth_lightmaps, q.pixel_lighting].into_iter().enumerate() {
         d[i * 4..i * 4 + 4].copy_from_slice(&(on as u32).to_ne_bytes());
     }
     d
@@ -112,6 +107,8 @@ pub enum Stencil {
     Incr(u32),
     /// Where the stencil holds this value, take one away (the child frame's area given back to its parent).
     Decr(u32),
+    /// Draw only where the stencil does not hold this value.
+    Outside(u32),
 }
 
 pub fn set_stencil(cx: &Context, cb: vk::CommandBuffer, mode: Stencil) {
@@ -122,6 +119,7 @@ pub fn set_stencil(cx: &Context, cb: vk::CommandBuffer, mode: Stencil) {
         Stencil::Inside(r) => (true, vk::StencilOp::KEEP, vk::CompareOp::EQUAL, r),
         Stencil::Incr(r) => (true, vk::StencilOp::INCREMENT_AND_CLAMP, vk::CompareOp::EQUAL, r),
         Stencil::Decr(r) => (true, vk::StencilOp::DECREMENT_AND_CLAMP, vk::CompareOp::EQUAL, r),
+        Stencil::Outside(r) => (true, vk::StencilOp::KEEP, vk::CompareOp::NOT_EQUAL, r),
     };
     unsafe {
         cx.device.cmd_set_stencil_test_enable(cb, enable);
@@ -505,9 +503,6 @@ impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
-            if let Some(rt) = &self.rt {
-                self.device.destroy_descriptor_set_layout(rt.set_layout, None);
-            }
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
             if let Some((loader, m)) = self.debug.take() {
@@ -533,6 +528,14 @@ pub struct Offscreen {
     msaa: Option<(vk::Image, vk::ImageView, vk::DeviceMemory)>,
     /// The colour format (`Context::color_format`) and its bytes per pixel.
     pub format: vk::Format,
+    /// With ray tracing: the scene can stop and go on (`pause`, `resume`; its attachments are kept), and its depth is
+    /// read in between (`depth_read`: the depth image itself, or with multisampling its first samples resolved into
+    /// `depth_resolve`).
+    keep: bool,
+    depth_resolve: Option<(vk::Image, vk::ImageView, vk::DeviceMemory)>,
+    pub depth_read: Option<vk::ImageView>,
+    /// The stencil of the same image, as shaders read it.
+    pub stencil_read: Option<vk::ImageView>,
 }
 
 impl Offscreen {
@@ -577,14 +580,49 @@ impl Offscreen {
             vk::ImageAspectFlags::COLOR,
             vk::SampleCountFlags::TYPE_1,
         )?;
-        let (depth, depth_mem, depth_view) = make(DEPTH_FORMAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, DEPTH_ASPECTS, samples)?;
-        let msaa = if samples != vk::SampleCountFlags::TYPE_1 {
-            let (img, mem, view) = make(format, vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT, vk::ImageAspectFlags::COLOR, samples)?;
+        let keep = cx.quality().ray_traced() && cx.rt.is_some();
+        let multi = samples != vk::SampleCountFlags::TYPE_1;
+        let depth_usage = if keep && !multi { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT };
+        let (depth, depth_mem, depth_view) = make(DEPTH_FORMAT, depth_usage, DEPTH_ASPECTS, samples)?;
+        let msaa = if multi {
+            // kept between `pause` and `resume` with ray tracing (stored), else only resolved
+            let usage = if keep { vk::ImageUsageFlags::COLOR_ATTACHMENT } else { vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT };
+            let (img, mem, view) = make(format, usage, vk::ImageAspectFlags::COLOR, samples)?;
             Some((img, view, mem))
         } else {
             None
         };
-        Ok(Offscreen { width, height, color, color_view, color_mem, depth, depth_view, depth_mem, msaa, format })
+        let depth_resolve = if keep && multi {
+            let (img, mem, view) = make(DEPTH_FORMAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED, DEPTH_ASPECTS, vk::SampleCountFlags::TYPE_1)?;
+            Some((img, view, mem))
+        } else {
+            None
+        };
+        // the depth and the stencil as shaders read them (one aspect a view)
+        let read_view = |aspect| -> Result<Option<vk::ImageView>> {
+            if !keep {
+                return Ok(None);
+            }
+            let img = depth_resolve.as_ref().map(|d| d.0).unwrap_or(depth);
+            Ok(Some(unsafe {
+                cx.device.create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .image(img)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(DEPTH_FORMAT)
+                        .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(aspect).level_count(1).layer_count(1)),
+                    None,
+                )?
+            }))
+        };
+        let depth_read = read_view(vk::ImageAspectFlags::DEPTH)?;
+        let stencil_read = read_view(vk::ImageAspectFlags::STENCIL)?;
+        Ok(Offscreen { width, height, color, color_view, color_mem, depth, depth_view, depth_mem, msaa, format, keep, depth_resolve, depth_read, stencil_read })
+    }
+
+    /// The image whose depth `depth_read` shows.
+    fn depth_read_image(&self) -> vk::Image {
+        self.depth_resolve.as_ref().map(|d| d.0).unwrap_or(self.depth)
     }
 
     /// Bytes per pixel of the colour image.
@@ -612,47 +650,60 @@ impl Offscreen {
                 .dst_access_mask(dst_access)
                 .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(aspect).level_count(1).layer_count(1))
         };
+        let depth_stages = vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
         let mut barriers = vec![
-            barrier(
-                self.color,
-                vk::ImageAspectFlags::COLOR,
-                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            ),
-            barrier(
-                self.depth,
-                DEPTH_ASPECTS,
-                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            ),
+            barrier(self.color, vk::ImageAspectFlags::COLOR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE),
+            barrier(self.depth, DEPTH_ASPECTS, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth_stages, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE),
         ];
+        if let Some((img, _, _)) = self.msaa {
+            barriers.push(barrier(img, vk::ImageAspectFlags::COLOR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE));
+        }
+        if let Some((img, _, _)) = self.depth_resolve {
+            barriers.push(barrier(img, DEPTH_ASPECTS, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL, depth_stages, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE));
+        }
+        unsafe { cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&barriers)) };
+        self.start(cx, cb, Some(clear));
+    }
+
+    /// Starts dynamic rendering into the attachments (in their attachment layouts): clearing them, or going on with what
+    /// they hold (`None`, after `pause`: the frame's last part, whose samples and depth are not kept and whose depth is
+    /// not resolved again).
+    fn start(&self, cx: &Context, cb: vk::CommandBuffer, clear: Option<[f32; 4]>) {
+        let load = if clear.is_some() { vk::AttachmentLoadOp::CLEAR } else { vk::AttachmentLoadOp::LOAD };
+        let keep = self.keep && clear.is_some();
+        // the part after a pause starts with depth and stencil cleared (what follows the screen passes: the coronas,
+        // which test no depth, then a depth clear before the overlays); with multisampling, the samples' depth is
+        // never kept (its first samples are resolved for the screen passes)
+        let depth_load = if self.keep && clear.is_none() { vk::AttachmentLoadOp::CLEAR } else { load };
+        let depth_keep = keep && self.depth_resolve.is_none();
         let mut color_att = vk::RenderingAttachmentInfo::default()
             .image_view(self.color_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(load)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: clear } });
-        // multisampled: drawn into the samples, averaged into the picture when rendering ends
-        if let Some((img, view, _)) = self.msaa {
-            barriers.push(barrier(img, vk::ImageAspectFlags::COLOR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE));
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: clear.unwrap_or([0.0; 4]) } });
+        // multisampled: drawn into the samples, averaged into the picture when rendering ends (the samples kept when
+        // the scene goes on after a pause)
+        if let Some((_, view, _)) = self.msaa {
             color_att = color_att
                 .image_view(view)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .store_op(if keep { vk::AttachmentStoreOp::STORE } else { vk::AttachmentStoreOp::DONT_CARE })
                 .resolve_mode(vk::ResolveModeFlags::AVERAGE)
                 .resolve_image_view(self.color_view)
                 .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         }
         let color_att = [color_att];
-        let depth_att = vk::RenderingAttachmentInfo::default()
+        let mut depth_att = vk::RenderingAttachmentInfo::default()
             .image_view(self.depth_view)
             .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .load_op(depth_load)
+            .store_op(if depth_keep { vk::AttachmentStoreOp::STORE } else { vk::AttachmentStoreOp::DONT_CARE })
             .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } });
+        // with multisampling and ray tracing: the first samples of depth and stencil resolved for the screen passes
+        if let Some((_, view, _)) = self.depth_resolve.filter(|_| clear.is_some()) {
+            depth_att = depth_att.resolve_mode(vk::ResolveModeFlags::SAMPLE_ZERO).resolve_image_view(view).resolve_image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        }
         unsafe {
-            cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&barriers));
             let area = vk::Rect2D { offset: vk::Offset2D::default(), extent: self.extent() };
             cx.device.cmd_begin_rendering(
                 cb,
@@ -667,6 +718,73 @@ impl Offscreen {
             cx.device.cmd_set_scissor(cb, 0, &[area]);
         }
         set_stencil(cx, cb, Stencil::Off);
+    }
+
+    /// Stops the scene's rendering (ray tracing only) and makes its depth readable by the screen passes (`depth_read`).
+    pub fn pause(&self, cx: &Context, cb: vk::CommandBuffer) {
+        let range = vk::ImageSubresourceRange::default().aspect_mask(DEPTH_ASPECTS).level_count(1).layer_count(1);
+        let barrier = [vk::ImageMemoryBarrier2::default()
+            .image(self.depth_read_image())
+            .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+            .src_stage_mask(vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS | vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .subresource_range(range)];
+        unsafe {
+            cx.device.cmd_end_rendering(cb);
+            cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&barrier));
+        }
+    }
+
+    /// Goes on with the scene after `pause`: the picture is kept, depth and stencil start cleared.
+    pub fn resume(&self, cx: &Context, cb: vk::CommandBuffer) {
+        let range = vk::ImageSubresourceRange::default().aspect_mask(DEPTH_ASPECTS).level_count(1).layer_count(1);
+        let crange = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+        let color_dep = |image| {
+            vk::ImageMemoryBarrier2::default()
+                .image(image)
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .subresource_range(crange)
+        };
+        // (a resolved copy of the depth stays readable: it is not an attachment again this frame)
+        let mut barriers = vec![color_dep(self.color)];
+        if self.depth_resolve.is_none() {
+            barriers.push(vk::ImageMemoryBarrier2::default()
+                .image(self.depth_read_image())
+                .old_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+                .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                .subresource_range(range));
+        }
+        if let Some((img, _, _)) = self.msaa {
+            barriers.push(color_dep(img));
+        }
+        if self.depth_resolve.is_some() {
+            // the multisampled depth itself stayed an attachment
+            barriers.push(
+                vk::ImageMemoryBarrier2::default()
+                    .image(self.depth)
+                    .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .src_stage_mask(vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+                    .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+                    .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .subresource_range(range),
+            );
+        }
+        unsafe { cx.device.cmd_pipeline_barrier2(cb, &vk::DependencyInfo::default().image_memory_barriers(&barriers)) };
+        self.start(cx, cb, None);
     }
 
     /// Clears the depth buffer inside the current rendering scope (between the sky pass and the world pass).
@@ -785,10 +903,13 @@ impl Offscreen {
             cx.device.destroy_image_view(self.depth_view, None);
             cx.device.destroy_image(self.depth, None);
             cx.device.free_memory(self.depth_mem, None);
-            if let Some((img, view, mem)) = self.msaa {
+            for (img, view, mem) in [self.msaa, self.depth_resolve].into_iter().flatten() {
                 cx.device.destroy_image_view(view, None);
                 cx.device.destroy_image(img, None);
                 cx.device.free_memory(mem, None);
+            }
+            for v in [self.depth_read, self.stencil_read].into_iter().flatten() {
+                cx.device.destroy_image_view(v, None);
             }
         }
     }

@@ -167,7 +167,7 @@ fn record_subview(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut 
 
 /// World (with the sky pass) and actors into `target`, inside an open command buffer.
 #[allow(clippy::too_many_arguments)]
-fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, ui: (&mut UiRenderer, &[UiQuad], &[SubView], &[UiActors]), sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], rect: Option<[u32; 4]>, coronas: &[UiQuad], children: Option<&[ChildView]>) {
+fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, ui: (&mut UiRenderer, &[UiQuad], &[SubView], &[UiActors]), sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], rect: Option<[u32; 4]>, coronas: &[UiQuad], children: Option<&[ChildView]>, rt: RtPass) {
     target.begin(cx, cb, [24.0 / 255.0, 28.0 / 255.0, 40.0 / 255.0, 1.0]);
     // the scene frame (`XRootWindow::PreRender`): the whole target, a render viewport, or nothing at all
     let r = rect.unwrap_or([0, 0, target.width, target.height]);
@@ -180,7 +180,7 @@ fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Ac
             }
         }
         actors_gpu.frame_x = r[2] as f32;
-        record_world(cx, world, movers, actors_gpu, sky, cb, target, cam, actors, r[2] as f32 / r[3] as f32, (&mut *ui.0, coronas, rect), children);
+        record_world(cx, world, movers, actors_gpu, sky, cb, target, cam, actors, r[2] as f32 / r[3] as f32, (&mut *ui.0, coronas, rect), children, rt);
         if rect.is_some() {
             unsafe {
                 cx.device.cmd_set_viewport(cb, 0, &[vk::Viewport { x: 0.0, y: target.height as f32, width: target.width as f32, height: -(target.height as f32), min_depth: 0.0, max_depth: 1.0 }]);
@@ -320,7 +320,7 @@ impl ViewLists {
 /// The world part of the scene: the main view (`record_view` with its lists), the coronas, the depth clear and the
 /// overlays.
 #[allow(clippy::too_many_arguments)]
-fn record_world(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], aspect: f32, coronas: (&mut UiRenderer, &[UiQuad], Option<[u32; 4]>), children: Option<&[ChildView]>) {
+fn record_world(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], aspect: f32, coronas: (&mut UiRenderer, &[UiQuad], Option<[u32; 4]>), children: Option<&[ChildView]>, rt: RtPass) {
     let (overlay, world_actors): (Vec<ActorDraw>, Vec<ActorDraw>) = actors.iter().cloned().partition(|a| a.overlay);
     let details = std::mem::take(&mut actors_gpu.details);
     let details_blended = std::mem::take(&mut actors_gpu.details_blended);
@@ -328,6 +328,9 @@ fn record_world(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Ac
     record_view(cx, world, movers, actors_gpu, sky, cb, target, cam, world_actors, aspect, &lists, None);
     actors_gpu.details = details;
     actors_gpu.details_blended = details_blended;
+    if let Some((post, tlas)) = rt {
+        record_rt_post(cx, world, cb, target, cam, aspect, coronas.2, children, post, tlas);
+    }
     // `DrawFrame` ends with the coronas: screen tiles over the world (drawn full-target, then the scene frame's
     // viewport is restored for the overlays)
     if !coronas.1.is_empty() {
@@ -616,11 +619,8 @@ pub struct Renderer {
     pub gpu_ms: Option<f64>,
     /// CPU time of this renderer's own phases in the last frame (milliseconds), for measurements.
     pub cpu_ms: Vec<(&'static str, f64)>,
-    /// The ray tracing of this frame (with the ray-traced picture options), the lights the host gives it, and the
-    /// level's surface count (the size of the light list table).
-    rt: Option<crate::rt::RtFrame>,
-    pub rt_lights: crate::rt::RtLights,
-    rt_surfaces: usize,
+    /// The ray tracing (with the ray-traced picture options): this frame's acceleration structures and the screen passes.
+    rt: Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>,
 }
 
 impl Renderer {
@@ -643,8 +643,8 @@ impl Renderer {
         let ui = UiRenderer::new(&cx)?;
         let sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2), None)? };
-        let rt = if cx.quality().ray_traced() { crate::rt::RtFrame::new(&cx)? } else { None };
-        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: false, gpu_ms: None, cpu_ms: Vec::new(), rt, rt_lights: Default::default(), rt_surfaces: view.model.surfs.len() })
+        let rt = if cx.quality().ray_traced() { Renderer::make_rt(&cx)? } else { None };
+        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: false, gpu_ms: None, cpu_ms: Vec::new(), rt })
     }
 
     /// Replaces the map being drawn (level travel): the world, the movers and the sky position. Meshes and textures
@@ -660,9 +660,18 @@ impl Renderer {
         }
         self.movers.clear();
         self.sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
-        self.rt_surfaces = view.model.surfs.len();
-        self.rt_lights = Default::default();
         Ok(())
+    }
+
+    fn make_rt(cx: &Context) -> Result<Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>> {
+        let Some(frame) = crate::rt::RtFrame::new(cx) else { return Ok(None) };
+        match crate::rt_post::RtPost::new(cx)? {
+            Some(post) => Ok(Some((frame, post))),
+            None => {
+                frame.destroy(cx);
+                Ok(None)
+            }
+        }
     }
 
     /// The picture options in effect.
@@ -694,11 +703,12 @@ impl Renderer {
             }
         }
         self.target_layout = None;
-        if let Some(r) = self.rt.take() {
-            r.destroy(&self.cx);
+        if let Some((f, p)) = self.rt.take() {
+            f.destroy(&self.cx);
+            p.destroy(&self.cx);
         }
         if now.ray_traced() {
-            self.rt = crate::rt::RtFrame::new(&self.cx)?;
+            self.rt = Renderer::make_rt(&self.cx)?;
         }
         Ok(true)
     }
@@ -884,16 +894,17 @@ impl Renderer {
         let (ui, quads, views, ui_actors) = (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors);
         let movers = &mut self.mover_worlds;
         let placed = &self.movers;
-        let (rt, rt_lights, rt_surfaces) = (&mut self.rt, &self.rt_lights, self.rt_surfaces);
-        let mut rt_result = Ok(());
+        let rt = &mut self.rt;
+        let mut rt_result = Ok(false);
         let mut record_ms = 0.0;
         let t = std::time::Instant::now();
         let r = cx.one_shot(|cb| {
             let t = std::time::Instant::now();
             Renderer::timer_start(cx, timer, cb);
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
-            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, rt_lights, rt_surfaces, cb);
-            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
+            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
+            let post = rt_post(rt, &rt_result);
+            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_for_sampling(cx, cb);
             Renderer::timer_end(cx, timer, cb);
             record_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -904,7 +915,7 @@ impl Renderer {
         self.target = Some((target, rb));
         self.target_layout = Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         r?;
-        rt_result?;
+        rt_result.map(|_| ())?;
         self.timer_pending = true;
         self.read_timer();
         Ok(())
@@ -942,15 +953,16 @@ impl Renderer {
         let (ui, quads, views, ui_actors) = (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors);
         let movers = &mut self.mover_worlds;
         let placed = &self.movers;
-        let (rt, rt_lights, rt_surfaces) = (&mut self.rt, &self.rt_lights, self.rt_surfaces);
-        let mut rt_result = Ok(());
+        let rt = &mut self.rt;
+        let mut rt_result = Ok(false);
         let r = cx.one_shot(|cb| {
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
-            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, rt_lights, rt_surfaces, cb);
-            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
+            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
+            let post = rt_post(rt, &rt_result);
+            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_and_copy(cx, cb, rb);
         });
-        let pixels = r.and_then(|_| rt_result).and_then(|_| target.read_pixels(&self.cx, rb));
+        let pixels = r.and_then(|_| rt_result.map(|_| ())).and_then(|_| target.read_pixels(&self.cx, rb));
         self.target = Some((target, readback));
         self.target_layout = Some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         pixels
@@ -974,9 +986,11 @@ impl Renderer {
             self.update_procedurals(view);
             Renderer::timer_start(&self.cx, self.timer, frame.cb);
             Renderer::record_procedural_uploads(&self.cx, &mut self.world, &mut self.mover_worlds, &mut self.actors, &mut self.ui, frame.cb);
-            record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, &self.rt_lights, self.rt_surfaces, frame.cb)?;
+            let rt_result = record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, cam.pos, frame.cb);
+            let post = rt_post(&mut self.rt, &rt_result);
+            rt_result?;
             let (target, rb) = self.target.take().unwrap();
-            record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
+            record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
             target.end_for_sampling(&self.cx, frame.cb);
             Renderer::timer_end(&self.cx, self.timer, frame.cb);
             self.timer_pending = true;
@@ -1008,8 +1022,9 @@ impl Renderer {
         for (_, w) in std::mem::take(&mut self.mover_worlds) {
             w.destroy(&self.cx);
         }
-        if let Some(r) = self.rt.take() {
-            r.destroy(&self.cx);
+        if let Some((f, p)) = self.rt.take() {
+            f.destroy(&self.cx);
+            p.destroy(&self.cx);
         }
         self.ui.destroy(&self.cx);
         self.actors.destroy(&self.cx);
@@ -1017,39 +1032,145 @@ impl Renderer {
     }
 }
 
-/// This frame's ray tracing (before the scene's rendering starts): the meshes drawn as light blockers, the movers where
-/// they stand, the world, and the host's lights; the world and the movers then draw with its data. Without ray tracing
-/// they draw without.
-#[allow(clippy::too_many_arguments)]
-fn record_rt(cx: &Context, rt: &mut Option<crate::rt::RtFrame>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], lights: &crate::rt::RtLights, surfaces: usize, cb: vk::CommandBuffer) -> Result<()> {
-    let set = match rt.as_mut() {
-        Some(rt) => {
-            // each mesh its own geometry; the mesh renderer remembers which, so a mesh's rays skip itself
-            let (mut tris, mut parts) = (Vec::new(), Vec::new());
-            let mut owners = HashMap::new();
-            for d in actors {
-                let first = tris.len();
-                actors_gpu.occluder_triangles(d, &mut tris);
-                if tris.len() > first {
-                    owners.insert(crate::actors::draw_key(d), parts.len() as u32);
-                    parts.push((first as u32, (tris.len() - first) as u32));
-                }
-            }
-            *actors_gpu.rt_owners.borrow_mut() = owners;
-            let instances: Vec<(u64, [[f32; 4]; 3])> =
-                placed.iter().filter_map(|(b, place)| movers.get(b).and_then(|w| w.rt_blas.as_ref()).map(|a| (a.address, crate::rt::instance_transform(place)))).collect();
-            if std::env::var_os("DX_RT_LOG").is_some() {
-                eprintln!("RT: {} lights, {} surface lists, {} mesh triangles in {} meshes, {} movers, world {}", lights.lights.len(), lights.surfaces.len(), tris.len() / 3, parts.len(), instances.len(), world.rt_blas.is_some());
-            }
-            rt.record(cx, cb, world.rt_blas.as_ref().map(|a| a.address), &instances, &tris, &parts, lights, surfaces)?;
-            rt.set
-        }
-        None => vk::DescriptorSet::null(),
-    };
-    world.rt_set.set(set);
-    actors_gpu.rt_set.set(set);
-    for w in movers.values() {
-        w.rt_set.set(set);
+/// The screen passes' share of the ray tracing for `record_scene`: the passes and this frame's structure.
+type RtPass<'a> = Option<(&'a mut crate::rt_post::RtPost, vk::AccelerationStructureKHR)>;
+
+/// The screen passes when this frame's structures were recorded.
+fn rt_post<'a>(rt: &'a mut Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>, recorded: &Result<bool>) -> RtPass<'a> {
+    match (rt.as_mut(), recorded) {
+        (Some((frame, post)), Ok(true)) => frame.tlas().map(|t| (post, t)),
+        _ => None,
     }
-    Ok(())
+}
+
+/// How bright light `(pos, colour, radius)` makes a point at `at` facing it, as `lodmesh::vertex_light` lights a mesh
+/// (its luminance, before the actor's scale).
+fn light_share(at: [f32; 3], light: &([f32; 3], [f32; 3], f32)) -> f32 {
+    let (p, c, r) = light;
+    let d = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+    let k = 2.5 * (1.0 - d / r.max(1.0));
+    if k <= 0.0 {
+        return 0.0;
+    }
+    k * (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2])
+}
+
+/// The most casters the screen passes take (the nearest objects first).
+const MAX_CASTERS: usize = 256;
+/// Up to how many lights of an object give it a shadow.
+const LIGHTS_PER_CASTER: usize = 4;
+/// The radius of a light's disc (the softness of the shadows' edges).
+const LIGHT_SIZE: f32 = 12.0;
+
+/// This frame's ray tracing (before the scene's rendering starts): the meshes drawn as light blockers, the movers where
+/// they stand and the world into the structures; the casters for the screen passes. Returns whether there is
+/// something to trace against.
+#[allow(clippy::too_many_arguments)]
+fn record_rt(cx: &Context, rt: &mut Option<(crate::rt::RtFrame, crate::rt_post::RtPost)>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], eye: [f32; 3], cb: vk::CommandBuffer) -> Result<bool> {
+    let Some((frame, post)) = rt.as_mut() else { return Ok(false) };
+    // each mesh its own geometry; its bounds and its lights make its casters
+    let (mut tris, mut parts) = (Vec::new(), Vec::new());
+    let mut casters: Vec<(f32, crate::rt_post::Caster)> = Vec::new();
+    for d in actors {
+        let first = tris.len();
+        actors_gpu.occluder_triangles(d, &mut tris);
+        if tris.len() == first {
+            continue;
+        }
+        parts.push((first as u32, (tris.len() - first) as u32));
+        let Some(l) = d.lighting.as_ref() else { continue };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in &tris[first..] {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        let centre: [f32; 3] = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5);
+        let radius = tris[first..].iter().map(|v| (0..3).map(|k| (v[k] - centre[k]).powi(2)).sum::<f32>()).fold(0.0f32, f32::max).sqrt();
+        if radius < 1.0 {
+            continue;
+        }
+        let mut shares: Vec<(f32, usize)> = l.lights.iter().enumerate().map(|(i, light)| (light_share(centre, light) * l.scale, i)).filter(|s| s.0 > 0.0).collect();
+        let total: f32 = shares.iter().map(|s| s.0).sum::<f32>() + 0.299 * l.ambient[0] + 0.587 * l.ambient[1] + 0.114 * l.ambient[2];
+        shares.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let dist = ((centre[0] - eye[0]).powi(2) + (centre[1] - eye[1]).powi(2) + (centre[2] - eye[2]).powi(2)).sqrt();
+        for &(share, i) in shares.iter().take(LIGHTS_PER_CASTER) {
+            let dark = share / total.max(1e-4);
+            let (p, _, lr) = l.lights[i];
+            let lc = ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt();
+            if dark < 0.05 || lc < radius * 1.1 + LIGHT_SIZE {
+                continue;
+            }
+            casters.push((
+                dist,
+                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [dark.min(1.0), (lr - lc).max(radius * 2.0), 0.0, 0.0] },
+            ));
+        }
+    }
+    casters.sort_by(|a, b| a.0.total_cmp(&b.0));
+    casters.truncate(MAX_CASTERS);
+    let casters: Vec<crate::rt_post::Caster> = casters.into_iter().map(|c| c.1).collect();
+    post.set_casters(cx, &casters)?;
+    let instances: Vec<(u64, [[f32; 4]; 3])> =
+        placed.iter().filter_map(|(b, place)| movers.get(b).and_then(|w| w.rt_blas.as_ref()).map(|a| (a.address, crate::rt::instance_transform(place)))).collect();
+    if std::env::var_os("DX_RT_LOG").is_some() {
+        eprintln!("RT: {} casters, {} mesh triangles in {} meshes, {} movers, world {}", casters.len(), tris.len() / 3, parts.len(), instances.len(), world.rt_blas.is_some());
+    }
+    frame.record(cx, cb, world.rt_blas.as_ref().map(|a| a.address), &instances, &tris, &parts)?;
+    Ok(frame.tlas().is_some())
+}
+
+/// The ray-traced screen passes over the main view just drawn (`rt_post`): the openings to other frames (mirrors, the
+/// sky) marked in the stencil and left out (`rt_dist.frag`), the scene's rendering paused for the half-size trace and blur, then the
+/// factor multiplied into the picture.
+#[allow(clippy::too_many_arguments)]
+fn record_rt_post(cx: &Context, world: &World, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, aspect: f32, rect: Option<[u32; 4]>, children: Option<&[ChildView]>, post: &mut crate::rt_post::RtPost, tlas: vk::AccelerationStructureKHR) {
+    const OPENING: u32 = 0x80;
+    let q = cx.quality();
+    // `DX_RT_DEBUG`: 1 the multiply alone (by one half), 4 the traced factor unblurred, 8 distance bands, 16 rays from
+    // the eye (black: the world, grey: an object), 32 no rays (the passes' fixed cost)
+    let debug = std::env::var("DX_RT_DEBUG").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+    let flags = q.rt_shadows as u32 | (q.rt_ao as u32) << 1 | debug << 4;
+    let r = rect.unwrap_or([0, 0, target.width, target.height]);
+    let push = crate::rt_post::Push::new(cam, aspect, r, target.width, target.height, post.caster_count, flags);
+    if std::env::var_os("DX_RT_LOG").is_some() {
+        eprintln!("RT post: rect {r:?}, target {}x{}, {} casters, flags {flags}", target.width, target.height, post.caster_count);
+    }
+    if let Some(ch) = children {
+        use crate::world::{FaceUse, Opening};
+        let vp = crate::world::view_proj(cam, aspect, 1.0, 65536.0);
+        // a see-through mirror (a shiny floor) is a surface of its own over its reflection: its depth written, it is
+        // shaded like the rest; opaque mirrors and the sky show other frames and are left out
+        for c in ch.iter().filter(|c| c.parent.is_none()) {
+            if let Some(q) = c.mirror.and_then(|p| world.mirror_plane_near(p)).filter(|&q| !world.is_opaque_mirror(q)) {
+                world.opening_faces(cx, cb, vp, cam.pos, Opening::Mirror(q), FaceUse::Depth);
+            }
+        }
+        crate::set_stencil(cx, cb, crate::Stencil::Mark(OPENING));
+        for c in ch.iter().filter(|c| c.parent.is_none()) {
+            let opening = match c.mirror {
+                Some(p) => match world.mirror_plane_near(p).filter(|&q| world.is_opaque_mirror(q)) {
+                    Some(q) => Opening::Mirror(q),
+                    None => continue,
+                },
+                None => Opening::Backdrop,
+            };
+            world.opening_faces(cx, cb, vp, cam.pos, opening, FaceUse::MaskEqual);
+        }
+    }
+    target.pause(cx, cb);
+    let traced = post.trace(cx, cb, target, tlas, &push);
+    target.resume(cx, cb);
+    let area = vk::Rect2D { offset: vk::Offset2D { x: r[0] as i32, y: r[1] as i32 }, extent: vk::Extent2D { width: r[2], height: r[3] } };
+    unsafe {
+        cx.device.cmd_set_viewport(cb, 0, &[vk::Viewport { x: r[0] as f32, y: (r[1] + r[3]) as f32, width: r[2] as f32, height: -(r[3] as f32), min_depth: 0.0, max_depth: 1.0 }]);
+        cx.device.cmd_set_scissor(cb, 0, &[area]);
+    }
+    match traced {
+        Ok(()) => {
+            post.apply(cx, cb, &push);
+        }
+        Err(e) => eprintln!("ray tracing: {e}"),
+    }
 }

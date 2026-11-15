@@ -13,8 +13,6 @@ use std::rc::Rc;
 
 const LODMESH_VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lodmesh.vert.spv"));
 const LODMESH_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lodmesh.frag.spv"));
-/// The ray-traced variant (`RAYTRACE`), for devices with ray queries.
-const LODMESH_RT_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lodmesh_rt.frag.spv"));
 const DETAIL_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/detail.frag.spv"));
 const SPRITE_VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sprite.vert.spv"));
 const DECAL_VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/decal.vert.spv"));
@@ -36,15 +34,8 @@ struct LodVertex {
     light: u32,
 }
 
-/// What identifies a mesh drawn this frame across the draw lists (its mesh and where it stands).
-pub fn draw_key(d: &ActorDraw) -> (String, [u32; 3]) {
-    (d.mesh.clone(), d.location.map(f32::to_bits))
-}
-
 /// `LodVertex::light` of a corner drawn with its own colour.
 const NO_LIGHTS: u32 = u32::MAX;
-/// `LodVertex::light` of a corner lit by the actor's lights per vertex (no list: ambient occlusion only).
-const LIT_PER_VERTEX: u32 = u32::MAX - 1;
 
 /// Copies `v` into the per-frame slot buffer at `cursor` (in slots); returns its first vec4's index, `None` when the
 /// frame's slots are used up.
@@ -154,10 +145,6 @@ pub struct ActorRenderer {
     lod_modulated: vk::Pipeline,
     /// The detail texture pass (modulated, depth tested less-or-equal, biased toward the eye; D3D `ZBIAS` 15).
     detail_pipeline: vk::Pipeline,
-    /// This frame's ray query data (set 2 of the mesh pipelines; null without ray tracing), set by the renderer.
-    pub rt_set: std::cell::Cell<vk::DescriptorSet>,
-    /// Each mesh drawn this frame's geometry in the ray-traced meshes (by `draw_key`), so its rays skip itself.
-    pub rt_owners: std::cell::RefCell<HashMap<(String, [u32; 3]), u32>>,
     lod_buf: Buffer,
     lod_ptr: *mut LodVertex,
     lod_cursor: usize,
@@ -327,13 +314,10 @@ impl ActorRenderer {
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(std::mem::size_of::<LodPush>() as u32)];
             // set 1: the slot buffer (light lists for per-pixel lighting)
-            // set 2 with ray tracing: the per-frame ray query data (`rt::RtSupport::set_layout`)
-            let rt_layout = cx.rt.as_ref().filter(|_| cx.quality().ray_traced()).map(|r| r.set_layout);
-            let mut lod_sets = vec![tex_set_layout, light_set_layout];
-            lod_sets.extend(rt_layout);
+            let lod_sets = [tex_set_layout, light_set_layout];
             let lod_layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&lod_sets).push_constant_ranges(&lod_push), None)?;
             let vs = cx.shader_module(LODMESH_VERT)?;
-            let fs = cx.shader_module(if rt_layout.is_some() { LODMESH_RT_FRAG } else { LODMESH_FRAG })?;
+            let fs = cx.shader_module(LODMESH_FRAG)?;
             let sprite_push = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .size(std::mem::size_of::<SpritePush>() as u32)];
@@ -535,8 +519,6 @@ impl ActorRenderer {
                 lod_translucent,
                 lod_modulated,
                 detail_pipeline,
-                rt_set: std::cell::Cell::new(vk::DescriptorSet::null()),
-                rt_owners: Default::default(),
                 lod_buf,
                 lod_ptr,
                 lod_cursor: 0,
@@ -798,11 +780,12 @@ impl ActorRenderer {
     /// space, the triangles of its level of detail, then runs of consecutive triangles with the same texture and blend
     /// (pass 0: the opaque ones, 1: the blended ones, 2: all, in face order). Returns whether anything was drawn.
     /// The triangles of a drawn mesh that block light, in world space (three corners each), for ray queries: every
-    /// face of the full-detail mesh at the actor's pose except translucent, modulated and invisible ones; nothing for
-    /// sprites, decals, translucent or modulated actors and the item in hand.
+    /// face of the full-detail mesh at the actor's pose except invisible, masked (cut-out leaves, grates: the light goes
+    /// through them for now), translucent and modulated ones; nothing for sprites, decals, translucent or modulated
+    /// actors and the item in hand.
     pub fn occluder_triangles(&self, d: &ActorDraw, out: &mut Vec<[f32; 3]>) {
-        const SKIP: u32 = 0x1 | 0x4 | 0x40; // PF_Invisible, PF_Translucent, PF_Modulated
-        if d.sprite.is_some() || d.decal.is_some() || d.overlay || d.style == 3 || d.style == 4 {
+        const SKIP: u32 = 0x1 | 0x2 | 0x4 | 0x40; // PF_Invisible, PF_Masked, PF_Translucent, PF_Modulated
+        if d.sprite.is_some() || d.decal.is_some() || d.overlay || d.style >= 2 {
             return;
         }
         let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { return };
@@ -832,8 +815,6 @@ impl ActorRenderer {
         let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { return false };
         let lod = &mesh.data.lod;
         let world = posed_vertices(lod, d);
-        // the mesh's own geometry among the ray-traced meshes plus one (0: none), for its shaders to skip
-        let owner = self.rt_owners.borrow().get(&draw_key(d)).map(|g| g + 1).unwrap_or(0);
         let actor = MeshActor {
             location: d.location,
             draw_scale: d.scale,
@@ -901,9 +882,8 @@ impl ActorRenderer {
                 // modulated faces get a white diffuse colour (`DrawGouraudPolygon`)
                 let color = if kind == Kind::Modulated { [1.0; 3] } else { c.color };
                 let light = match light_list {
-                    _ if !c.lit || kind == Kind::Modulated => NO_LIGHTS,
-                    Some(at) => at,
-                    None => LIT_PER_VERTEX,
+                    Some(at) if c.lit && kind != Kind::Modulated => at,
+                    _ => NO_LIGHTS,
                 };
                 verts.push(LodVertex { pos: c.pos, uv: c.uv, color, fog: c.fog, normal: c.normal, light });
             }
@@ -927,13 +907,8 @@ impl ActorRenderer {
                     Kind::Modulated => self.lod_modulated,
                 };
                 cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
-                let rt = self.rt_set.get();
-                if rt == vk::DescriptorSet::null() {
-                    cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set, self.light_set], &[]);
-                } else {
-                    cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set, self.light_set, rt], &[]);
-                }
-                let push = LodPush { vp: *vp, params: [masked as u32, 0, 0, owner], clip: self.clip };
+                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.lod_layout, 0, &[set, self.light_set], &[]);
+                let push = LodPush { vp: *vp, params: [masked as u32, 0, 0, 0], clip: self.clip };
                 let bytes = std::slice::from_raw_parts(&push as *const LodPush as *const u8, std::mem::size_of::<LodPush>());
                 cx.device.cmd_push_constants(cb, self.lod_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                 cx.device.cmd_draw(cb, count as u32, 1, (base + first) as u32, 0);

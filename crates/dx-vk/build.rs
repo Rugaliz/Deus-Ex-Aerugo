@@ -23,19 +23,13 @@ fn main() {
             continue;
         }
         let name = path.file_name().unwrap().to_str().unwrap();
-        // the scene's fragment shaders also as ray-traced variants (`RAYTRACE`: ray queries; used only on devices that
-        // have them)
-        let variants: &[(&str, &[&str])] = if name == "world.frag" || name == "lodmesh.frag" { &[("", &[]), ("_rt", &["-DRAYTRACE"])] } else { &[("", &[])] };
-        for (suffix, defines) in variants {
-            let stem = name.trim_end_matches(".frag");
-            let target = if suffix.is_empty() { out.join(format!("{name}.spv")) } else { out.join(format!("{stem}{suffix}.frag.spv")) };
-            if glslc {
-                run(Command::new("glslc").arg("--target-env=vulkan1.3").arg("-O").args(*defines).arg(&path).arg("-o").arg(&target), name);
-            } else {
-                run(Command::new("glslangValidator").args(["-V", "--target-env", "vulkan1.3"]).args(*defines).arg("-o").arg(&target).arg(&path), name);
-                if opt {
-                    run(Command::new("spirv-opt").arg("-O").arg(&target).arg("-o").arg(&target), name);
-                }
+        let target = out.join(format!("{name}.spv"));
+        if glslc {
+            run(Command::new("glslc").arg("--target-env=vulkan1.3").arg("-O").arg(&path).arg("-o").arg(&target), name);
+        } else {
+            run(Command::new("glslangValidator").args(["-V", "--target-env", "vulkan1.3", "-o"]).arg(&target).arg(&path), name);
+            if opt {
+                run(Command::new("spirv-opt").arg("-O").arg(&target).arg("-o").arg(&target), name);
             }
         }
     }
