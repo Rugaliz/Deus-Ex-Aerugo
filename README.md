@@ -59,8 +59,28 @@ copy it into your Deus Ex folder as in step 3 above.
 .\scripts\build-windows.ps1
 ```
 
-**Linux with SDL3 available** (for example Arch: `sudo pacman -S rustup sdl3 shaderc vulkan-icd-loader`, then
-`rustup default stable`):
+**Linux:** install the packages for your distribution, then Rust, then run the build script in this folder.
+
+Arch Linux:
+
+```
+sudo pacman -S rustup sdl3 shaderc cmake vulkan-icd-loader
+rustup default stable
+```
+
+Ubuntu 22.04 / 24.04 (Ubuntu has no SDL3 package yet, so the script builds it into the game; that is what the
+longer list is for):
+
+```
+sudo apt install build-essential curl cmake pkg-config glslang-tools spirv-tools \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
+  libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdrm-dev libgbm-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+```
+
+Then, on either:
 
 ```
 scripts/build.sh

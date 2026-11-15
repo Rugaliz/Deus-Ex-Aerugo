@@ -11,8 +11,9 @@
 # menu), or from anywhere with the folder as an argument: `deusex "<dir>" [MapName]`. Settings and key bindings are kept
 # in ~/.config/deus-ex-aerugo (nothing is written into the game folder except the executable you ask to install).
 #
-# Build requirements (Arch: pacman -S rustup sdl3 vulkan-icd-loader shaderc; then `rustup default stable`):
-#   a Rust toolchain, `glslc` (compiles the shaders into the binary), SDL3 (the library it links to).
+# Build requirements (see README.md for the Arch and Ubuntu package lists): a Rust toolchain, a shader compiler
+# (`glslc` or `glslangValidator`), and SDL3. When the system has no SDL3 development files (Ubuntu 24.04 and older),
+# SDL3 is compiled from source and built into the executable; that needs CMake and the X11/Wayland/audio headers.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,10 +42,16 @@ missing=0
 for tool in cargo; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; missing=1; }
 done
-libs="$(ldconfig -p 2>/dev/null || true)"
-for lib in libSDL3.so; do
-    case "$libs" in *"$lib"*) ;; *) echo "warning: $lib not found by ldconfig (the build or the first run may fail)" >&2 ;; esac
-done
+command -v glslc >/dev/null 2>&1 || command -v glslangValidator >/dev/null 2>&1 || { echo "missing tool: glslc or glslangValidator" >&2; missing=1; }
+# the system's SDL3 when its development files are there, else SDL3 built from source into the executable
+features=()
+if pkg-config --exists sdl3 2>/dev/null || ldconfig -p 2>/dev/null | grep -q 'libSDL3\.so '; then
+    echo "== using the system's SDL3"
+else
+    echo "== no SDL3 development files found: SDL3 is built from source into the executable"
+    command -v cmake >/dev/null 2>&1 || { echo "missing tool: cmake (needed to build SDL3)" >&2; missing=1; }
+    features=(--features static-sdl)
+fi
 [ "$missing" = 0 ] || exit 1
 
 echo "== cleaning earlier build output"
@@ -57,7 +64,7 @@ if [ "$mode" = test ]; then
 fi
 
 echo "== building (dist profile: optimised, no debug info)"
-cargo build --locked --profile dist -p dx-play
+cargo build --locked --profile dist -p dx-play "${features[@]}"
 
 mkdir -p dist
 cp -f target/dist/dx-play dist/deusex
