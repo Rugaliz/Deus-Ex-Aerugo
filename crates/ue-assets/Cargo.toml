@@ -1,0 +1,9 @@
+[package]
+name = "ue-assets"
+description = "Loaders for Unreal Engine 1 asset objects with native payloads (textures, palettes, ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-package = { path = "../ue-package" }

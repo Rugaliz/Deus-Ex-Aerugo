@@ -1,0 +1,30 @@
+[package]
+name = "dx-play"
+description = "The game: a session of the map and its actors running in the VM, with the SDL3 window, input, audio and the Vulkan renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dx-vis = { path = "../dx-vis" }
+dx-input = { path = "../dx-input" }
+ue-registry = { path = "../ue-registry" }
+ue-config = { path = "../ue-config" }
+ue-vm = { path = "../ue-vm" }
+dx-soft = { path = "../dx-soft" }
+dx-vk = { path = "../dx-vk" }
+dx-light = { path = "../dx-light" }
+dx-audio = { path = "../dx-audio" }
+ue-assets = { path = "../ue-assets" }
+ue-bsp = { path = "../ue-bsp" }
+sdl3 = "0.20"
+# `--bench --profile FILE`: a sampling profile of the run (timer signals, no perf events); off by default
+pprof = { version = "0.15", optional = true }
+
+[features]
+profile = ["dep:pprof"]
+# SDL3 compiled from source and linked into the executable (release builds: no SDL3 library needed next to it)
+static-sdl = ["sdl3/build-from-source-static", "dx-audio/static-sdl"]
+
+[dev-dependencies]
+ue-package = { path = "../ue-package" }

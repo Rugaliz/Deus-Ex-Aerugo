@@ -1,0 +1,16 @@
+[package]
+name = "dx-audio"
+description = "Audio for the Deus Ex port: sound decoding (WAV, MP3), a positional mixer, tracker music (a port of Galaxy's tracker engine) and the SDL3 output device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sdl3 = "0.20"
+
+[features]
+static-sdl = ["sdl3/build-from-source-static"]
+
+[dev-dependencies]
+ue-assets = { path = "../ue-assets" }
+ue-package = { path = "../ue-package" }

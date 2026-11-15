@@ -1,0 +1,10 @@
+[package]
+name = "dx-vis"
+description = "The original renderer's visibility pass (Render.dll): span buffers, front-to-back BSP occlusion, which surfaces and actors count as drawn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-assets = { path = "../ue-assets" }
+ue-bsp = { path = "../ue-bsp" }

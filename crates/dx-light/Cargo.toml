@@ -1,0 +1,14 @@
+[package]
+name = "dx-light"
+description = "Static lightmaps of Deus Ex maps: generated from the stored shadow bits and the light actors, like the original engine does at load time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-package = { path = "../ue-package" }
+ue-assets = { path = "../ue-assets" }
+ue-registry = { path = "../ue-registry" }
+
+[dev-dependencies]
+ue-bsp = { path = "../ue-bsp" }

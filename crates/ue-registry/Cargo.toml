@@ -1,0 +1,10 @@
+[package]
+name = "ue-registry"
+description = "Class registry for Unreal Engine 1 script packages: classes, property layout, functions, states, defaults"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-package = { path = "../ue-package" }
+ue-config = { path = "../ue-config" }

@@ -1,0 +1,8 @@
+[package]
+name = "dx-fractal"
+description = "Procedural (fractal) textures of Deus Ex: water ripples (WetTexture, WaveTexture), generated every frame like the original engine's Fire package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

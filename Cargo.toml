@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/ue-package", "crates/ue-registry", "crates/ue-assets", "crates/dx-soft", "crates/ue-bsp", "crates/ue-vm", "crates/dx-play", "crates/dx-vk", "crates/dx-light", "crates/dx-audio", "crates/dx-input", "crates/ue-config", "crates/dx-fractal", "crates/dx-vis"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+debug = 1
+
+# Release builds for players (scripts/build.sh, scripts/build-windows.*): no debug info, one optimisation unit
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
+lto = "fat"
+codegen-units = 1

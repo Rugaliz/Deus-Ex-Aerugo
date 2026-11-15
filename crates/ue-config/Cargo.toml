@@ -1,0 +1,8 @@
+[package]
+name = "ue-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ini files (configuration) and .int files (localised text) of the engine, with a per-user layer that is the only thing ever written"
+
+[dependencies]

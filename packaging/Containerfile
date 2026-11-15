@@ -1,0 +1,31 @@
+# Build environment for the release archives (scripts/release.sh): Ubuntu 22.04, so the Linux executable runs on
+# glibc 2.35 and newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, current Arch, SteamOS 3), plus MinGW-w64 for the
+# Windows executable; shaders compile with glslang + SPIRV-Tools (22.04 has no glslc). SDL3 is built from source (the sdl3 crate's vendored copy) and linked into both.
+FROM docker.io/library/ubuntu:22.04
+
+ARG RUST_VERSION=1.97.1
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential pkg-config cmake ninja-build python3 zip glslang-tools spirv-tools \
+        gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+        libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+        libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libgl-dev \
+        libdrm-dev libgbm-dev libvulkan-dev \
+        libasound2-dev libpulse-dev libpipewire-0.3-dev libjack-jackd2-dev libsndio-dev \
+        libdbus-1-dev libudev-dev libibus-1.0-dev libusb-1.0-0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust in /opt (readable by any user, so the build can run as the caller's uid)
+RUN curl -sSf https://sh.rustup.rs | CARGO_HOME=/opt/cargo sh -s -- -y --profile minimal \
+        --default-toolchain "$RUST_VERSION" --target x86_64-pc-windows-gnu \
+    && chmod -R a+rX /opt/rustup /opt/cargo
+
+# the registry cache lives in the mounted tree (target/), not in the image
+ENV CARGO_HOME=/src/target/container-cargo \
+    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+    CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc \
+    CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++
+WORKDIR /src

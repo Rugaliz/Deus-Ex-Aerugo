@@ -1,0 +1,8 @@
+[package]
+name = "dx-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Key bindings, aliases and the press/hold/axis input processing of the engine, without any window code"
+
+[dependencies]

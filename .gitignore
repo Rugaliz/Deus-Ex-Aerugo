@@ -1,0 +1,77 @@
+# --- Rust / Cargo ---
+/target/
+**/*.rs.bk
+# Binary crates should commit Cargo.lock; do NOT ignore it.
+
+# --- Shaders / build output ---
+*.spv
+/shaders-out/
+
+# --- Profiling / debugging ---
+*.profraw
+*.profdata
+flamegraph*.svg
+perf.data*
+*.tracy
+*.rdc
+*.nsys-rep
+core
+core.*
+vgcore.*
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.directory
+
+# --- Local config / secrets ---
+.env
+.env.*
+/local/
+*.local.toml
+
+# --- CLEAN-ROOM GUARD: never commit proprietary Deus Ex material ---
+# Game assets and engine binaries (users supply their own copy of the game)
+*.u
+# the port's own script package (aerugo/README.md)
+!aerugo/Aerugo.u
+*.utx
+*.dx
+*.dxs
+*.uax
+*.umx
+*.unr
+*.dll
+*.exe
+*.dat
+/game/
+/DeusEx/
+/Deus Ex/
+
+# Extracted / decompiled original code and Ghidra output
+*.uc
+*.uci
+# (except the port's own UnrealScript)
+!/aerugo/Aerugo/Classes/*.uc
+/Scripts/
+/scripts-dump/
+/dx-native/
+/ghidra-projects/
+*.gpr
+*.rep/
+*.pseudo.c
+*.retry.c
+*.functions.txt
+*.symbols.txt
+
+# Dumps and test oracles generated from the original game
+/dumps/
+/reference-traces/
+/wine-prefix/
+*.ini.bak
+dist/

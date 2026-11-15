@@ -1,0 +1,16 @@
+[package]
+name = "dx-vk"
+description = "Vulkan renderer for Deus Ex maps (ash); starts with an offscreen target that can be read back to a PNG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash = "0.38"
+dx-soft = { path = "../dx-soft" }
+dx-light = { path = "../dx-light" }
+ue-assets = { path = "../ue-assets" }
+ue-bsp = { path = "../ue-bsp" }
+
+[dev-dependencies]
+ue-registry = { path = "../ue-registry" }

@@ -1,0 +1,12 @@
+[package]
+name = "dx-soft"
+description = "CPU reference renderer for Deus Ex maps (textured BSP), used to check geometry and texture mapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-package = { path = "../ue-package" }
+ue-assets = { path = "../ue-assets" }
+ue-bsp = { path = "../ue-bsp" }
+dx-fractal = { path = "../dx-fractal" }

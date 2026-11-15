@@ -1,0 +1,16 @@
+[package]
+name = "ue-vm"
+description = "UnrealScript virtual machine for Unreal Engine 1 bytecode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-package = { path = "../ue-package" }
+ue-registry = { path = "../ue-registry" }
+ue-assets = { path = "../ue-assets" }
+ue-bsp = { path = "../ue-bsp" }
+ue-config = { path = "../ue-config" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1,0 +1,12 @@
+[package]
+name = "ue-bsp"
+description = "BSP queries for Unreal Engine 1 worlds: point regions, line and box traces against collision hulls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ue-assets = { path = "../ue-assets" }
+
+[dev-dependencies]
+ue-package = { path = "../ue-package" }
