@@ -16,6 +16,18 @@ struct Caster {
     vec4 params; // x: how dark (the light's share of the object's light), y: how far past the object its shadow reaches
 };
 layout(std430, set = 0, binding = 2) readonly buffer Casters { Caster casters[]; };
+// the alpha-tested faces of meshes (cut-out leaves): the mesh structure's geometry 2 m + 1 is mesh m's, its faces from
+// `mesh_first[m]` on; each face's texture coordinates and alpha mask (`[first word, width, height]`, a bit a texel)
+struct MaskedFace {
+    vec4 uv01;
+    vec2 uv2;
+    uint mask;
+    uint pad;
+};
+layout(std430, set = 0, binding = 4) readonly buffer Faces { MaskedFace faces[]; };
+layout(std430, set = 0, binding = 5) readonly buffer MeshFirst { uint mesh_first[]; };
+layout(std430, set = 0, binding = 6) readonly buffer MaskInfo { uvec4 mask_info[]; };
+layout(std430, set = 0, binding = 7) readonly buffer MaskBits { uint mask_bits[]; };
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec2 out_v;
 
@@ -27,13 +39,31 @@ bool ray_ok(vec3 o, vec3 d, float tmax) {
     return !any(isnan(o)) && !any(isinf(o)) && !any(isnan(d)) && dot(d, d) > 1e-12 && tmax > 0.5 && !isinf(tmax);
 }
 
+// Whether an alpha-tested face is solid where it was hit (`geometry`, `prim` of the mesh structure, barycentrics `b`):
+// the texel of its mask, the texture repeating.
+bool solid(int geometry, int prim, vec2 b) {
+    MaskedFace f = faces[mesh_first[geometry >> 1] + uint(prim)];
+    vec2 uv = f.uv01.xy * (1.0 - b.x - b.y) + f.uv01.zw * b.x + f.uv2 * b.y;
+    uvec4 m = mask_info[f.mask];
+    uvec2 size = max(m.yz, uvec2(1u));
+    uvec2 texel = min(uvec2(fract(uv) * vec2(size)), size - 1u);
+    uint i = texel.y * size.x + texel.x;
+    return (mask_bits[m.x + (i >> 5)] & (1u << (i & 31u))) != 0u;
+}
+
 // Whether anything of `mask` lies on the segment from `o` along `d` between `tmin` and `tmax`; how far it is in `t`.
+// Opaque geometry counts at once; an alpha-tested face only where it is solid.
 bool blocked_in(vec3 o, vec3 d, float tmin, float tmax, uint mask, out float t) {
     t = tmax;
     if (!ray_ok(o, d, tmax) || tmax <= tmin) return false;
     rayQueryEXT q;
-    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, o, tmin, d, tmax);
-    while (rayQueryProceedEXT(q)) {}
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, mask, o, tmin, d, tmax);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT
+            && solid(rayQueryGetIntersectionGeometryIndexEXT(q, false), rayQueryGetIntersectionPrimitiveIndexEXT(q, false), rayQueryGetIntersectionBarycentricsEXT(q, false))) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
     bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
     if (hit) t = rayQueryGetIntersectionTEXT(q, true);
     return hit;

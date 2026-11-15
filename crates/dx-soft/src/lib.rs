@@ -101,6 +101,8 @@ pub struct ActorDraw {
     pub overlay: bool,
     /// How the mesh is lit (ambient, scale and the lights that reach it); `None` = no light information (drawn unlit).
     pub lighting: Option<MeshLighting>,
+    /// The lights around an unlit mesh, for the ray-traced shadows it casts only (it is drawn unlit).
+    pub shadow_lighting: Option<MeshLighting>,
     /// Blend channel poses: weighted absolute frames whose difference to frame 0 is added to the vertices.
     pub blends: Vec<(usize, f32)>,
     /// Place of the actor's sprite in the main view's sprite list (`DrawFrame` draws in this order); `u32::MAX` when

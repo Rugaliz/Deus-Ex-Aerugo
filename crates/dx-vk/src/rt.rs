@@ -51,7 +51,8 @@ impl Accel {
     }
 }
 
-fn triangles<'a>(vertices: u64, vertex_count: u32, indices: Option<u64>) -> vk::AccelerationStructureGeometryKHR<'a> {
+/// A geometry of triangles; `opaque`: hits count without asking (else the shader's ray query decides: alpha-tested faces).
+fn triangles<'a>(vertices: u64, vertex_count: u32, indices: Option<u64>, opaque: bool) -> vk::AccelerationStructureGeometryKHR<'a> {
     let mut tri = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
         .vertex_format(vk::Format::R32G32B32_SFLOAT)
         .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertices })
@@ -64,7 +65,7 @@ fn triangles<'a>(vertices: u64, vertex_count: u32, indices: Option<u64>) -> vk::
     vk::AccelerationStructureGeometryKHR::default()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
         .geometry(vk::AccelerationStructureGeometryDataKHR { triangles: tri })
-        .flags(vk::GeometryFlagsKHR::OPAQUE)
+        .flags(if opaque { vk::GeometryFlagsKHR::OPAQUE } else { vk::GeometryFlagsKHR::empty() })
 }
 
 /// A bottom-level structure of fixed triangles (the world, a mover's brush in its own space), built now. `None` without
@@ -87,7 +88,7 @@ pub fn static_blas(cx: &Context, positions: &[[f32; 3]], indices: &[u32]) -> Res
         cx.device.unmap_memory(ibuf.memory);
     }
     let count = (indices.len() / 3) as u32;
-    let geometry = [triangles(vaddr, positions.len() as u32, Some(iaddr))];
+    let geometry = [triangles(vaddr, positions.len() as u32, Some(iaddr), true)];
     let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
@@ -188,12 +189,13 @@ impl RtFrame {
     }
 
     /// Records this frame's builds into `cb` (before the scene's rendering starts): the meshes' structure from
-    /// `mesh_triangles` (world space, three corners each), one geometry per mesh (`mesh_parts`: first corner and corner
-    /// count), the top-level structure over the world (`world`),
+    /// `mesh_triangles` (world space, three corners each), two geometries per mesh (`mesh_parts`: first corner and
+    /// corner count of its opaque faces, then of its alpha-tested ones: geometry `2 m` and `2 m + 1`), the top-level
+    /// structure over the world (`world`),
     /// the movers (`movers`: structure address and placement as a row-major 3x4) and the meshes. Returns whether the
     /// top-level structure was made again (descriptors pointing at it must be rewritten). The GPU must be done with
     /// the previous frame's data (one frame in flight).
-    pub fn record(&mut self, cx: &Context, cb: vk::CommandBuffer, world: Option<u64>, movers: &[(u64, [[f32; 4]; 3])], mesh_triangles: &[[f32; 3]], mesh_parts: &[(u32, u32)]) -> Result<bool> {
+    pub fn record(&mut self, cx: &Context, cb: vk::CommandBuffer, world: Option<u64>, movers: &[(u64, [[f32; 4]; 3])], mesh_triangles: &[[f32; 3]], mesh_parts: &[[u32; 4]]) -> Result<bool> {
         let rt = cx.rt.as_ref().expect("ray queries");
         let mut rewrite = false;
         // the meshes: one structure for every mesh drawn this frame (a geometry each), rebuilt
@@ -203,9 +205,9 @@ impl RtFrame {
             let base = self.mesh_verts.address();
             let geometry: Vec<vk::AccelerationStructureGeometryKHR> = mesh_parts
                 .iter()
-                .map(|&(first, n)| triangles(base + first as u64 * 12, n, None))
+                .flat_map(|p| [triangles(base + p[0] as u64 * 12, p[1], None, true), triangles(base + p[2] as u64 * 12, p[3], None, false)])
                 .collect();
-            let counts: Vec<u32> = mesh_parts.iter().map(|&(_, n)| n / 3).collect();
+            let counts: Vec<u32> = mesh_parts.iter().flat_map(|p| [p[1] / 3, p[3] / 3]).collect();
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
                 .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD)

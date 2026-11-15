@@ -177,6 +177,24 @@ pub struct ActorRenderer {
     /// With the ray-traced screen passes: the stencil value the opaque parts of meshes drawn straight through the view
     /// (no mirror or sky frame) mark their pixels with, so the passes know them (`rt_trace.frag`).
     pub object_stencil: Option<u32>,
+    /// Alpha masks of the textures of masked mesh faces, for the ray-traced passes (`prepare_alpha_masks`): per texture
+    /// path, whether the texture is masked and its mask; the masks as `[offset in words, width, height, 0]` and one bit a
+    /// texel (set: solid), and a count that changes when masks are added.
+    alpha_index: HashMap<String, (bool, Option<u32>)>,
+    pub alpha_info: Vec<[u32; 4]>,
+    pub alpha_bits: Vec<u32>,
+    pub alpha_version: u64,
+    /// The draws whose meshes' textures `prepare_alpha_masks` has seen (mesh, skins, every-texture replacement).
+    alpha_seen: std::collections::HashSet<(String, Vec<Option<String>>, Option<String>)>,
+}
+
+/// A masked face of a mesh for the ray queries (`ActorRenderer::occluder_triangles`): world corners, texture
+/// coordinates (0..1 of the texture) and the alpha mask (`ActorRenderer::alpha_info`).
+#[derive(Clone, Copy, Debug)]
+pub struct MaskedTri {
+    pub pos: [[f32; 3]; 3],
+    pub uv: [[f32; 2]; 3],
+    pub mask: u32,
 }
 
 const MAX_TEXTURES: u32 = 8192;
@@ -516,6 +534,11 @@ impl ActorRenderer {
                 light_cursor: 0,
                 light_end: MAX_SLOTS,
                 object_stencil: None,
+                alpha_index: HashMap::new(),
+                alpha_info: Vec::new(),
+                alpha_bits: Vec::new(),
+                alpha_version: 0,
+                alpha_seen: Default::default(),
                 lod_end: MAX_LOD_VERTICES,
                 meshes: HashMap::new(),
                 textures: HashMap::new(),
@@ -786,15 +809,13 @@ impl ActorRenderer {
         }
     }
 
-    /// One mesh actor through `DrawLodMesh`: the pose (two frames blended plus the blend channels, `GetFrame`) in world
-    /// space, the triangles of its level of detail, then runs of consecutive triangles with the same texture and blend
-    /// (pass 0: the opaque ones, 1: the blended ones, 2: all, in face order). Returns whether anything was drawn.
-    /// The triangles of a drawn mesh that block light, in world space (three corners each), for ray queries: every
-    /// face of the full-detail mesh at the actor's pose except invisible, masked (cut-out leaves, grates: the light goes
-    /// through them for now), translucent and modulated ones; nothing for sprites, decals, translucent or modulated
-    /// actors and the item in hand.
-    pub fn occluder_triangles(&self, d: &ActorDraw, out: &mut Vec<[f32; 3]>) {
-        const SKIP: u32 = 0x1 | 0x2 | 0x4 | 0x40; // PF_Invisible, PF_Masked, PF_Translucent, PF_Modulated
+    /// The faces of a drawn mesh that block light, in world space at the actor's pose (full detail), for ray queries:
+    /// opaque ones into `out` (three corners each), masked ones (cut-out leaves, grates; the face's flag or its
+    /// texture's) into `masked` with their texture coordinates and alpha mask (`prepare_alpha_masks`; without a mask
+    /// they are left out). Invisible, translucent and modulated faces block nothing; nor do sprites, decals,
+    /// translucent or modulated actors and the item in hand.
+    pub fn occluder_triangles(&self, d: &ActorDraw, out: &mut Vec<[f32; 3]>, masked: &mut Vec<MaskedTri>) {
+        const SKIP: u32 = 0x1 | 0x4 | 0x40; // PF_Invisible, PF_Translucent, PF_Modulated
         if d.sprite.is_some() || d.decal.is_some() || d.overlay || d.style >= 2 {
             return;
         }
@@ -802,25 +823,44 @@ impl ActorRenderer {
         let lod = &mesh.data.lod;
         let pose = posed_vertices(lod, d);
         let corner = |i: usize| pose.get(i).copied();
-        if mesh.data.plain {
-            for t in lod.mesh.tris.iter().filter(|t| t.poly_flags & SKIP == 0) {
-                if let (Some(a), Some(b), Some(c)) = (corner(t.vertex[0] as usize), corner(t.vertex[1] as usize), corner(t.vertex[2] as usize)) {
-                    out.extend_from_slice(&[a, b, c]);
+        // per texture slot: whether the texture is masked and its mask (environment-mapped faces: the environment map)
+        let slots = lod.mesh.textures.len().max(1);
+        let slot_info = |slot: usize, flags: u32| -> (bool, Option<u32>) {
+            let Some(path) = Self::face_texture(mesh, d, slot.min(slots - 1), flags) else { return (false, None) };
+            self.alpha_index.get(path).copied().unwrap_or((false, None))
+        };
+        let mut push = |flags: u32, slot: usize, p: [Option<[f32; 3]>; 3], uv: [[u8; 2]; 3]| {
+            if flags & SKIP != 0 {
+                return;
+            }
+            let [Some(a), Some(b), Some(c)] = p else { return };
+            let (tex_masked, mask) = slot_info(slot, flags);
+            if flags & PF_MASKED != 0 || tex_masked {
+                if let Some(m) = mask {
+                    masked.push(MaskedTri { pos: [a, b, c], uv: uv.map(|t| [t[0] as f32 / 256.0, t[1] as f32 / 256.0]), mask: m });
                 }
+            } else {
+                out.extend_from_slice(&[a, b, c]);
+            }
+        };
+        if mesh.data.plain {
+            for t in &lod.mesh.tris {
+                push(t.poly_flags, t.texture_index as usize, t.vertex.map(|v| corner(v as usize)), t.uv);
             }
         } else {
             for f in &lod.faces {
-                if lod.materials.get(f.material as usize).is_some_and(|m| m[0] & SKIP != 0) {
-                    continue;
-                }
-                let v = |k: usize| lod.wedges.get(f.wedge[k] as usize).and_then(|w| corner(w.vertex as usize));
-                if let (Some(a), Some(b), Some(c)) = (v(0), v(1), v(2)) {
-                    out.extend_from_slice(&[a, b, c]);
-                }
+                let [flags, slot] = lod.materials.get(f.material as usize).copied().unwrap_or([0, 0]);
+                let w = |k: usize| lod.wedges.get(f.wedge[k] as usize);
+                let p = std::array::from_fn(|k| w(k).and_then(|w| corner(w.vertex as usize)));
+                let uv = std::array::from_fn(|k| w(k).map(|w| w.uv).unwrap_or([0, 0]));
+                push(flags, slot as usize, p, uv);
             }
         }
     }
 
+    /// One mesh actor through `DrawLodMesh`: the pose (two frames blended plus the blend channels, `GetFrame`) in world
+    /// space, the triangles of its level of detail, then runs of consecutive triangles with the same texture and blend
+    /// (pass 0: the opaque ones, 1: the blended ones, 2: all, in face order). Returns whether anything was drawn.
     fn draw_mesh(&mut self, cx: &Context, cb: vk::CommandBuffer, vp: &[f32; 16], view: &MeshView, pass: u8, d: &ActorDraw, mark: Option<u32>) -> bool {
         let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { return false };
         let lod = &mesh.data.lod;
@@ -932,6 +972,57 @@ impl ActorRenderer {
             }
         }
         true
+    }
+
+
+    /// The alpha masks `occluder_triangles` needs for these draws' masked faces (palette index 0 transparent, as the
+    /// masked upload): loaded once per texture.
+    pub fn prepare_alpha_masks(&mut self, view: &MapView, actors: &[ActorDraw]) {
+        for d in actors {
+            if d.sprite.is_some() || d.decal.is_some() || d.overlay || d.style >= 2 {
+                continue;
+            }
+            let key = (d.mesh.clone(), d.skins.clone(), d.all_textures.clone());
+            if self.alpha_seen.contains(&key) {
+                continue;
+            }
+            let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { continue };
+            let lod = &mesh.data.lod;
+            // the (slot, flags) pairs of the faces that can block light
+            let mut uses: Vec<(usize, u32)> = if mesh.data.plain {
+                lod.mesh.tris.iter().map(|t| (t.texture_index as usize, t.poly_flags)).collect()
+            } else {
+                lod.materials.iter().map(|m| (m[1] as usize, m[0])).collect()
+            };
+            uses.sort_unstable();
+            uses.dedup();
+            let slots = lod.mesh.textures.len().max(1);
+            let paths: Vec<(String, bool)> = uses
+                .iter()
+                .filter(|(_, f)| f & (0x1 | 0x4 | 0x40) == 0)
+                .filter_map(|&(slot, f)| Self::face_texture(mesh, d, slot.min(slots - 1), f).map(|p| (p.to_string(), f & PF_MASKED != 0)))
+                .collect();
+            self.alpha_seen.insert(key);
+            for (path, face_masked) in paths {
+                let entry = *self.alpha_index.entry(path.clone()).or_insert_with(|| (view.texture_masked_by_path(&path), None));
+                if (face_masked || entry.0) && entry.1.is_none() {
+                    let mask = view.texture_mips_by_path_masked(&path, true).and_then(|m| m.into_iter().next()).filter(|(w, h, px)| px.len() == (*w * *h * 4) as usize);
+                    if let Some((w, h, px)) = mask {
+                        let offset = self.alpha_bits.len() as u32;
+                        let mut bits = vec![0u32; ((w * h) as usize).div_ceil(32)];
+                        for (i, a) in px.chunks(4).map(|c| c[3]).enumerate() {
+                            if a > 127 {
+                                bits[i / 32] |= 1 << (i % 32);
+                            }
+                        }
+                        self.alpha_bits.extend(bits);
+                        self.alpha_index.insert(path, (entry.0, Some(self.alpha_info.len() as u32)));
+                        self.alpha_info.push([offset, w, h, 0]);
+                        self.alpha_version += 1;
+                    }
+                }
+            }
+        }
     }
 
     /// Loads the detail textures of a frame's detail polygons (call with `prepare`).

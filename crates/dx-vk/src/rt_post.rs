@@ -35,6 +35,49 @@ pub struct Caster {
     pub params: [f32; 4],
 }
 
+/// An alpha-tested face of a mesh as `rt_trace.frag` reads it: texture coordinates of its corners and its mask.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MaskedFace {
+    pub uv01: [f32; 4],
+    pub uv2: [f32; 2],
+    pub mask: u32,
+    pub _pad: u32,
+}
+
+/// A host-visible storage buffer, made again larger when needed.
+#[derive(Default)]
+struct HostBuffer(Option<(Buffer, *mut u8, u64)>);
+
+impl HostBuffer {
+    /// `data` into the buffer (at least 16 bytes, a storage buffer may not be empty).
+    fn write<T: Copy>(&mut self, cx: &Context, data: &[T]) -> Result<()> {
+        let need = (std::mem::size_of_val(data) as u64).max(16);
+        if !self.0.as_ref().is_some_and(|(_, _, cap)| *cap >= need) {
+            if let Some((b, _, _)) = self.0.take() {
+                cx.destroy_buffer(b);
+            }
+            let cap = need.next_power_of_two().max(4096);
+            let b = cx.create_buffer(cap, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            let p = unsafe { cx.device.map_memory(b.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
+            self.0 = Some((b, p, cap));
+        }
+        let (_, p, _) = self.0.as_ref().unwrap();
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, *p, std::mem::size_of_val(data)) };
+        Ok(())
+    }
+
+    fn buffer(&self) -> vk::Buffer {
+        self.0.as_ref().map(|b| b.0.buffer).unwrap_or_default()
+    }
+
+    fn destroy(&mut self, cx: &Context) {
+        if let Some((b, _, _)) = self.0.take() {
+            cx.destroy_buffer(b);
+        }
+    }
+}
+
 /// The main view's camera as the screen passes read it (`rt_common.glsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -86,6 +129,13 @@ pub struct RtPost {
     images: Option<(u32, u32, [Image; 3])>,
     /// Each frame slot's casters (buffer, mapping, capacity).
     casters: [Option<(Buffer, *mut Caster, usize)>; N],
+    /// Each frame slot's alpha-tested faces of meshes and each mesh's first face among them.
+    masked_faces: [HostBuffer; N],
+    mesh_first: [HostBuffer; N],
+    /// The alpha masks (`[offset, width, height, 0]` each, then one bit a texel) and the version they are of.
+    mask_info: HostBuffer,
+    mask_bits: HostBuffer,
+    mask_version: Option<u64>,
     pub caster_count: u32,
     /// The frame slot being recorded (from `set_casters`).
     slot: usize,
@@ -104,6 +154,10 @@ impl RtPost {
                 image(0),
                 vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).stage_flags(frag),
                 vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
+                vk::DescriptorSetLayoutBinding::default().binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
+                vk::DescriptorSetLayoutBinding::default().binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
+                vk::DescriptorSetLayoutBinding::default().binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
+                vk::DescriptorSetLayoutBinding::default().binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
             ];
             let blur_b = [image(0)];
             let apply_b = [image(0), image(1)];
@@ -113,7 +167,7 @@ impl RtPost {
             let sizes = [
                 vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(7 * N as u32),
                 vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(N as u32),
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(N as u32),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(5 * N as u32),
             ];
             let pool = cx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(4 * N as u32).pool_sizes(&sizes), None)?;
             let mut sets = [[vk::DescriptorSet::null(); 4]; N];
@@ -199,7 +253,7 @@ impl RtPost {
                     .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                 None,
             )?;
-            Ok(Some(RtPost { set_layouts, pool, sets, layouts, pipelines, sampler, images: None, casters: [const { None }; N], caster_count: 0, slot: 0 }))
+            Ok(Some(RtPost { set_layouts, pool, sets, layouts, pipelines, sampler, images: None, casters: [const { None }; N], masked_faces: Default::default(), mesh_first: Default::default(), mask_info: Default::default(), mask_bits: Default::default(), mask_version: None, caster_count: 0, slot: 0 }))
         }
     }
 
@@ -224,6 +278,28 @@ impl RtPost {
         let (_, p, _) = own.as_ref().unwrap();
         unsafe { std::ptr::copy_nonoverlapping(casters.as_ptr(), *p, casters.len()) };
         self.caster_count = casters.len() as u32;
+        Ok(())
+    }
+
+    /// This frame's alpha-tested faces of meshes (in the order of the meshes' second geometries) and each mesh's
+    /// first face among them (call after `set_casters`).
+    pub fn set_masked_faces(&mut self, cx: &Context, faces: &[MaskedFace], mesh_first: &[u32]) -> Result<()> {
+        self.masked_faces[self.slot].write(cx, faces)?;
+        self.mesh_first[self.slot].write(cx, mesh_first)
+    }
+
+    /// The alpha masks (`ActorRenderer::alpha_info`/`alpha_bits`), when their `version` changed.
+    pub fn set_masks(&mut self, cx: &Context, info: &[[u32; 4]], bits: &[u32], version: u64) -> Result<()> {
+        if self.mask_version == Some(version) {
+            return Ok(());
+        }
+        if self.mask_version.is_some() {
+            // earlier frames may still read them
+            unsafe { cx.device.device_wait_idle()? };
+        }
+        self.mask_info.write(cx, info)?;
+        self.mask_bits.write(cx, bits)?;
+        self.mask_version = Some(version);
         Ok(())
     }
 
@@ -302,6 +378,9 @@ impl RtPost {
             let stencil_info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(stencil).image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let dist_info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(images[2].view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let casters_info = [vk::DescriptorBufferInfo::default().buffer(casters).range(vk::WHOLE_SIZE)];
+            let storage = |b: vk::Buffer| [vk::DescriptorBufferInfo::default().buffer(b).range(vk::WHOLE_SIZE)];
+            let (faces_info, first_info) = (storage(self.masked_faces[self.slot].buffer()), storage(self.mesh_first[self.slot].buffer()));
+            let (minfo_info, mbits_info) = (storage(self.mask_info.buffer()), storage(self.mask_bits.buffer()));
             let handles = [tlas];
             let mut accel_info = vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&handles);
             let mut accel_write = vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(1).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).push_next(&mut accel_info);
@@ -314,6 +393,10 @@ impl RtPost {
                 image_write(sets[0], 3, &stencil_info),
                 accel_write,
                 vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&casters_info),
+                vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&faces_info),
+                vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&first_info),
+                vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&minfo_info),
+                vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mbits_info),
                 image_write(sets[1], 0, &traced_info),
                 image_write(sets[2], 0, &blurred_info),
                 image_write(sets[2], 1, &dist_info),
@@ -381,6 +464,11 @@ impl RtPost {
     }
 
     pub fn destroy(mut self, cx: &Context) {
+        for b in self.masked_faces.iter_mut().chain(self.mesh_first.iter_mut()) {
+            b.destroy(cx);
+        }
+        self.mask_info.destroy(cx);
+        self.mask_bits.destroy(cx);
         self.destroy_images(cx);
         for (b, _, _) in self.casters.iter_mut().filter_map(Option::take) {
             cx.destroy_buffer(b);

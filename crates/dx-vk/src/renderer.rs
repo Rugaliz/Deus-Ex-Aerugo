@@ -834,6 +834,9 @@ impl Renderer {
     fn prepare_frame(&mut self, view: &mut MapView, actors: &[ActorDraw]) -> Result<()> {
         self.actors.begin_frame(self.cx.frame_slot());
         self.actors.prepare(&self.cx, view, actors)?;
+        if self.rt.is_some() {
+            self.actors.prepare_alpha_masks(view, actors);
+        }
         let sub_children = self.ui_views.iter().filter_map(|v| v.lists.as_ref()).flat_map(|l| l.children.iter());
         for c in self.child_views.iter().flatten().chain(sub_children) {
             self.actors.prepare(&self.cx, view, &c.actors)?;
@@ -1163,17 +1166,27 @@ const SHADOW_MAX: f32 = 0.9;
 fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], eye: [f32; 3], cb: vk::CommandBuffer) -> Result<bool> {
     let Some((frames, post)) = rt.as_mut() else { return Ok(false) };
     let frame = &mut frames[cx.frame_slot()];
-    // each mesh its own geometry; its bounds and its lights make its casters
+    // each mesh two geometries (opaque faces, alpha-tested ones); its bounds and its lights make its casters
     let (mut tris, mut parts) = (Vec::new(), Vec::new());
+    let (mut faces, mut mesh_first) = (Vec::new(), Vec::new());
+    let mut masked = Vec::new();
     let mut casters: Vec<(f32, crate::rt_post::Caster)> = Vec::new();
     for d in actors {
         let first = tris.len();
-        actors_gpu.occluder_triangles(d, &mut tris);
-        if tris.len() == first {
+        masked.clear();
+        actors_gpu.occluder_triangles(d, &mut tris, &mut masked);
+        let opaque = tris.len() - first;
+        if opaque == 0 && masked.is_empty() {
             continue;
         }
-        parts.push((first as u32, (tris.len() - first) as u32));
-        let Some(l) = d.lighting.as_ref() else { continue };
+        let masked_first = tris.len();
+        for m in &masked {
+            tris.extend_from_slice(&m.pos);
+        }
+        parts.push([first as u32, opaque as u32, masked_first as u32, (masked.len() * 3) as u32]);
+        mesh_first.push(faces.len() as u32);
+        faces.extend(masked.iter().map(|m| crate::rt_post::MaskedFace { uv01: [m.uv[0][0], m.uv[0][1], m.uv[1][0], m.uv[1][1]], uv2: m.uv[2], mask: m.mask, _pad: 0 }));
+        let Some(l) = d.lighting.as_ref().or(d.shadow_lighting.as_ref()) else { continue };
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for v in &tris[first..] {
             for k in 0..3 {
@@ -1207,17 +1220,19 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
     casters.truncate(MAX_CASTERS);
     let casters: Vec<crate::rt_post::Caster> = casters.into_iter().map(|c| c.1).collect();
     post.set_casters(cx, &casters)?;
+    post.set_masked_faces(cx, &faces, &mesh_first)?;
+    post.set_masks(cx, &actors_gpu.alpha_info, &actors_gpu.alpha_bits, actors_gpu.alpha_version)?;
     let instances: Vec<(u64, [[f32; 4]; 3])> =
         placed.iter().filter_map(|(b, place)| movers.get(b).and_then(|w| w.rt_blas.as_ref()).map(|a| (a.address, crate::rt::instance_transform(place)))).collect();
     if std::env::var_os("DX_RT_LOG").is_some() {
-        eprintln!("RT: {} casters, {} mesh triangles in {} meshes, {} movers, world {}", casters.len(), tris.len() / 3, parts.len(), instances.len(), world.rt_blas.is_some());
+        eprintln!("RT: {} casters, {} mesh triangles ({} alpha-tested) in {} meshes, {} masks, {} movers, world {}", casters.len(), tris.len() / 3, faces.len(), parts.len(), actors_gpu.alpha_info.len(), instances.len(), world.rt_blas.is_some());
         if std::env::var("DX_RT_LOG").is_ok_and(|v| v == "2") {
             for c in &casters {
                 eprintln!("  caster at {:?} r {:.0}: light {:?}, dark {:.2}, reach {:.0}", &c.centre[..3], c.centre[3], &c.light[..3], c.params[0], c.params[1]);
             }
-            for d in actors.iter().filter(|d| d.lighting.is_some() && d.sprite.is_none()) {
-                let l = d.lighting.as_ref().unwrap();
-                eprintln!("  mesh {} at {:?}: ambient {:?} scale {:.2}, lights {:?}", d.mesh, d.location, l.ambient, l.scale, l.lights);
+            for d in actors.iter().filter(|d| d.sprite.is_none() && d.decal.is_none()) {
+                let l = d.lighting.as_ref().or(d.shadow_lighting.as_ref());
+                eprintln!("  mesh {} at {:?} unlit {} style {} overlay {}: {} lights", d.mesh, d.location, d.unlit, d.style, d.overlay, l.map(|l| l.lights.len()).unwrap_or(0));
             }
         }
     }

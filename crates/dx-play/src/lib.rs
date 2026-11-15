@@ -1099,6 +1099,8 @@ impl Session {
     #[allow(clippy::too_many_arguments)]
     fn draw_list(&mut self, cam: &Camera, hide: u32, weapon: bool, picked: Option<(&ue_registry::FxHashSet<u32>, &ue_registry::FxHashSet<(u32, usize)>)>, ranks: Option<&ue_registry::FxHashMap<(u32, u32), u32>>, child: bool, clip: Option<&ClipFrame>) -> Vec<dx_soft::ActorDraw> {
         let rank_of = |a: u32, item: u32| ranks.and_then(|r| r.get(&(a, item)).copied()).unwrap_or(u32::MAX);
+        // with ray-traced shadows, unlit meshes (trees) get the lights around them too, for their shadows
+        let shadow_lights = !child && self.quality().rt_shadows;
         let ang = |u: i32| (u & 0xFFFF) as f32 * std::f32::consts::TAU / 65536.0;
         let (sp, cp) = ang(cam.pitch).sin_cos();
         let (sy, cy) = ang(cam.yaw).sin_cos();
@@ -1160,6 +1162,8 @@ impl Session {
             draw.rank = rank_of(a, u32::MAX);
             if lit {
                 draw.lighting = Some(self.mesh_lighting(a, true));
+            } else if shadow_lights && draw.sprite.is_none() && draw.decal.is_none() && !draw.overlay {
+                draw.shadow_lighting = Some(self.shadow_lighting(a));
             }
             let pawn_lighting = draw.lighting.clone();
             let draw_rank = draw.rank;
@@ -1229,6 +1233,48 @@ impl Session {
             fog_lights.sort_by(|x, y| depth(y.0).partial_cmp(&depth(x.0)).unwrap_or(std::cmp::Ordering::Equal));
         }
         dx_soft::MeshLighting { ambient: l.ambient, scale: l.scale, lights: l.lights.iter().map(|m| (m.pos, m.color, m.radius)).collect(), fog_lights }
+    }
+
+    /// The lights around an unlit actor for the ray-traced shadows it casts (the port's own; the engine lights it not
+    /// at all): the lights permeating its leaf that reach it, with their colour of the moment, its zone's ambient. Reads
+    /// only (no light cache, no light tags).
+    pub fn shadow_lighting(&mut self, a: u32) -> dx_soft::MeshLighting {
+        let leaf = self.vm.region_leaf(a);
+        let loc = self.vm.location(a);
+        let mut ids = Vec::new();
+        if leaf >= 0 {
+            if let Some(lf) = self.view.model.leaves.get(leaf as usize) {
+                if lf.i_permeating >= 0 {
+                    let mut i = lf.i_permeating as usize;
+                    while self.view.model.lights.get(i).copied().unwrap_or(0) != 0 {
+                        if let Some(&l) = self.vm.model_light_actors.get(i) {
+                            ids.push(l);
+                        }
+                        i += 1;
+                    }
+                }
+            }
+        }
+        let time = self.level_time();
+        let level_brightness = self.vm.fp(self.vm.level, "Brightness");
+        let mut lights = Vec::new();
+        for l in ids {
+            if l == 0 || !self.vm.is_live(l) || self.vm.u8p(l, "LightType") == 0 || self.vm.u8p(l, "LightBrightness") == 0 {
+                continue;
+            }
+            let li = self.live_light(l);
+            let r = (self.vm.u8p(l, "LightRadius") as f32 + 1.0) * 25.0;
+            let d2 = (0..3).map(|k| (li.pos[k] - loc[k]).powi(2)).sum::<f32>();
+            if d2 >= r * r {
+                continue;
+            }
+            let b = self.light_brightness_now(l, &li, time);
+            lights.push((li.pos, dx_light::manager::light_colour(&li, b, level_brightness), r));
+        }
+        let zone = self.vm.zone_of_actor(a);
+        let zone = if zone != 0 { zone } else { self.vm.level };
+        let ambient = ue_assets::light::hsv_to_rgb(self.vm.u8p(zone, "AmbientHue"), self.vm.u8p(zone, "AmbientSaturation"), self.vm.u8p(zone, "AmbientBrightness"));
+        dx_soft::MeshLighting { ambient, scale: 1.4, lights, fog_lights: Vec::new() }
     }
 
     /// `SetupForActor` for actor `a` this frame (see `mesh_lighting`); updates its light cache and fades.
@@ -1338,6 +1384,7 @@ impl Session {
     fn to_actor_draw(d: ue_vm::animation::MeshDraw, overlay: bool) -> dx_soft::ActorDraw {
         dx_soft::ActorDraw { mesh: d.mesh, frame_a: d.frame_a, frame_b: d.frame_b, blend: d.blend, location: d.location, rotation: d.rotation, pre_pivot: d.pre_pivot, frame: None, scale: d.scale, skins: d.skins, style: d.style, glow: d.glow, unlit: d.unlit, sprite: d.sprite, decal: d.decal, decal_polys: d.decal_polys, overlay,
             lighting: None,
+            shadow_lighting: None,
             blends: d.blends,
             rank: u32::MAX,
             fatness: d.fatness,
