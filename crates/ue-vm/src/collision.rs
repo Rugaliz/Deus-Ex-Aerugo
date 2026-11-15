@@ -53,6 +53,8 @@ pub struct Offsets {
     pub brush: usize,
     pub standing_count: usize,
     pub physics: usize,
+    /// `Actor.Role` (a byte).
+    pub role: usize,
     pub zone: usize,
     pub b_static: (usize, u32),
     pub b_movable: (usize, u32),
@@ -243,6 +245,7 @@ impl Vm {
             brush: off(r, "Brush"),
             standing_count: off(r, "StandingCount"),
             physics: off(r, "Physics"),
+            role: off(r, "Role"),
             zone: off(r, "Region"),
             b_static: bit(r, "bStatic"),
             b_movable: bit(r, "bMovable"),

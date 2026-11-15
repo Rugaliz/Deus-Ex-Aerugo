@@ -515,7 +515,10 @@ impl Vm {
             let r = self.tick_life_span(obj, dt);
             note(self, "LifeSpan", r);
         }
-        if self.objects[i].alive && dt > 0.0 {
+        // `AActor::Tick` (Engine 103a26xx): physics only for an actor that has some (`Physics != PHYS_None`) and is not a
+        // simulated proxy (`Role != ROLE_SimulatedProxy`); an actor at rest keeps its `RotationRate` without turning
+        let o = self.offsets();
+        if self.objects[i].alive && dt > 0.0 && self.u8_at(obj, o.physics) != crate::physics::PHYS_NONE && self.u8_at(obj, o.role) != 3 {
             let r = self.perform_physics(obj, dt);
             note(self, "Physics", r);
         }

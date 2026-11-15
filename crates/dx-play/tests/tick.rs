@@ -306,3 +306,33 @@ fn every_level_gets_its_own_game_rules_object() {
     assert_eq!(count(&mut s, "GameInfo"), 1);
     assert_eq!(count(&mut s, "GameReplicationInfo"), 1);
 }
+
+/// `AActor::Tick` runs physics only for an actor that has some: a thrown LAM that came to rest (`PHYS_None`) keeps its
+/// `RotationRate` but no longer turns (it used to spin in place).
+#[test]
+fn an_actor_at_rest_does_not_turn() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "01_NYC_UNATCOIsland").unwrap();
+    let p = s.player;
+    let loc = s.vm.location(p);
+    let yaw = s.vm.rotation(p)[1];
+    let fwd = ue_vm::rotate_vector([1.0, 0.0, 0.0], [0, yaw, 0], false);
+    let c = s.vm.reg.class_by_name("LAM").unwrap();
+    let cls = Value::Obj(s.vm.reg.obj_id(&s.vm.reg.class(c).path.clone()).0);
+    let at = [loc[0] + fwd[0] * 80.0, loc[1] + fwd[1] * 80.0, loc[2]];
+    let Value::Obj(lam) = s.vm.call_by_name(p, "Spawn", vec![cls, Value::Obj(0), Value::Name(0), Value::Vector(at)]).unwrap() else { panic!() };
+    assert!(lam != 0, "the LAM spawns");
+    let at_rest = |s: &mut Session| matches!(s.vm.get_prop(lam, "Physics", 0), Ok(Value::Byte(0)));
+    for _ in 0..120 {
+        if at_rest(&mut s) {
+            break;
+        }
+        s.step(&Input::default(), DT);
+    }
+    assert!(at_rest(&mut s), "the LAM lands");
+    let rate = s.vm.get_property_text(lam, "RotationRate");
+    assert_ne!(rate, "(Pitch=0,Yaw=0,Roll=0)", "it keeps a spin rate");
+    let before = s.vm.rotation(lam);
+    run(&mut s, 60);
+    assert_eq!(s.vm.rotation(lam), before, "a LAM at rest keeps still");
+}
