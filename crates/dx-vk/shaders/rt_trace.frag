@@ -108,7 +108,8 @@ void main() {
         if (length(v - u * along) > allowed) continue;
         float lv = length(v);
         vec3 l = -v / lv;
-        if (dot(n, l) <= 0.0) continue;
+        float ndl = dot(n, l);
+        if (ndl <= 0.0) continue;
         vec3 side = normalize(abs(l.z) < 0.9 ? cross(l, vec3(0.0, 0.0, 1.0)) : cross(l, vec3(1.0, 0.0, 0.0)));
         vec3 up = cross(side, l);
         // four rays over the light's disc; four more between them where those disagree (a shadow's edge)
@@ -125,8 +126,10 @@ void main() {
         float dc = length(toC);
         float t;
         if (blocked(o, toC / dc, max(dc - r, 1.0), MASK_WORLD, t)) continue;
-        // farther from the light than the object, the point has less of its light to lose
-        float dark = c.params.x * min(lc * lc / (lv * lv), 1.0);
+        // the light the point loses: as much as the light gives it, which falls off with the angle it comes in at
+        // (a lamp low on the horizon lights the floor little, and its long shadow is faint) and, farther from the
+        // light than the object, with the distance
+        float dark = c.params.x * ndl * min(lc * lc / (lv * lv), 1.0);
         f *= 1.0 - dark * hidden / 8.0;
     }
 
