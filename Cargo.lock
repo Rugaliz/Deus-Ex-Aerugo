@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "dx-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sdl3",
  "ue-assets",
@@ -157,15 +157,15 @@ dependencies = [
 
 [[package]]
 name = "dx-fractal"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "dx-input"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "dx-light"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "dx-play"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dx-audio",
  "dx-input",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "dx-soft"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dx-fractal",
  "png",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ash",
  "dx-light",
@@ -797,14 +797,14 @@ dependencies = [
 
 [[package]]
 name = "ue-assets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-bsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-assets",
  "ue-package",
@@ -812,21 +812,21 @@ dependencies = [
 
 [[package]]
 name = "ue-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-package"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "zip",
 ]
 
 [[package]]
 name = "ue-registry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ue-config",
  "ue-package",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "ue-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "ue-assets",
