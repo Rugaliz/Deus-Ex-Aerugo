@@ -8,6 +8,11 @@ layout(push_constant) uniform Push {
 layout(set = 0, binding = 0) uniform sampler2D tex;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec3 v_color;
+// the mesh vertex shader's other outputs (unused here)
+layout(location = 2) in vec3 v_fog;
+layout(location = 3) in vec3 v_pos;
+layout(location = 4) in vec3 v_normal;
+layout(location = 5) flat in uint v_light;
 layout(location = 0) out vec4 out_color;
 void main() {
     vec3 t = texture(tex, v_uv).rgb;

@@ -13,12 +13,14 @@ layout(location = 3) in uint in_flags;
 layout(location = 4) in vec2 in_lm;      // lightmap position in atlas texels
 layout(location = 5) in vec3 in_ambient; // zone ambient (0..1 of a byte)
 layout(location = 6) in vec2 in_pan;     // auto-pan speed (texels: speed * 35 per second)
+layout(location = 7) in uint in_surf;    // level surface (ray-traced shadows' light list), 0xffffffff for movers
 layout(location = 0) out vec3 v_pos;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv;
 layout(location = 3) flat out uint v_flags;
 layout(location = 4) out vec2 v_lm;
 layout(location = 5) flat out vec3 v_ambient;
+layout(location = 6) flat out uint v_surf;
 void main() {
     gl_Position = pc.view_proj * vec4(in_pos, 1.0);
     v_pos = in_pos;
@@ -35,4 +37,5 @@ void main() {
     v_flags = in_flags;
     v_lm = in_lm;
     v_ambient = in_ambient;
+    v_surf = in_surf;
 }

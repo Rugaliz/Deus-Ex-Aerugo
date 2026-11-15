@@ -10,8 +10,8 @@ defaultproperties
 	choices(2)=Class'MenuChoice_AerugoColorDepth'
 	choices(3)=Class'MenuChoice_AerugoLightmaps'
 	choices(4)=Class'MenuChoice_AerugoMeshLighting'
-	choices(5)=None
-	choices(6)=None
+	choices(5)=Class'MenuChoice_AerugoRTShadows'
+	choices(6)=Class'MenuChoice_AerugoRTAO'
 	choices(7)=None
 	choices(8)=None
 	choices(9)=None

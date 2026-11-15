@@ -173,12 +173,12 @@ fn the_port_menus_set_what_the_host_reads() {
     s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
     s.exec("ShowMainMenu");
     let gfx = choices(&mut s, "MenuScreenAerugoGraphics");
-    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting"]);
+    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoRTShadows", "AerugoRTAO"]);
     s.settings_quality = true;
-    let enhanced = dx_vk::Quality { filter: 5, msaa: 4, deep_color: true, smooth_lightmaps: true, pixel_lighting: true };
+    let enhanced = dx_vk::Quality { filter: 5, msaa: 4, deep_color: true, smooth_lightmaps: true, pixel_lighting: true, rt_shadows: true, rt_ao: true };
     assert_eq!(s.quality(), enhanced, "the defaults");
-    for (i, v) in [(0, 1), (1, 3), (2, 0), (3, 0), (4, 0)] {
+    for (i, v) in [(0, 1), (1, 3), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)] {
         set(&mut s, gfx[i].1, v);
     }
-    assert_eq!(s.quality(), dx_vk::Quality { filter: 1, msaa: 8, deep_color: false, smooth_lightmaps: false, pixel_lighting: false });
+    assert_eq!(s.quality(), dx_vk::Quality { filter: 1, msaa: 8, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false });
 }

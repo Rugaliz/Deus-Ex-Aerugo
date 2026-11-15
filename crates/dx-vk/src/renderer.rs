@@ -616,6 +616,11 @@ pub struct Renderer {
     pub gpu_ms: Option<f64>,
     /// CPU time of this renderer's own phases in the last frame (milliseconds), for measurements.
     pub cpu_ms: Vec<(&'static str, f64)>,
+    /// The ray tracing of this frame (with the ray-traced picture options), the lights the host gives it, and the
+    /// level's surface count (the size of the light list table).
+    rt: Option<crate::rt::RtFrame>,
+    pub rt_lights: crate::rt::RtLights,
+    rt_surfaces: usize,
 }
 
 impl Renderer {
@@ -638,7 +643,8 @@ impl Renderer {
         let ui = UiRenderer::new(&cx)?;
         let sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2), None)? };
-        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: false, gpu_ms: None, cpu_ms: Vec::new() })
+        let rt = if cx.quality().ray_traced() { crate::rt::RtFrame::new(&cx)? } else { None };
+        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: false, gpu_ms: None, cpu_ms: Vec::new(), rt, rt_lights: Default::default(), rt_surfaces: view.model.surfs.len() })
     }
 
     /// Replaces the map being drawn (level travel): the world, the movers and the sky position. Meshes and textures
@@ -654,6 +660,8 @@ impl Renderer {
         }
         self.movers.clear();
         self.sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
+        self.rt_surfaces = view.model.surfs.len();
+        self.rt_lights = Default::default();
         Ok(())
     }
 
@@ -686,6 +694,12 @@ impl Renderer {
             }
         }
         self.target_layout = None;
+        if let Some(r) = self.rt.take() {
+            r.destroy(&self.cx);
+        }
+        if now.ray_traced() {
+            self.rt = crate::rt::RtFrame::new(&self.cx)?;
+        }
         Ok(true)
     }
 
@@ -870,12 +884,15 @@ impl Renderer {
         let (ui, quads, views, ui_actors) = (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors);
         let movers = &mut self.mover_worlds;
         let placed = &self.movers;
+        let (rt, rt_lights, rt_surfaces) = (&mut self.rt, &self.rt_lights, self.rt_surfaces);
+        let mut rt_result = Ok(());
         let mut record_ms = 0.0;
         let t = std::time::Instant::now();
         let r = cx.one_shot(|cb| {
             let t = std::time::Instant::now();
             Renderer::timer_start(cx, timer, cb);
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
+            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, rt_lights, rt_surfaces, cb);
             record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
             target.end_for_sampling(cx, cb);
             Renderer::timer_end(cx, timer, cb);
@@ -887,6 +904,7 @@ impl Renderer {
         self.target = Some((target, rb));
         self.target_layout = Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         r?;
+        rt_result?;
         self.timer_pending = true;
         self.read_timer();
         Ok(())
@@ -924,12 +942,15 @@ impl Renderer {
         let (ui, quads, views, ui_actors) = (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors);
         let movers = &mut self.mover_worlds;
         let placed = &self.movers;
+        let (rt, rt_lights, rt_surfaces) = (&mut self.rt, &self.rt_lights, self.rt_surfaces);
+        let mut rt_result = Ok(());
         let r = cx.one_shot(|cb| {
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
+            rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, rt_lights, rt_surfaces, cb);
             record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
             target.end_and_copy(cx, cb, rb);
         });
-        let pixels = r.and_then(|_| target.read_pixels(&self.cx, rb));
+        let pixels = r.and_then(|_| rt_result).and_then(|_| target.read_pixels(&self.cx, rb));
         self.target = Some((target, readback));
         self.target_layout = Some(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         pixels
@@ -953,6 +974,7 @@ impl Renderer {
             self.update_procedurals(view);
             Renderer::timer_start(&self.cx, self.timer, frame.cb);
             Renderer::record_procedural_uploads(&self.cx, &mut self.world, &mut self.mover_worlds, &mut self.actors, &mut self.ui, frame.cb);
+            record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, &self.rt_lights, self.rt_surfaces, frame.cb)?;
             let (target, rb) = self.target.take().unwrap();
             record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref());
             target.end_for_sampling(&self.cx, frame.cb);
@@ -986,8 +1008,48 @@ impl Renderer {
         for (_, w) in std::mem::take(&mut self.mover_worlds) {
             w.destroy(&self.cx);
         }
+        if let Some(r) = self.rt.take() {
+            r.destroy(&self.cx);
+        }
         self.ui.destroy(&self.cx);
         self.actors.destroy(&self.cx);
         self.world.destroy(&self.cx);
     }
+}
+
+/// This frame's ray tracing (before the scene's rendering starts): the meshes drawn as light blockers, the movers where
+/// they stand, the world, and the host's lights; the world and the movers then draw with its data. Without ray tracing
+/// they draw without.
+#[allow(clippy::too_many_arguments)]
+fn record_rt(cx: &Context, rt: &mut Option<crate::rt::RtFrame>, world: &World, movers: &HashMap<usize, World>, placed: &[(usize, Placement)], actors_gpu: &ActorRenderer, actors: &[ActorDraw], lights: &crate::rt::RtLights, surfaces: usize, cb: vk::CommandBuffer) -> Result<()> {
+    let set = match rt.as_mut() {
+        Some(rt) => {
+            // each mesh its own geometry; the mesh renderer remembers which, so a mesh's rays skip itself
+            let (mut tris, mut parts) = (Vec::new(), Vec::new());
+            let mut owners = HashMap::new();
+            for d in actors {
+                let first = tris.len();
+                actors_gpu.occluder_triangles(d, &mut tris);
+                if tris.len() > first {
+                    owners.insert(crate::actors::draw_key(d), parts.len() as u32);
+                    parts.push((first as u32, (tris.len() - first) as u32));
+                }
+            }
+            *actors_gpu.rt_owners.borrow_mut() = owners;
+            let instances: Vec<(u64, [[f32; 4]; 3])> =
+                placed.iter().filter_map(|(b, place)| movers.get(b).and_then(|w| w.rt_blas.as_ref()).map(|a| (a.address, crate::rt::instance_transform(place)))).collect();
+            if std::env::var_os("DX_RT_LOG").is_some() {
+                eprintln!("RT: {} lights, {} surface lists, {} mesh triangles in {} meshes, {} movers, world {}", lights.lights.len(), lights.surfaces.len(), tris.len() / 3, parts.len(), instances.len(), world.rt_blas.is_some());
+            }
+            rt.record(cx, cb, world.rt_blas.as_ref().map(|a| a.address), &instances, &tris, &parts, lights, surfaces)?;
+            rt.set
+        }
+        None => vk::DescriptorSet::null(),
+    };
+    world.rt_set.set(set);
+    actors_gpu.rt_set.set(set);
+    for w in movers.values() {
+        w.rt_set.set(set);
+    }
+    Ok(())
 }

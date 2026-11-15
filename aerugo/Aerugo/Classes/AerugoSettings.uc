@@ -20,6 +20,9 @@ var config int AntiAliasing;
 var config int DeepColor;
 var config int SmoothLightmaps;
 var config int PixelLighting;
+// ray-traced shadows of objects and ambient occlusion (ignored without a graphics card that can trace rays)
+var config int RTShadows;
+var config int RTAO;
 
 defaultproperties
 {
@@ -32,4 +35,6 @@ defaultproperties
 	DeepColor=1
 	SmoothLightmaps=1
 	PixelLighting=1
+	RTShadows=1
+	RTAO=1
 }

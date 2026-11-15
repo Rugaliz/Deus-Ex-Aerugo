@@ -66,6 +66,10 @@ pub struct Session {
     pub brightness_fixed: bool,
     /// Renderers use the player's picture options (`quality`); off for headless pictures and tests (the original's).
     pub settings_quality: bool,
+    /// The renderer draws ray-traced shadows: the world lighting pass also lists each drawn surface's lights
+    /// (`rt_lights`, handed to the renderer with the frame).
+    rt_shadows_wanted: bool,
+    rt_lights: dx_vk::rt::RtLights,
     /// The last frame's preparation phases (`prepare_vk_frame`), in milliseconds.
     prep_ms: Vec<(&'static str, f64)>,
     /// Mesh actors' world bounding boxes during one visibility pass (`compute_visibility` empties it).
@@ -189,7 +193,7 @@ impl Session {
         let rot = view.find_actor("PlayerStart").map(|(_, r)| r).unwrap_or([0.0; 3]);
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
-        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false };
+        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, rt_shadows_wanted: false, rt_lights: Default::default() };
         s.install_key_commands();
         s.apply_yaw();
         s.vm.ui_after_browse(s.player);
@@ -611,6 +615,8 @@ impl Session {
             deep_color: get("DeepColor", 1) != 0,
             smooth_lightmaps: get("SmoothLightmaps", 1) != 0,
             pixel_lighting: get("PixelLighting", 1) != 0,
+            rt_shadows: get("RTShadows", 1) != 0,
+            rt_ao: get("RTAO", 1) != 0,
         };
         AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality }
     }
@@ -618,11 +624,11 @@ impl Session {
     /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
     /// the original's for headless pictures and tests unless asked otherwise.
     pub fn quality(&mut self) -> dx_vk::Quality {
-        // `DX_QUALITY=filter,msaa,deep,lightmaps,pixel` (numbers): for comparing the options one by one
+        // `DX_QUALITY=filter,msaa,deep,lightmaps,pixel,rt_shadows,rt_ao` (numbers): for comparing the options one by one
         if let Some(v) = std::env::var("DX_QUALITY").ok() {
             let n: Vec<u32> = v.split(',').map(|x| x.trim().parse().unwrap_or(0)).collect();
             let g = |i: usize| n.get(i).copied().unwrap_or(0);
-            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), deep_color: g(2) != 0, smooth_lightmaps: g(3) != 0, pixel_lighting: g(4) != 0 };
+            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), deep_color: g(2) != 0, smooth_lightmaps: g(3) != 0, pixel_lighting: g(4) != 0, rt_shadows: g(5) != 0, rt_ao: g(6) != 0 };
         }
         if self.settings_quality {
             self.aerugo_settings().quality
@@ -635,7 +641,9 @@ impl Session {
     /// (with the world's lighting sent again in full).
     pub fn follow_quality(&mut self, r: &mut dx_vk::renderer::Renderer) -> Result<(), String> {
         let q = self.quality();
+        self.rt_shadows_wanted = r.quality().rt_shadows;
         if r.set_quality(q).map_err(|e| e.to_string())? {
+            self.rt_shadows_wanted = r.quality().rt_shadows;
             self.reload_vk_world(r)?;
             self.world_light = None;
             self.wants_world_light = true;
@@ -1757,6 +1765,7 @@ impl Session {
         let lighting = dx_light::collect(&mut self.vm.reg, self.map_pkg, &self.view.model);
         let quality = self.quality();
         let mut r = dx_vk::renderer::Renderer::with_quality(&mut self.view, Some(&lighting), vk_validation(), instance_extensions, quality).map_err(|e| e.to_string())?;
+        self.rt_shadows_wanted = r.quality().rt_shadows;
         if r.quality() != dx_vk::Quality::ORIGINAL {
             eprintln!("picture options: {:?}", r.quality());
         }
@@ -2051,6 +2060,8 @@ impl Session {
         for (k, i) in &self.anim_frames {
             renderer.set_anim_frame(k, *i);
         }
+        self.rt_shadows_wanted = renderer.quality().rt_shadows;
+        renderer.rt_lights = std::mem::take(&mut self.rt_lights);
         renderer.lightmap_updates = self.take_lightmap_updates();
         renderer.mover_lightmap_updates = self.take_mover_lightmap_updates();
         renderer.mover_fog_updates = self.take_mover_fog_updates();
@@ -2076,6 +2087,7 @@ impl Session {
             if r.quality() != dx_vk::Quality::ORIGINAL {
                 eprintln!("picture options: {:?}", r.quality());
             }
+            self.rt_shadows_wanted = r.quality().rt_shadows;
             *renderer = Some(r);
         }
         let corona_rect = rect.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]).unwrap_or([0, 0, w as i32, h as i32]);
@@ -2101,6 +2113,8 @@ impl Session {
         for (k, i) in &self.anim_frames {
             r.set_anim_frame(k, *i);
         }
+        self.rt_shadows_wanted = r.quality().rt_shadows;
+        r.rt_lights = std::mem::take(&mut self.rt_lights);
         r.lightmap_updates = self.take_lightmap_updates();
         r.mover_lightmap_updates = self.take_mover_lightmap_updates();
         r.mover_fog_updates = self.take_mover_fog_updates();

@@ -98,6 +98,20 @@ impl Session {
         }
         let level = self.vm.level;
         let level_brightness = self.vm.fp(level, "Brightness");
+        // ray-traced shadows: every light on each drawn level surface with its colour now (the light list the shader
+        // tests against the objects); built alongside, without changing when the lights' brightness is computed
+        let rt = self.rt_shadows_wanted;
+        let mut rt_lights = dx_vk::rt::RtLights::default();
+        let mut rt_index: HashMap<u32, u32> = HashMap::new();
+        let mut rt_add = |list: &mut Vec<u32>, a: u32, l: &dx_light::Light, colour: [f32; 3]| {
+            let i = *rt_index.entry(a).or_insert_with(|| {
+                rt_lights.lights.push(rt_light(l, colour));
+                rt_lights.lights.len() as u32 - 1
+            });
+            if !list.contains(&i) {
+                list.push(i);
+            }
+        };
         let mut wl = self.world_light.take().unwrap();
         for si in surfs {
             let Some(sm) = wl.maps.surfaces.get(si).copied().flatten() else { continue };
@@ -114,6 +128,7 @@ impl Session {
             let mut lights: Vec<(usize, [f32; 3])> = Vec::new();
             // lights merged without a cache this frame (dynamic: unshadowed, computed every frame)
             let mut fresh: Vec<(Illumination, [f32; 3])> = Vec::new();
+            let mut rt_list: Vec<u32> = Vec::new();
             for (at, bits) in &list {
                 let a = self.vm.model_light_actors.get(*at).copied().unwrap_or(0);
                 if a == 0 || !self.vm.is_live(a) {
@@ -121,10 +136,20 @@ impl Session {
                 }
                 let l = self.live_light(a);
                 match manager::light_kind(&l) {
-                    manager::LightKind::None | manager::LightKind::Static => continue,
+                    manager::LightKind::None => continue,
+                    manager::LightKind::Static => {
+                        if rt && bits.is_some() {
+                            rt_add(&mut rt_list, a, &l, manager::light_colour(&l, (l.brightness as f32 / 255.0).clamp(0.0, 1.0), level_brightness));
+                        }
+                        continue;
+                    }
                     manager::LightKind::Dynamic => {
                         let b = self.light_brightness_now(a, &l, time);
-                        fresh.push((manager::illumination_at(&l, &surf, None, time), manager::light_colour(&l, b, level_brightness)));
+                        let colour = manager::light_colour(&l, b, level_brightness);
+                        if rt {
+                            rt_add(&mut rt_list, a, &l, colour);
+                        }
+                        fresh.push((manager::illumination_at(&l, &surf, None, time), colour));
                         continue;
                     }
                     manager::LightKind::PerFrame => {}
@@ -140,7 +165,11 @@ impl Session {
                     continue;
                 }
                 let b = self.light_brightness_now(a, &l, time);
-                lights.push((*at, manager::light_colour(&l, b, level_brightness)));
+                let colour = manager::light_colour(&l, b, level_brightness);
+                if rt {
+                    rt_add(&mut rt_list, a, &l, colour);
+                }
+                lights.push((*at, colour));
             }
             for &a in dyn_lights.get(&si).map(|v| v.as_slice()).unwrap_or(&[]) {
                 if !self.vm.is_live(a) {
@@ -149,8 +178,15 @@ impl Session {
                 let l = self.live_light(a);
                 if manager::light_kind(&l) == manager::LightKind::Dynamic {
                     let b = self.light_brightness_now(a, &l, time);
-                    fresh.push((manager::illumination_at(&l, &surf, None, time), manager::light_colour(&l, b, level_brightness)));
+                    let colour = manager::light_colour(&l, b, level_brightness);
+                    if rt {
+                        rt_add(&mut rt_list, a, &l, colour);
+                    }
+                    fresh.push((manager::illumination_at(&l, &surf, None, time), colour));
                 }
+            }
+            if !rt_list.is_empty() {
+                rt_lights.surfaces.push((si as u32, std::mem::take(&mut rt_list)));
             }
             // a surface no light changes keeps its static map: put back only if a light changed it before (the texels
             // are decoded only when needed)
@@ -168,6 +204,9 @@ impl Session {
             let texels = manager::frame_lightmap(&surf, &static_texels, &with, &self.vm.randoms);
             wl.pending.push(dx_light::atlas_rect(&sm, &texels));
             wl.changed.insert(si);
+        }
+        if rt {
+            self.rt_lights = rt_lights;
         }
         let mut movers = std::mem::take(&mut wl.movers);
         self.update_mover_light(&mut movers, &wl.lighting, &mover_surfs, &dyn_lights, time);
@@ -385,5 +424,22 @@ impl Session {
     /// The lighting the world light uses (for tests and tools).
     pub fn world_light_lighting(&self) -> Option<&dx_light::MapLighting> {
         self.world_light.as_ref().map(|w| &w.lighting)
+    }
+}
+
+/// A light as the ray-traced shaders read it (`dx_vk::rt::RtLight`): position and 1 / radius, its colour now (the
+/// lightmap's units) and kind (spot for the static spot and spotlight effects, non-incidence, else omni), spot axis and
+/// cone cosine.
+fn rt_light(l: &dx_light::Light, colour: [f32; 3]) -> dx_vk::rt::RtLight {
+    let radius = (25.0 * (l.radius_byte as f32 + 1.0)).max(1.0);
+    let kind = match l.effect {
+        8 | 12 => 1.0,
+        13 => 2.0,
+        _ => 0.0,
+    };
+    dx_vk::rt::RtLight {
+        pos_inv_r: [l.pos[0], l.pos[1], l.pos[2], 1.0 / radius],
+        colour_kind: [colour[0], colour[1], colour[2], kind],
+        axis_cone: [l.dir[0], l.dir[1], l.dir[2], 1.0 - l.cone as f32 / 256.0],
     }
 }

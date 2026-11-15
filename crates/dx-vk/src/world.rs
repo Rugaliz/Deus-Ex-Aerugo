@@ -20,6 +20,8 @@ const PF_UNLIT: u32 = 0x0040_0000;
 
 pub const WORLD_VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv"));
 pub const WORLD_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv"));
+/// The ray-traced variant (`RAYTRACE`), for devices with ray queries.
+pub const WORLD_RT_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_rt.frag.spv"));
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +39,8 @@ pub struct WorldVertex {
     pub ambient: [f32; 3],
     /// Auto-pan speed (the zone's `TexUPanSpeed`/`TexVPanSpeed` on `PF_AutoUPan`/`PF_AutoVPan` surfaces), else 0.
     pub pan: [f32; 2],
+    /// The level surface this vertex belongs to (its light list for ray-traced shadows); `u32::MAX` for movers.
+    pub surf: u32,
 }
 
 #[repr(C)]
@@ -295,7 +299,7 @@ fn surface_vertices(points: &[[f32; 3]], d: &SurfDraw, base: [f32; 3], tu: [f32;
             let rel = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
             let (a, b) = (dot(rel, tu), dot(rel, tv));
             let lightmap = sm.map(|s| s.atlas_pos(a, b)).unwrap_or([0.0; 2]);
-            WorldVertex { pos: p, normal, uv: [a + d.pan[0] as f32, b + d.pan[1] as f32], flags, lightmap, ambient, pan }
+            WorldVertex { pos: p, normal, uv: [a + d.pan[0] as f32, b + d.pan[1] as f32], flags, lightmap, ambient, pan, surf: u32::MAX }
         })
         .collect()
 }
@@ -307,6 +311,10 @@ pub struct World {
     textures: Vec<GpuTexture>,
     /// Per texture slot: a mod's replacement picture's scale (`replacement_scale`).
     uv_scale: Vec<u32>,
+    /// The light blockers of this model for ray queries (its own space), and this frame's ray query data (set 3;
+    /// null without ray tracing), set by the renderer before drawing.
+    pub rt_blas: Option<crate::rt::Accel>,
+    pub rt_set: std::cell::Cell<vk::DescriptorSet>,
     /// Animated surface textures: head slot -> the slots of its chain (head first), the head's key -> slot, and the
     /// frame each head shows now (index into its chain).
     anim: HashMap<usize, Vec<usize>>,
@@ -424,7 +432,8 @@ pub enum FaceUse {
 impl World {
     /// `lighting`: the map's lights and zone ambients (see `dx_light::collect`); without it the world is drawn unlit.
     pub fn new(cx: &Context, view: &MapView, lighting: Option<&dx_light::MapLighting>) -> Result<World> {
-        World::from_model(cx, view, &view.model, lighting)
+        let maps = lighting.map(|l| dx_light::generate(&view.model, l));
+        World::build_level(cx, view, &view.model, lighting, maps, true)
     }
 
     /// Any model of the map package: the world, or the brush of a mover (textures are looked up through `view`).
@@ -433,8 +442,14 @@ impl World {
         World::build(cx, view, model, lighting, maps)
     }
 
-    /// As `from_model` with lightmaps made by the caller (`lighting` then only supplies the zone ambients).
+    /// As `from_model` with lightmaps made by the caller (`lighting` then only supplies the zone ambients): a mover's
+    /// brush.
     pub fn build(cx: &Context, view: &MapView, model: &Model, lighting: Option<&dx_light::MapLighting>, maps: Option<dx_light::Lightmaps>) -> Result<World> {
+        World::build_level(cx, view, model, lighting, maps, false)
+    }
+
+    /// `level`: the level's own model (its vertices carry their surface's index for ray-traced shadows).
+    fn build_level(cx: &Context, view: &MapView, model: &Model, lighting: Option<&dx_light::MapLighting>, maps: Option<dx_light::Lightmaps>, level: bool) -> Result<World> {
         // 1. geometry, grouped by texture
         let mut slots: HashMap<(String, usize), usize> = HashMap::new();
         let mut tex_raw: Vec<i32> = Vec::new();
@@ -487,7 +502,12 @@ impl World {
             };
             let d = SurfDraw { slot, masked: surf.poly_flags & PF_MASKED != 0, blend, poly_flags: surf.poly_flags, sm, pan: [surf.pan_u, surf.pan_v] };
             surf_draws[face.surf] = Some(d);
-            let verts = surface_vertices(&face.vertices, &d, base, tu, tv, normal, zones, &zone_ambient, &zone_pan);
+            let mut verts = surface_vertices(&face.vertices, &d, base, tu, tv, normal, zones, &zone_ambient, &zone_pan);
+            if level {
+                for v in &mut verts {
+                    v.surf = face.surf as u32;
+                }
+            }
             let mut mirror = None;
             if surf.poly_flags & PF_MIRRORED != 0 {
                 // the plane of the surface, facing its visible side
@@ -503,6 +523,20 @@ impl World {
             }
             faces.push(F { slot, masked: d.masked, blend, verts, node: face.node, mirror, opaque: mirror.filter(|_| blend == 0) });
         }
+        // the light blockers for ray queries: opaque, unmasked faces (not translucent, modulated, masked or backdrops)
+        let rt_blas = if cx.quality().ray_traced() {
+            let (mut pos, mut idx): (Vec<[f32; 3]>, Vec<u32>) = (Vec::new(), Vec::new());
+            for f in faces.iter().filter(|f| f.blend == 0 && !f.masked && f.verts.len() >= 3) {
+                let base = pos.len() as u32;
+                pos.extend(f.verts.iter().map(|v| v.pos));
+                for k in 1..f.verts.len() as u32 - 1 {
+                    idx.extend_from_slice(&[base, base + k, base + k + 1]);
+                }
+            }
+            crate::rt::static_blas(cx, &pos, &idx)?
+        } else {
+            None
+        };
         let face_count = faces.len();
         faces.sort_by_key(|f| (f.opaque.is_some(), f.opaque, f.blend, f.slot, f.masked));
         let mut vertices: Vec<WorldVertex> = Vec::new();
@@ -685,10 +719,13 @@ impl World {
             let fog_zero_tex = GpuTexture::new(cx, &[(1, 1, vec![0; 4])])?;
             let (fog_zero_pool, fog_zero_set) = make_fog_set(cx, set_layout, lm_sampler, &fog_zero_tex)?;
             let fog_size = maps.as_ref().map(|m| (m.width, m.height)).unwrap_or((1, 1));
-            let set_layouts = [set_layout, set_layout, set_layout];
+            // set 3 with ray tracing: the per-frame ray query data (`rt::RtSupport::set_layout`)
+            let rt_layout = cx.rt.as_ref().filter(|_| cx.quality().ray_traced()).map(|r| r.set_layout);
+            let mut set_layouts = vec![set_layout, set_layout, set_layout];
+            set_layouts.extend(rt_layout);
             let layout = cx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts).push_constant_ranges(&push), None)?;
             let vs = cx.shader_module(WORLD_VERT)?;
-            let fs = cx.shader_module(WORLD_FRAG)?;
+            let fs = cx.shader_module(if rt_layout.is_some() { WORLD_RT_FRAG } else { WORLD_FRAG })?;
             // the picture options as specialization constants; the opaque pipeline with multisampling also draws masked
             // texels by alpha-to-coverage
             let q = cx.quality();
@@ -712,6 +749,7 @@ impl World {
                 vk::VertexInputAttributeDescription::default().location(4).format(vk::Format::R32G32_SFLOAT).offset(36),
                 vk::VertexInputAttributeDescription::default().location(5).format(vk::Format::R32G32B32_SFLOAT).offset(44),
                 vk::VertexInputAttributeDescription::default().location(6).format(vk::Format::R32G32_SFLOAT).offset(56),
+                vk::VertexInputAttributeDescription::default().location(7).format(vk::Format::R32_UINT).offset(64),
             ];
             let vertex_input = vk::PipelineVertexInputStateCreateInfo::default().vertex_binding_descriptions(&bindings).vertex_attribute_descriptions(&attrs);
             let input_asm = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -773,7 +811,7 @@ impl World {
 
             let vb = cx.upload(&vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
             let ib = cx.upload(&indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
-            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, uv_scale, dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, 8 << 20)?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, 4 << 20)?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, solid_nodes })
+            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, uv_scale, rt_blas, rt_set: std::cell::Cell::new(vk::DescriptorSet::null()), dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, 8 << 20)?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, 4 << 20)?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, solid_nodes })
         }
     }
 
@@ -855,7 +893,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let (mut bound, mut blend) = (usize::MAX, u8::MAX);
             for node in nodes {
                 let Some(&(bi, first, count)) = self.blended_nodes.get(node) else { continue };
@@ -889,7 +927,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             let mut bound = usize::MAX;
             for node in nodes {
@@ -983,7 +1021,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let (mut bound, mut blend) = (usize::MAX, u8::MAX);
             let mut k = 0;
             while k < draws.len() {
@@ -1027,7 +1065,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let (mut bound, mut blend) = (usize::MAX, u8::MAX);
             for d in draws.iter().filter(|d| d.count > 0) {
                 if d.blend != blend {
@@ -1104,7 +1142,7 @@ impl World {
                     if let Some((_, set, _)) = &self.lightmap {
                         cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
                     }
-                    cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+                    self.bind_fog_rt(cx, cb);
                     let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
                     cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
                     for b in backdrops {
@@ -1131,7 +1169,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
             cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
             cx.device.cmd_draw_indexed(cb, count, 1, first, 0, 0);
@@ -1168,7 +1206,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             for b in draws {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[self.frame_slot(b.texture)]], &[]);
                 push.misc[0] = b.masked as u32;
@@ -1213,7 +1251,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
             cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
             cx.device.cmd_draw_indexed(cb, count, 1, first, 0, 0);
@@ -1247,7 +1285,7 @@ impl World {
             if let Some((_, set, _)) = &self.lightmap {
                 cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
             }
-            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            self.bind_fog_rt(cx, cb);
             let mut bound = usize::MAX;
             let mut blend = 0u8;
             for b in &self.batches {
@@ -1293,6 +1331,15 @@ impl World {
     /// The replacement scale of the texture shown in `slot` (see `replacement_scale`), for the push constants.
     fn uv_scale_of(&self, slot: usize) -> u32 {
         self.uv_scale.get(self.frame_slot(slot)).copied().unwrap_or(0)
+    }
+
+    /// Binds the fog atlas (set 2) and, with ray tracing, this frame's ray query data (set 3).
+    unsafe fn bind_fog_rt(&self, cx: &Context, cb: vk::CommandBuffer) {
+        cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+        let rt = self.rt_set.get();
+        if rt != vk::DescriptorSet::null() {
+            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 3, &[rt], &[]);
+        }
     }
 
     fn frame_slot(&self, slot: usize) -> usize {
@@ -1391,6 +1438,9 @@ impl World {
             let _ = cx.device.device_wait_idle();
         }
         let _ = self.set_fragments(cx, None);
+        if let Some(a) = self.rt_blas.take() {
+            a.destroy(cx);
+        }
         unsafe {
             cx.device.destroy_pipeline(self.pipeline, None);
             cx.device.destroy_pipeline(self.translucent, None);

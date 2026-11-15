@@ -8,6 +8,7 @@ pub const MIP_MODE: ash::vk::SamplerMipmapMode = ash::vk::SamplerMipmapMode::NEA
 pub const MIP_LOD_BIAS: f32 = -0.5;
 
 pub mod texture;
+pub mod rt;
 pub mod world;
 pub mod actors;
 pub mod lodmesh;
@@ -38,29 +39,44 @@ pub struct Quality {
     pub smooth_lightmaps: bool,
     /// Meshes lit per pixel from the actor's light list instead of per vertex.
     pub pixel_lighting: bool,
+    /// Ray-traced shadows of characters, objects and doors from the map's lights (on the world and on each other).
+    pub rt_shadows: bool,
+    /// Ray-traced contact shadows (ambient occlusion) where surfaces and objects meet.
+    pub rt_ao: bool,
 }
 
 /// Specialization constants of the scene's fragment shaders: 0 `A2C` (masked texels by alpha-to-coverage: the opaque
 /// pipelines with multisampling), 1 `DEEP` (16-bit scene: no 8-bit frame-buffer rounding), 2 `SMOOTH_LM` (bicubic
 /// lightmaps), 3 `PIXEL_LIGHT` (meshes lit per pixel). A shader declares the ones it uses.
-pub const SCENE_SPEC: [vk::SpecializationMapEntry; 4] = [
+pub const SCENE_SPEC: [vk::SpecializationMapEntry; 7] = [
     vk::SpecializationMapEntry { constant_id: 0, offset: 0, size: 4 },
     vk::SpecializationMapEntry { constant_id: 1, offset: 4, size: 4 },
     vk::SpecializationMapEntry { constant_id: 2, offset: 8, size: 4 },
     vk::SpecializationMapEntry { constant_id: 3, offset: 12, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 4, offset: 16, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 5, offset: 20, size: 4 },
+    vk::SpecializationMapEntry { constant_id: 6, offset: 24, size: 4 },
 ];
 
-/// The specialization data for `SCENE_SPEC` (`map`) from the picture options; `a2c` for an opaque pipeline.
-pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 16] {
-    let mut d = [0u8; 16];
-    for (i, on) in [a2c && q.msaa > 1, q.deep_color, q.smooth_lightmaps, q.pixel_lighting].into_iter().enumerate() {
+/// The specialization data for `SCENE_SPEC` (`map`) from the picture options; `a2c` for an opaque pipeline. Constants
+/// 4 `RT_SHADOWS`, 5 `RT_AO` (the ray-traced shader variants only) and 6 `RT_DEBUG` (`DX_RT_DEBUG`: world fragments a
+/// ray from the eye finds hidden behind other geometry are drawn red, to check the ray-traced scene matches the drawn one).
+pub fn scene_spec_data(q: Quality, a2c: bool) -> [u8; 28] {
+    let mut d = [0u8; 28];
+    let debug = std::env::var_os("DX_RT_DEBUG").is_some_and(|v| v != "0");
+    for (i, on) in [a2c && q.msaa > 1, q.deep_color, q.smooth_lightmaps, q.pixel_lighting, q.rt_shadows, q.rt_ao, debug && q.ray_traced()].into_iter().enumerate() {
         d[i * 4..i * 4 + 4].copy_from_slice(&(on as u32).to_ne_bytes());
     }
     d
 }
 
 impl Quality {
-    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false };
+    /// Whether anything is ray traced (the scene then has acceleration structures and the ray-traced shader variants).
+    pub fn ray_traced(&self) -> bool {
+        self.rt_shadows || self.rt_ao
+    }
+
+    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false };
 }
 
 impl Default for Quality {
@@ -166,6 +182,8 @@ pub struct Context {
     max_anisotropy: f32,
     sample_counts: vk::SampleCountFlags,
     deep_color_ok: bool,
+    /// Ray queries and acceleration structures (`VK_KHR_ray_query`), when the device has them.
+    pub rt: Option<rt::RtSupport>,
 }
 
 unsafe extern "system" fn debug_callback(
@@ -259,6 +277,21 @@ impl Context {
             let deep = instance.get_physical_device_format_properties(physical, DEEP_COLOR_FORMAT).optimal_tiling_features;
             let deep_color_ok = deep.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR | vk::FormatFeatureFlags::TRANSFER_SRC);
             let enabled_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(feats.sampler_anisotropy == vk::TRUE);
+            // ray queries (the ray-traced shadow and ambient occlusion options): the extensions and their features
+            let rt_exts = [ash::khr::acceleration_structure::NAME, ash::khr::ray_query::NAME, ash::khr::deferred_host_operations::NAME];
+            let rt_ok = {
+                let available = instance.enumerate_device_extension_properties(physical)?;
+                let has = |name: &CStr| available.iter().any(|e| e.extension_name_as_c_str().map(|n| n == name).unwrap_or(false));
+                let mut asf = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
+                let mut rqf = vk::PhysicalDeviceRayQueryFeaturesKHR::default();
+                let mut v12 = vk::PhysicalDeviceVulkan12Features::default();
+                let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut asf).push_next(&mut rqf).push_next(&mut v12);
+                instance.get_physical_device_features2(physical, &mut f2);
+                rt_exts.iter().all(|n| has(n)) && asf.acceleration_structure == vk::TRUE && rqf.ray_query == vk::TRUE && v12.buffer_device_address == vk::TRUE
+            } && std::env::var_os("DX_NO_RT").is_none();
+            let mut f12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(rt_ok);
+            let mut f_as = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
+            let mut f_rq = vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(true);
             // the memory budget (what this process uses of each heap) when the driver has it: for measurements
             let available = instance.enumerate_device_extension_properties(physical)?;
             let has = |name: &CStr| available.iter().any(|e| e.extension_name_as_c_str().map(|n| n == name).unwrap_or(false));
@@ -270,11 +303,18 @@ impl Context {
             if memory_budget {
                 dev_exts.push(ash::ext::memory_budget::NAME.as_ptr());
             }
-            let dev_info = vk::DeviceCreateInfo::default()
+            if rt_ok {
+                dev_exts.extend(rt_exts.iter().map(|n| n.as_ptr()));
+            }
+            let mut dev_info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queue_info)
                 .enabled_extension_names(&dev_exts)
                 .enabled_features(&enabled_features)
-                .push_next(&mut f13);
+                .push_next(&mut f13)
+                .push_next(&mut f12);
+            if rt_ok {
+                dev_info = dev_info.push_next(&mut f_as).push_next(&mut f_rq);
+            }
             let device = instance.create_device(physical, &dev_info, None)?;
             let queue = device.get_device_queue(queue_family, 0);
             let pool = device.create_command_pool(
@@ -285,6 +325,7 @@ impl Context {
             )?;
             let mem_props = instance.get_physical_device_memory_properties(physical);
             let timestamp_period = props.limits.timestamp_period;
+            let rt = if rt_ok { Some(rt::RtSupport::new(&instance, &device)?) } else { None };
             Ok(Context {
                 entry,
                 instance,
@@ -302,6 +343,7 @@ impl Context {
                 max_anisotropy,
                 sample_counts,
                 deep_color_ok,
+                rt,
             })
         }
     }
@@ -316,6 +358,8 @@ impl Context {
     pub fn set_quality(&self, mut q: Quality) -> Quality {
         q.msaa = [8u32, 4, 2, 1].into_iter().find(|&n| n <= q.msaa.max(1) && self.sample_counts.contains(vk::SampleCountFlags::from_raw(n))).unwrap_or(1);
         q.deep_color &= self.deep_color_ok;
+        q.rt_shadows &= self.rt.is_some();
+        q.rt_ao &= self.rt.is_some();
         q.filter = q.filter.min(5);
         self.quality.set(q);
         q
@@ -388,6 +432,26 @@ impl Context {
         }
     }
 
+    /// A buffer whose device address shaders and acceleration structure builds use (memory allocated with
+    /// `DEVICE_ADDRESS`; `SHADER_DEVICE_ADDRESS` added to `usage`).
+    pub fn create_buffer_addressed(&self, size: u64, usage: vk::BufferUsageFlags, props: vk::MemoryPropertyFlags) -> Result<(Buffer, u64)> {
+        unsafe {
+            let buffer = self.device.create_buffer(
+                &vk::BufferCreateInfo::default().size(size.max(16)).usage(usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS).sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )?;
+            let req = self.device.get_buffer_memory_requirements(buffer);
+            let mut flags = vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+            let memory = self.device.allocate_memory(
+                &vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(self.memory_type(req.memory_type_bits, props)?).push_next(&mut flags),
+                None,
+            )?;
+            self.device.bind_buffer_memory(buffer, memory, 0)?;
+            let address = self.device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer));
+            Ok((Buffer { buffer, memory, size: size.max(16) }, address))
+        }
+    }
+
     /// Host-visible buffer filled with `data`.
     pub fn upload<T: Copy>(&self, data: &[T], usage: vk::BufferUsageFlags) -> Result<Buffer> {
         let size = std::mem::size_of_val(data) as u64;
@@ -441,6 +505,9 @@ impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            if let Some(rt) = &self.rt {
+                self.device.destroy_descriptor_set_layout(rt.set_layout, None);
+            }
             self.device.destroy_command_pool(self.pool, None);
             self.device.destroy_device(None);
             if let Some((loader, m)) = self.debug.take() {

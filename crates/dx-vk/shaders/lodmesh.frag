@@ -1,4 +1,7 @@
-#version 450
+#version 460
+#ifdef RAYTRACE
+#extension GL_EXT_ray_query : require
+#endif
 // multisampled opaque pipelines: masked texels by alpha-to-coverage (`dx_vk::A2C_SPEC`)
 layout(constant_id = 0) const bool A2C = false;
 // meshes lit per pixel from the actor's light list (the picture option); otherwise the vertex colour
@@ -12,6 +15,75 @@ layout(push_constant) uniform Push {
     uvec4 params;
     vec4 clip; // see lodmesh.vert
 } pc;
+#ifdef RAYTRACE
+// the ray-traced picture options (`dx_vk::SCENE_SPEC`); `rt.rs` for the data (set 2)
+layout(constant_id = 4) const bool RT_SHADOWS = false;
+layout(constant_id = 5) const bool RT_AO = false;
+layout(set = 2, binding = 0) uniform accelerationStructureEXT tlas;
+
+// Whether anything lies on the segment from `o` along unit `d` up to `tmax`; the distance to it in `t`.
+bool blocked(vec3 o, vec3 d, float tmax, out float t) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, o, 0.0, d, tmax);
+    // meshes are not opaque geometries: a hit counts unless it is on this mesh itself (`params.w`: its geometry + 1)
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT
+            && uint(rayQueryGetIntersectionGeometryIndexEXT(q, false)) + 1u != pc.params.w) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+    t = hit ? rayQueryGetIntersectionTEXT(q, true) : tmax;
+    return hit;
+}
+
+float ign() {
+    return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
+
+// How much of a light at `light` reaches `p` past the world and every object (the mesh itself too): the light as a
+// disc of radius 12, two rays, the segments stopping short of the light (a lamp's own mesh does not hide it).
+float light_visible(vec3 p, vec3 n, vec3 light) {
+    vec3 to0 = light - p;
+    float dist = length(to0);
+    vec3 dir = to0 / dist;
+    vec3 o = p + n * (dot(n, dir) < 0.0 ? -1.0 : 1.0);
+    vec3 a = abs(dir.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tx = normalize(cross(a, dir));
+    vec3 ty = cross(dir, tx);
+    float noise = ign();
+    float seen = 0.0;
+    for (int k = 0; k < 2; k++) {
+        float ang = 6.2831853 * (float(k) * 0.5 + noise);
+        float rad = 12.0 * sqrt((float(k) + 0.5) / 2.0);
+        vec3 to = light + (tx * cos(ang) + ty * sin(ang)) * rad - o;
+        float d = length(to);
+        float t;
+        if (d <= 25.0 || !blocked(o, to / d, d - 24.0, t)) seen += 0.5;
+    }
+    return seen;
+}
+
+// Ambient occlusion: two short rays over the hemisphere of `n`, closer hits darker (as the world's).
+float occlusion(vec3 p, vec3 n) {
+    const float R = 32.0;
+    vec3 a = abs(n.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tx = normalize(cross(a, n));
+    vec3 ty = cross(n, tx);
+    float noise = ign();
+    vec3 o = p + n * 1.0;
+    float occ = 0.0;
+    for (int i = 0; i < 2; i++) {
+        float u = (float(i) + 0.5) / 2.0;
+        float phi = 6.2831853 * (float(i) * 0.618034 + noise);
+        float r = sqrt(u);
+        vec3 d = normalize(tx * (r * cos(phi)) + ty * (r * sin(phi)) + n * sqrt(1.0 - u));
+        float t;
+        if (blocked(o, d, R, t)) occ += 1.0 - t / R;
+    }
+    return 1.0 - 0.6 * occ / 2.0;
+}
+#endif
 layout(set = 0, binding = 0) uniform sampler2D tex;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec3 v_color;
@@ -35,7 +107,7 @@ void main() {
     // D3D fixed function: texture * diffuse, then the specular colour (the vertex fog; `SPECULARENABLE` only for
     // fogged faces, zero elsewhere) added and saturated
     vec3 color = v_color;
-    if (PIXEL_LIGHT && v_light != 0xFFFFFFFFu) {
+    if (PIXEL_LIGHT && v_light < 0xFFFFFFFEu) {
         // `lodmesh::vertex_light` (FLightManager's mesh lighting) at this pixel, from the interpolated position and normal
         vec4 h0 = slots.data[v_light];
         vec4 h1 = slots.data[v_light + 1u];
@@ -60,9 +132,20 @@ void main() {
             float s = dot(rv, e) - e2;
             if (s > 0.0) v += s * s * 6.0 / (d2 * e2);
             float f = v * (1.0 - dist * l.w);
+#ifdef RAYTRACE
+            // only lights in front of the surface are tested: the mesh formula's mirrored-light term also lights
+            // surfaces from behind, which a shadow ray through the mesh itself would wrongly remove
+            if (RT_SHADOWS && f > 0.0 && dot(d, n) > 0.0) f *= light_visible(p, n, l.xyz);
+#endif
             if (f > 0.0) acc += f * lc;
         }
         color = min(acc * h0.w + h0.rgb, vec3(1.0));
     }
+#ifdef RAYTRACE
+    if (RT_AO && v_light != 0xFFFFFFFFu) {
+        vec3 n = normalize(v_normal);
+        color *= occlusion(v_pos, n);
+    }
+#endif
     out_color = vec4(min(c.rgb * color + v_fog, vec3(1.0)), alpha);
 }
