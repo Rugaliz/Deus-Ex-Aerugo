@@ -8,11 +8,13 @@ systems: Linux and Windows, any resolution and aspect ratio, high refresh rates.
 **No game data is included.** You need your own copy of Deus Ex (Steam or GOG). The engine reads the game's
 `System/`, `Maps/`, `Textures/`, `Sounds/` and `Music/` folders and never writes into them.
 
-> **Status: work in progress, not yet a complete game.** The logo cutscene, the main menu and New Game work; the
-> training mission and Liberty Island are playable with the HUD, inventory, skills, augmentations, goals, combat,
-> conversations, DataLinks, computers, doors, level changes and saving/loading (saves of the original game can be
-> imported). No mission has been played through to the end yet, and fog, particle effects, some procedural textures,
-> many augmentation effects, swimming and the endings are missing or incomplete.
+> **Status: the engine is complete; the game has not been played through yet.** Every engine and renderer function
+> the game uses is ported from the original and checked against it (a short list of documented differences
+> remains): the script VM and its natives, physics including swimming, AI, the renderer with lightmaps, volumetric
+> fog, mirrors, particles, coronas, decals and the water, fire and ice textures, the HUD and augmentations including
+> the vision modes, conversations, computers, saving and loading (also of the original game's saves), sound and
+> music. The intro, the training mission and Liberty Island have been played; the later missions and the four
+> endings load and run but have not been played from start to finish, so expect bugs there.
 
 ## Playing
 

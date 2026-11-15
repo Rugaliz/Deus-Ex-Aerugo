@@ -1,10 +1,10 @@
-//! `dx-play <game-dir> <Map> [--headless] [--frames N] [--shot out.png] [--forward] [--markers] [--at x,y,z --yaw deg --pitch deg]`
-//! (`--frames N` also ends a windowed run after N frames, for smoke tests with `SDL_VIDEODRIVER=dummy`)
+//! The game: `deusex [<game-dir>] [<Map>] [--windowed] [--size WxH]`, started on the logo and the main menu without a
+//! map. Development options: `--headless [--frames N] [--shot out.png] [--forward]` (no window: N frames, optionally
+//! walking forward, and a screenshot), `--bench` (frame timing), `--import-save <file.dxs>`; `--frames N` also ends a
+//! windowed run after N frames (smoke tests with `SDL_VIDEODRIVER=dummy`).
 //!
-//! Opens the map in an SDL window with the key bindings of `dx_input` (WASD, mouse look, Space, Ctrl/C crouch, Shift walks, F/right
-//! mouse use, game controllers; see `DEFAULT_INI`, override with `~/.config/deus-ex-aerugo/Input.ini`). Esc quits for now (no menu yet); ScrollLock toggles pawn outlines
-//! (software view) or lightmaps (`--vk`). With `--headless`
-//! no window is opened: the session runs N frames (optionally walking forward) and can save a screenshot.
+//! Key bindings are the game's own (`dx_input`), with modern defaults when there is no `Input.ini` in the per-user
+//! configuration directory.
 
 // Windows release builds start without a console window (errors are shown in a message box; run from a console, the
 // output goes to that console)
