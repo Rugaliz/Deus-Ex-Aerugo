@@ -23,6 +23,9 @@ var config int PixelLighting;
 // ray-traced shadows of objects and ambient occlusion (ignored without a graphics card that can trace rays)
 var config int RTShadows;
 var config int RTAO;
+// how many of the newest decals (blood, bullet holes, scorch marks) stay however long they are out of sight; older
+// ones go as in the original (a decal not seen for a second goes some 20 s after it appeared); 0 as the original
+var config int MaxDecals;
 
 defaultproperties
 {
@@ -37,4 +40,5 @@ defaultproperties
 	PixelLighting=1
 	RTShadows=1
 	RTAO=1
+	MaxDecals=1000
 }

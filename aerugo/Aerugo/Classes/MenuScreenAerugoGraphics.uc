@@ -12,7 +12,7 @@ defaultproperties
 	choices(4)=Class'MenuChoice_AerugoMeshLighting'
 	choices(5)=Class'MenuChoice_AerugoRTShadows'
 	choices(6)=Class'MenuChoice_AerugoRTAO'
-	choices(7)=None
+	choices(7)=Class'MenuChoice_AerugoMaxDecals'
 	choices(8)=None
 	choices(9)=None
 	choices(10)=None

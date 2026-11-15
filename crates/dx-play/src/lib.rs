@@ -66,6 +66,12 @@ pub struct Session {
     pub brightness_fixed: bool,
     /// Renderers use the player's picture options (`quality`); off for headless pictures and tests (the original's).
     pub settings_quality: bool,
+    /// How many of the newest decals (`DeusExDecal`: blood, bullet holes, scorch marks) are kept however long they are
+    /// out of sight (`AerugoSettings.MaxDecals`, read by `follow_settings`); 0: as the original, where a decal not
+    /// drawn within the last second goes some 20 s after it appeared.
+    pub max_decals: usize,
+    /// The decals in the order they appeared (for `max_decals`).
+    decal_order: Vec<u32>,
     /// The last frame's preparation phases (`prepare_vk_frame`), in milliseconds.
     prep_ms: Vec<(&'static str, f64)>,
     /// Mesh actors' world bounding boxes during one visibility pass (`compute_visibility` empties it).
@@ -189,7 +195,7 @@ impl Session {
         let rot = view.find_actor("PlayerStart").map(|(_, r)| r).unwrap_or([0.0; 3]);
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
-        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false };
+        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
         s.install_key_commands();
         s.apply_yaw();
         s.vm.ui_after_browse(s.player);
@@ -614,7 +620,7 @@ impl Session {
             rt_shadows: get("RTShadows", 1) != 0,
             rt_ao: get("RTAO", 1) != 0,
         };
-        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality }
+        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000) }
     }
 
     /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
@@ -655,8 +661,10 @@ impl Session {
                 self.brightness = b.clamp(0.0, 1.0);
             }
         }
-        let dpi = self.aerugo_settings().mouse_dpi.clamp(100, 32000);
+        let settings = self.aerugo_settings();
+        let dpi = settings.mouse_dpi.clamp(100, 32000);
         self.mouse_scale = 400.0 / dpi as f32;
+        self.max_decals = settings.max_decals.max(0) as usize;
         if let Some(mut a) = self.audio.take() {
             a.read_settings(&mut self.vm);
             self.audio = Some(a);
@@ -931,6 +939,27 @@ impl Session {
         }
     }
 
+    /// With `max_decals`: the newest that many `DeusExDecal`s count as drawn this frame, so `DeusExDecal.Timer` keeps
+    /// them (it destroys a decal not drawn within the last second); older ones are left to it as in the original.
+    fn keep_newest_decals(&mut self) {
+        if self.max_decals == 0 {
+            return;
+        }
+        let Some(cls) = self.vm.reg.class_by_name("DeusExDecal") else { return };
+        let vm = &self.vm;
+        self.decal_order.retain(|d| vm.decals.contains_key(d));
+        let known: ue_registry::FxHashSet<u32> = self.decal_order.iter().copied().collect();
+        let mut new: Vec<u32> = self.vm.decals.keys().copied().filter(|d| !known.contains(d) && self.vm.class_of(*d).is_some_and(|c| self.vm.is_a(c, cls))).collect();
+        new.sort_unstable();
+        self.decal_order.extend(new);
+        let now = self.level_time();
+        let from = self.decal_order.len().saturating_sub(self.max_decals);
+        for i in from..self.decal_order.len() {
+            let d = self.decal_order[i];
+            self.vm.set_fp(d, "LastRenderedTime", now);
+        }
+    }
+
     /// The actors and (proxy, particle) items a visibility pass drew in any of its frames.
     fn picked(frames: &[dx_vis::walk::FrameVis]) -> (ue_registry::FxHashSet<u32>, ue_registry::FxHashSet<(u32, usize)>) {
         let (mut actors, mut particles) = (ue_registry::FxHashSet::default(), ue_registry::FxHashSet::default());
@@ -1039,6 +1068,7 @@ impl Session {
             self.stamp_decals(&frames);
             self.vis_cache = Some((self.map_pkg, frames));
         }
+        self.keep_newest_decals();
         lap("  decals", &mut t);
         self.update_texture_animation(&drawn);
         lap("  texture animation", &mut t);
@@ -2304,5 +2334,7 @@ pub struct AerugoSettings {
     pub mouse_dpi: i32,
     /// The picture options of the Advanced Graphics screen.
     pub quality: dx_vk::Quality,
+    /// The newest decals kept out of sight (0: as the original).
+    pub max_decals: i32,
 }
 
