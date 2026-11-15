@@ -79,6 +79,7 @@ impl Session {
         self.map_name = stem;
         self.map_changed = true;
         self.vm.ui_after_browse(self.player);
+        self.use_configured_fov();
         if let Ok(Value::Rotator(r)) = self.vm.get_prop(pawn, "ViewRotation", 0) {
             self.yaw = r[1] & 0xFFFF;
             self.pitch = if r[0] & 0xFFFF > 32768 { (r[0] & 0xFFFF) - 65536 } else { r[0] & 0xFFFF };
@@ -88,6 +89,28 @@ impl Session {
             self.audio = Some(a);
         }
         Ok(())
+    }
+
+    /// The field of view is a setting (Display screen, `DefaultFOV` in the player's ini), not part of a saved game: a
+    /// loaded player gets the configured one. A saved `DefaultFOV` that differs from the class default would otherwise
+    /// stay, and every reset of the view to `Default.DesiredFOV` (the end of the drug effect, a scope put away, loading)
+    /// would leave `DesiredFOV != DefaultFOV`, which hides the weapon in hand for good (`Weapon.RenderOverlays`): the
+    /// original's bug with a changed field of view. A view zoomed at the save (`DesiredFOV` not the saved default)
+    /// stays zoomed.
+    fn use_configured_fov(&mut self) {
+        let p = self.player;
+        let Some(class) = self.vm.class_of(p).map(|c| self.vm.reg.names.str(self.vm.reg.class(c).name).to_string()) else { return };
+        let Some(want) = self.vm.default_value_of(&class, "DefaultFOV", 0).and_then(|v| v.as_f32()) else { return };
+        let saved = self.vm.get_prop(p, "DefaultFOV", 0).ok().and_then(|v| v.as_f32());
+        if saved == Some(want) {
+            return;
+        }
+        for key in ["DesiredFOV", "FOVAngle"] {
+            if self.vm.get_prop(p, key, 0).ok().and_then(|v| v.as_f32()) == saved {
+                let _ = self.vm.set_prop(p, key, 0, Value::Float(want));
+            }
+        }
+        let _ = self.vm.set_prop(p, "DefaultFOV", 0, Value::Float(want));
     }
 
     /// Continues a game saved by the ORIGINAL game (`<map>.dxs` of a save slot, see `docs/formats/save-format.md`). The map
@@ -107,6 +130,7 @@ impl Session {
         self.map_name = map_stem;
         self.map_changed = true;
         self.vm.ui_after_browse(self.player);
+        self.use_configured_fov();
         if let Ok(Value::Rotator(r)) = self.vm.get_prop(pawn, "ViewRotation", 0) {
             self.yaw = r[1] & 0xFFFF;
             self.pitch = if r[0] & 0xFFFF > 32768 { (r[0] & 0xFFFF) - 65536 } else { r[0] & 0xFFFF };

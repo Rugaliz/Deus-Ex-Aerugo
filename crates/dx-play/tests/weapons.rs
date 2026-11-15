@@ -332,3 +332,146 @@ fn the_item_in_hand_stays_fixed_in_the_view_during_mouse_look() {
     assert!(spread(&angles) < 0.2, "the item moves in the view: {:.3} degrees", spread(&angles));
     assert!(spread(&ya) <= 2.0, "the item turns against the view: {} units", spread(&ya));
 }
+
+/// User report: after a poison dart the weapon in hand vanished for good (it still fired). Poison runs the drug effect
+/// (`DeusExPlayer.DrugEffects`: the view sways, `DesiredFOV` swings for about four seconds); the item in hand must be
+/// drawn in front of the eye before, during and after it.
+#[test]
+fn the_item_in_hand_is_drawn_after_poison() {
+    let Some(s) = new_game() else { return };
+    poison_and_check(s);
+}
+
+/// The same with the field of view set to 95 in the menu (`MenuChoice_AerugoFOV`), in the session that set it and in
+/// a new one that reads it back from the player's settings.
+#[test]
+fn the_item_in_hand_is_drawn_after_poison_with_another_field_of_view() {
+    let Some(mut s) = new_game() else { return };
+    // the menu's own choice: its `SaveSetting` (as the Display screen's OK runs it)
+    assert!(s.open_menu_screen("MenuScreenDisplay"));
+    run(&mut s, 2);
+    let child = |s: &mut Session, w: u32, f: &str| match s.vm.get_prop(w, f, 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    let (mut stack, mut choice) = (vec![s.vm.ui_root(s.player)], 0);
+    while let Some(w) = stack.pop() {
+        if s.vm.class_of(w).is_some_and(|c| s.vm.reg.class(c).path.ends_with("MenuChoice_AerugoFOV")) {
+            choice = w;
+            break;
+        }
+        let mut c = child(&mut s, w, "firstChild");
+        while c != 0 {
+            stack.push(c);
+            c = child(&mut s, c, "nextSibling");
+        }
+    }
+    assert_ne!(choice, 0, "the field of view choice");
+    s.vm.call_by_name(choice, "SetValue", vec![Value::Int(4)]).unwrap();
+    s.vm.call_by_name(choice, "SaveSetting", vec![]).unwrap();
+    s.exec("ShowMainMenu");
+    let root = s.vm.ui_root(s.player);
+    s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
+    run(&mut s, 2);
+    let p = s.player;
+    eprintln!("after the menu: instance {:?} {:?}, class defaults {:?} {:?}", s.vm.get_prop(p, "DefaultFOV", 0).ok(), s.vm.get_prop(p, "DesiredFOV", 0).ok(), s.vm.default_value_of("JCDentonMale", "DefaultFOV", 0), s.vm.default_value_of("JCDentonMale", "DesiredFOV", 0));
+    eprintln!("-- the session that set it");
+    poison_and_check(s);
+    eprintln!("-- a new session");
+    let s = new_game().unwrap();
+    let fovs = |s: &mut Session| (s.vm.get_prop(s.player, "DefaultFOV", 0).ok(), s.vm.get_prop(s.player, "DesiredFOV", 0).ok(), s.vm.default_value_of("JCDentonMale", "DesiredFOV", 0));
+    let mut s = s;
+    eprintln!("instance DefaultFOV, DesiredFOV, class default DesiredFOV: {:?}", fovs(&mut s));
+    poison_and_check(s);
+}
+
+fn poison_and_check(mut s: Session) {
+    let p = s.player;
+    let w = give(&mut s, "WeaponPistol");
+    s.vm.call_by_name(p, "PutInHand", vec![Value::Obj(w)]).unwrap();
+    run(&mut s, 45);
+    let near = |s: &mut Session| -> Option<f32> {
+        s.advance(DT);
+        let cam = s.render_camera();
+        let (loc, _) = s.hand_overlay_poses().first().copied()?;
+        let d = [loc[0] - cam.pos[0], loc[1] - cam.pos[1], loc[2] - cam.pos[2]];
+        Some((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt())
+    };
+    let before = near(&mut s).expect("the pistol is drawn before");
+    let loc = s.vm.location(p);
+    let poison = s.vm.reg.names.intern("Poison");
+    s.vm.call_by_name(p, "TakeDamage", vec![Value::Int(5), Value::Obj(0), Value::Vector(loc), Value::Vector([0.0; 3]), Value::Name(poison)]).unwrap();
+    let mut log = Vec::new();
+    for i in 0..(12 * 30) {
+        let d = near(&mut s);
+        let fov = s.vm.get_prop(p, "FOVAngle", 0).ok().and_then(|v| v.as_f32());
+        if i % 15 == 0 {
+            log.push(format!("{:.1}s: hand {d:?} fov {fov:?} desired {:?}", i as f32 * DT, s.vm.get_prop(p, "DesiredFOV", 0).ok()));
+        }
+    }
+    let after = near(&mut s);
+    for l in &log {
+        eprintln!("{l}");
+    }
+    eprintln!("before {before}, after {after:?}, in hand {:?}", s.vm.get_prop(p, "inHand", 0).ok());
+    let after = after.expect("the pistol is drawn after the poison");
+    assert!((after - before).abs() < 2.0, "drawn {after} units from the eye, {before} before");
+}
+
+/// The same with a real poison dart (`DartPoison`) fired at the player from a few metres in front.
+#[test]
+fn the_item_in_hand_is_drawn_after_a_poison_dart() {
+    let Some(mut s) = new_game() else { return };
+    let p = s.player;
+    let w = give(&mut s, "WeaponPistol");
+    s.vm.call_by_name(p, "PutInHand", vec![Value::Obj(w)]).unwrap();
+    run(&mut s, 45);
+    let rot = s.vm.rotation(p);
+    let fwd = ue_vm::rotate_vector([1.0, 0.0, 0.0], [0, rot[1], 0], false);
+    let loc = s.vm.location(p);
+    let from = [loc[0] + fwd[0] * 200.0, loc[1] + fwd[1] * 200.0, loc[2] + 10.0];
+    let c = s.vm.reg.class_by_name("DartPoison").unwrap();
+    let cls = Value::Obj(s.vm.reg.obj_id(&s.vm.reg.class(c).path.clone()).0);
+    // aimed at the eye (the projectile sets its velocity from its rotation)
+    let eye = loc[2] + s.vm.get_prop(p, "BaseEyeHeight", 0).ok().and_then(|v| v.as_f32()).unwrap_or(0.0) - 10.0;
+    let from = [from[0], from[1], eye];
+    // fired by an NPC (a projectile never hits its own instigator)
+    let tc = s.vm.reg.class_by_name("ScriptedPawn").unwrap();
+    let npc = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a).map(|c| s.vm.is_a(c, tc)).unwrap_or(false)).unwrap();
+    let dart = match s.vm.call_by_name(npc, "Spawn", vec![cls, Value::Obj(0), Value::Name(0), Value::Vector(from), Value::Rotator([0, (rot[1] + 32768) & 0xFFFF, 0])]) { Ok(Value::Obj(o)) if o != 0 => o, other => panic!("{other:?}") };
+    assert!(s.vm.is_live(dart));
+    let health = |s: &mut Session| s.vm.get_prop(s.player, "Health", 0).ok().and_then(|v| v.as_i32());
+    let h0 = health(&mut s);
+    let mut hidden = 0;
+    for i in 0..(14 * 30) {
+        s.advance(DT);
+        let drawn = !s.hand_overlay_poses().is_empty();
+        if !drawn {
+            hidden += 1;
+        }
+        if i % 30 == 0 {
+            eprintln!("{}s: drawn {drawn} health {:?} desired {:?} default {:?} drug {:?}", i / 30, health(&mut s), s.vm.get_prop(p, "DesiredFOV", 0).ok(), s.vm.get_prop(p, "DefaultFOV", 0).ok(), s.vm.get_prop(p, "drugEffectTimer", 0).ok());
+        }
+    }
+    eprintln!("health {h0:?} -> {:?}, frames hidden {hidden}", health(&mut s));
+    assert!(health(&mut s) < h0, "the dart hit");
+    assert!(!s.hand_overlay_poses().is_empty(), "the pistol is drawn after the poison");
+}
+
+/// A game saved at one field of view and loaded after the menu changed it: the saved player brings its own `DefaultFOV`,
+/// the drug effect's reset uses the class default (`Default.DesiredFOV`).
+#[test]
+fn the_item_in_hand_is_drawn_after_poison_in_a_game_saved_at_another_field_of_view() {
+    let Some(mut s) = new_game() else { return };
+    s.save_game(0, "fov 75").unwrap();
+    let p = s.player;
+    s.vm.call_by_name(p, "SetDesiredFOV", vec![Value::Float(95.0)]).unwrap();
+    for c in ["DeusExPlayer", "JCDentonMale"] {
+        for k in ["DefaultFOV", "DesiredFOV"] {
+            s.vm.set_class_default(c, k, 0, Value::Float(95.0)).unwrap();
+        }
+    }
+    let index = (1..100).find(|i| s.vm.save_slot_dir(*i).is_some_and(|d| d.exists())).unwrap();
+    s.load_game(index).unwrap();
+    run(&mut s, 5);
+    let p = s.player;
+    eprintln!("after loading: instance DefaultFOV {:?} DesiredFOV {:?}, class default DesiredFOV {:?}", s.vm.get_prop(p, "DefaultFOV", 0).ok(), s.vm.get_prop(p, "DesiredFOV", 0).ok(), s.vm.default_value_of("JCDentonMale", "DesiredFOV", 0));
+    poison_and_check(s);
+}
