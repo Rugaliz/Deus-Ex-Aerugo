@@ -6,6 +6,8 @@
 // buffer, so each visible point is traced once. `rt_post.rs` for the casters.
 #include "rt_common.glsl"
 layout(set = 0, binding = 0) uniform sampler2D depth_tex;
+// 0x40: a pixel of an object (`rt_post::OBJECT_STENCIL`)
+layout(set = 0, binding = 3) uniform usampler2D stencil_tex;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 // a caster: one object with one of the (at most four) lights that light it most
 struct Caster {
@@ -25,26 +27,37 @@ bool ray_ok(vec3 o, vec3 d, float tmax) {
     return !any(isnan(o)) && !any(isinf(o)) && !any(isnan(d)) && dot(d, d) > 1e-12 && tmax > 0.5 && !isinf(tmax);
 }
 
-// Whether anything of `mask` lies on the segment from `o` along `d` to `tmax`; how far it is in `t`.
-bool blocked(vec3 o, vec3 d, float tmax, uint mask, out float t) {
+// Whether anything of `mask` lies on the segment from `o` along `d` between `tmin` and `tmax`; how far it is in `t`.
+bool blocked_in(vec3 o, vec3 d, float tmin, float tmax, uint mask, out float t) {
     t = tmax;
-    if (!ray_ok(o, d, tmax)) return false;
+    if (!ray_ok(o, d, tmax) || tmax <= tmin) return false;
     rayQueryEXT q;
-    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, o, 0.5, d, tmax);
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, mask, o, tmin, d, tmax);
     while (rayQueryProceedEXT(q)) {}
     bool hit = rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
     if (hit) t = rayQueryGetIntersectionTEXT(q, true);
     return hit;
 }
 
-// Ray `k` of `n` from `o` to a point of the light's disc (centre `light`, radius `size`, facing `o`), turned by `turn`.
-float hides(vec3 o, vec3 light, float size, vec3 side, vec3 up, float turn, int k, int n) {
+bool blocked(vec3 o, vec3 d, float tmax, uint mask, out float t) {
+    return blocked_in(o, d, 0.5, tmax, mask, t);
+}
+
+// Ray `k` of `n` from `o` to a point of the light's disc (centre `light`, radius `size`, facing `o`), turned by `turn`:
+// whether an object hides it where it goes through the caster's sphere (centre `cc`, radius `cr`; what lies elsewhere
+// on the way, such as a lamp's own housing, is not this caster's shadow).
+float hides(vec3 o, vec3 light, float size, vec3 side, vec3 up, float turn, int k, int n, vec3 cc, float cr) {
     float a = turn + float(k) * 2.3999632;
     float r = sqrt((float(k) + 0.5) / float(n)) * size;
     vec3 to = light + (cos(a) * side + sin(a) * up) * r - o;
     float d = length(to);
+    vec3 u = to / d;
+    float b = dot(cc - o, u);
+    float disc = b * b - (dot(cc - o, cc - o) - cr * cr);
+    if (disc <= 0.0) return 0.0;
+    float h = sqrt(disc);
     float t;
-    return blocked(o, to / d, d - 2.0, MASK_OBJECT, t) ? 1.0 : 0.0;
+    return blocked_in(o, u, max(b - h, 0.5), min(b + h, d - 2.0), MASK_OBJECT, t) ? 1.0 : 0.0;
 }
 
 void main() {
@@ -74,22 +87,23 @@ void main() {
     float turn = 6.2831853 * noise_at(vec2(px));
 
     float f = 1.0;
-    bool on_object = false;
-    for (uint i = 0u; i < pc.params.x; i++) {
+    // objects get no shadows from casters (their own lighting shades them; their shapes for the rays are coarser than
+    // drawn, so they would shadow themselves)
+    bool on_object = (texelFetch(stencil_tex, px, 0).r & 0x40u) != 0u;
+    uint shadow_casters = ((pc.params.y & 1u) != 0u && !on_object) ? pc.params.x : 0u;
+    for (uint i = 0u; i < shadow_casters; i++) {
         Caster c = casters[i];
         vec3 L = c.light.xyz, C = c.centre.xyz;
         float r = c.centre.w, lsize = c.light.w;
-        if (distance(p, C) < r) on_object = true;
-        if ((pc.params.y & 1u) == 0u) continue;
         // only where the object's shadow can fall: behind it, seen from the light, within the cone of its outline
-        // (widened by the light's size) and its reach; never on the object itself
+        // (widened by the light's size) and its reach
         vec3 dC = C - L;
         float lc = length(dC);
         if (lc < 1.0) continue;
         vec3 u = dC / lc;
         vec3 v = p - L;
         float along = dot(v, u);
-        if (along < lc - r || along - lc > c.params.y || distance(p, C) < r) continue;
+        if (along < lc - r || along - lc > c.params.y) continue;
         float allowed = (r + lsize) * along / lc + lsize;
         if (length(v - u * along) > allowed) continue;
         float lv = length(v);
@@ -99,9 +113,9 @@ void main() {
         vec3 up = cross(side, l);
         // four rays over the light's disc; four more between them where those disagree (a shadow's edge)
         float hidden = 0.0;
-        for (int k = 0; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8);
+        for (int k = 0; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
         if (hidden > 0.0 && hidden < 4.0) {
-            for (int k = 1; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8);
+            for (int k = 1; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
         } else {
             hidden *= 2.0;
         }

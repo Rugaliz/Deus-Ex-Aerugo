@@ -174,6 +174,9 @@ pub struct ActorRenderer {
     pub clip: [f32; 4],
     /// Actors drawn by the last `draw`.
     pub drawn: usize,
+    /// With the ray-traced screen passes: the stencil value the opaque parts of meshes drawn straight through the view
+    /// (no mirror or sky frame) mark their pixels with, so the passes know them (`rt_trace.frag`).
+    pub object_stencil: Option<u32>,
 }
 
 const MAX_TEXTURES: u32 = 8192;
@@ -512,6 +515,7 @@ impl ActorRenderer {
                 light_ptr,
                 light_cursor: 0,
                 light_end: MAX_SLOTS,
+                object_stencil: None,
                 lod_end: MAX_LOD_VERTICES,
                 meshes: HashMap::new(),
                 textures: HashMap::new(),
@@ -774,7 +778,8 @@ impl ActorRenderer {
                     }
                     continue;
                 }
-                if self.draw_mesh(cx, cb, &vp, &mesh_view, pass, d) && pass != 1 {
+                let mark = if pre.is_none() { self.object_stencil } else { None };
+                if self.draw_mesh(cx, cb, &vp, &mesh_view, pass, d, mark) && pass != 1 {
                     self.drawn += 1;
                 }
             }
@@ -816,7 +821,7 @@ impl ActorRenderer {
         }
     }
 
-    fn draw_mesh(&mut self, cx: &Context, cb: vk::CommandBuffer, vp: &[f32; 16], view: &MeshView, pass: u8, d: &ActorDraw) -> bool {
+    fn draw_mesh(&mut self, cx: &Context, cb: vk::CommandBuffer, vp: &[f32; 16], view: &MeshView, pass: u8, d: &ActorDraw, mark: Option<u32>) -> bool {
         let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { return false };
         let lod = &mesh.data.lod;
         let world = posed_vertices(lod, d);
@@ -916,7 +921,14 @@ impl ActorRenderer {
                 let push = LodPush { vp: *vp, params: [masked as u32, 0, 0, 0], clip: self.clip };
                 let bytes = std::slice::from_raw_parts(&push as *const LodPush as *const u8, std::mem::size_of::<LodPush>());
                 cx.device.cmd_push_constants(cb, self.lod_layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
+                let marked = mark.filter(|_| matches!(kind, Kind::Opaque));
+                if let Some(m) = marked {
+                    crate::set_stencil(cx, cb, crate::Stencil::Mark(m));
+                }
                 cx.device.cmd_draw(cb, count as u32, 1, (base + first) as u32, 0);
+                if marked.is_some() {
+                    crate::set_stencil(cx, cb, crate::Stencil::Off);
+                }
             }
         }
         true

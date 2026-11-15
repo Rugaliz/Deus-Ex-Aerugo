@@ -19,6 +19,10 @@ const N: usize = crate::FRAMES_IN_FLIGHT;
 /// The traced factor and the distance from the eye.
 const HALF_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
 
+/// The stencil value of pixels of objects (`ActorRenderer::object_stencil`); 0x80 marks openings to other frames (opaque
+/// mirrors, the sky) and smaller values the older mirror passes' areas (`rt_dist.frag`).
+pub const OBJECT_STENCIL: u32 = 0x40;
+
 /// One caster as `rt_trace.frag` reads it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -96,6 +100,7 @@ impl RtPost {
             let frag = vk::ShaderStageFlags::FRAGMENT;
             let image = |b: u32| vk::DescriptorSetLayoutBinding::default().binding(b).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1).stage_flags(frag);
             let trace_b = [
+                image(3),
                 image(0),
                 vk::DescriptorSetLayoutBinding::default().binding(1).descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(1).stage_flags(frag),
                 vk::DescriptorSetLayoutBinding::default().binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1).stage_flags(frag),
@@ -106,7 +111,7 @@ impl RtPost {
             let mk = |b: &[vk::DescriptorSetLayoutBinding]| cx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(b), None);
             let set_layouts = [mk(&trace_b)?, mk(&blur_b)?, mk(&apply_b)?, mk(&dist_b)?];
             let sizes = [
-                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(6 * N as u32),
+                vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(7 * N as u32),
                 vk::DescriptorPoolSize::default().ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR).descriptor_count(N as u32),
                 vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(N as u32),
             ];
@@ -306,6 +311,7 @@ impl RtPost {
             }
             let writes = [
                 image_write(sets[0], 0, &depth_info),
+                image_write(sets[0], 3, &stencil_info),
                 accel_write,
                 vk::WriteDescriptorSet::default().dst_set(sets[0]).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&casters_info),
                 image_write(sets[1], 0, &traced_info),

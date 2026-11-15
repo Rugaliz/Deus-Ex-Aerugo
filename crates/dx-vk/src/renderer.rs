@@ -325,7 +325,10 @@ fn record_world(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Ac
     let details = std::mem::take(&mut actors_gpu.details);
     let details_blended = std::mem::take(&mut actors_gpu.details_blended);
     let lists = Lists { children, blended: world.blended_order.as_deref(), mirrors: world.mirror_order.as_deref(), dynamic: movers.3, details: &details, details_blended: &details_blended, whole_movers: false };
+    // with the ray-traced passes, the objects' own pixels are marked for them
+    actors_gpu.object_stencil = rt.as_ref().map(|_| crate::rt_post::OBJECT_STENCIL);
     record_view(cx, world, movers, actors_gpu, sky, cb, target, cam, world_actors, aspect, &lists, None);
+    actors_gpu.object_stencil = None;
     actors_gpu.details = details;
     actors_gpu.details_blended = details_blended;
     if let Some((post, tlas)) = rt {
@@ -1148,6 +1151,10 @@ const MAX_CASTERS: usize = 256;
 const LIGHTS_PER_CASTER: usize = 4;
 /// The radius of a light's disc (the softness of the shadows' edges).
 const LIGHT_SIZE: f32 = 12.0;
+/// How dark a shadow is for a light's share of the object's light (OpenJK-Shin's `r_shadowStrength`: lights of about
+/// equal share each leave a weak shadow otherwise), and the darkest one shadow gets.
+const SHADOW_STRENGTH: f32 = 2.0;
+const SHADOW_MAX: f32 = 0.9;
 
 /// This frame's ray tracing (before the scene's rendering starts): the meshes drawn as light blockers, the movers where
 /// they stand and the world into the structures; the casters for the screen passes. Returns whether there is
@@ -1192,7 +1199,7 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
             }
             casters.push((
                 dist,
-                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [dark.min(1.0), (lr - lc).max(radius * 2.0), 0.0, 0.0] },
+                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [(dark * SHADOW_STRENGTH).min(SHADOW_MAX), (lr - lc).max(radius * 2.0), 0.0, 0.0] },
             ));
         }
     }
@@ -1204,6 +1211,15 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
         placed.iter().filter_map(|(b, place)| movers.get(b).and_then(|w| w.rt_blas.as_ref()).map(|a| (a.address, crate::rt::instance_transform(place)))).collect();
     if std::env::var_os("DX_RT_LOG").is_some() {
         eprintln!("RT: {} casters, {} mesh triangles in {} meshes, {} movers, world {}", casters.len(), tris.len() / 3, parts.len(), instances.len(), world.rt_blas.is_some());
+        if std::env::var("DX_RT_LOG").is_ok_and(|v| v == "2") {
+            for c in &casters {
+                eprintln!("  caster at {:?} r {:.0}: light {:?}, dark {:.2}, reach {:.0}", &c.centre[..3], c.centre[3], &c.light[..3], c.params[0], c.params[1]);
+            }
+            for d in actors.iter().filter(|d| d.lighting.is_some() && d.sprite.is_none()) {
+                let l = d.lighting.as_ref().unwrap();
+                eprintln!("  mesh {} at {:?}: ambient {:?} scale {:.2}, lights {:?}", d.mesh, d.location, l.ambient, l.scale, l.lights);
+            }
+        }
     }
     frame.record(cx, cb, world.rt_blas.as_ref().map(|a| a.address), &instances, &tris, &parts)?;
     Ok(frame.tlas().is_some())

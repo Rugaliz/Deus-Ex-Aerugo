@@ -31,13 +31,22 @@ fn hall_with_a_crate() -> Option<Session> {
     Some(s)
 }
 
-/// With `DX_QUALITY` set to `q` (see `Session::quality`), a picture.
+/// With `DX_QUALITY` set to `q` (see `Session::quality`), a picture. The first one runs a few frames of the game loop
+/// first (step, draw, mark what was drawn: the scripts that look at what was drawn, such as a pawn's blob shadow, have
+/// their turn); the others are of the same moment, so only the picture options differ.
 fn picture(s: &mut Session, r: &mut Option<dx_vk::renderer::Renderer>, q: &str) -> Option<dx_soft::Image> {
     std::env::set_var("DX_QUALITY", q);
     if let Some(r) = r.as_mut() {
         s.follow_quality(r).unwrap();
     }
-    // as the game loop does for every frame it draws: the visibility pass and the world's lighting (the light lists)
+    let frames = if r.is_none() { 4 } else { 0 };
+    for _ in 0..frames {
+        let _ = s.render_vk(r, 960, 540).ok()?;
+        let cam = s.render_camera();
+        s.mark_rendered(&cam);
+        s.step(&dx_play::Input::default(), DT);
+    }
+    // the visibility pass and the world's lighting (the light lists) for this view
     let _ = s.render_vk(r, 960, 540).ok()?;
     let cam = s.render_camera();
     s.mark_rendered(&cam);
@@ -98,8 +107,9 @@ fn characters_get_ray_traced_shadows() {
     if !r.as_ref().is_some_and(|r: &dx_vk::renderer::Renderer| r.cx.rt.is_some()) {
         return;
     }
+    let shadows = picture(&mut s, &mut r, "0,1,0,0,1,1,0").unwrap();
     let on = picture(&mut s, &mut r, "0,1,0,0,1,1,1").unwrap();
-    for (name, img) in [("paul_rt_off", &off), ("paul_rt_on", &on)] {
+    for (name, img) in [("paul_rt_off", &off), ("paul_rt_shadows", &shadows), ("paul_rt_on", &on)] {
         std::fs::write(shots().join(format!("{name}.png")), dx_soft::png(img.width, img.height, &img.rgba)).unwrap();
     }
     let (mut darker, mut lighter) = (0, 0);
