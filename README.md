@@ -1,94 +1,112 @@
 # Deus Ex Aerugo
 
-An open-source engine for **Deus Ex** (2000, the 1112fm Game of the Year build) written in Rust. It runs the game's
-original UnrealScript bytecode in its own virtual machine, draws with Vulkan and uses SDL3 for the window, input and
-sound. The goal is to behave exactly like the original executable, one engine function at a time, on current
-systems: Linux and Windows, any resolution and aspect ratio, high refresh rates.
+A new engine for **Deus Ex** (2000) that lets you play the original game on today's Windows and Linux PCs. You keep
+your own copy of the game; Aerugo only replaces the old program that runs it. Missions, characters, story and
+gameplay are exactly the original's, because Aerugo runs the game's own scripts and data unchanged.
 
-**No game data is included.** You need your own copy of Deus Ex (Steam or GOG). The engine reads the game's
-`System/`, `Maps/`, `Textures/`, `Sounds/` and `Music/` folders and never writes into them.
+## What you get
 
-> **Status: the engine is complete; the game has not been played through yet.** Every engine and renderer function
-> the game uses is ported from the original and checked against it (a short list of documented differences
-> remains): the script VM and its natives, physics including swimming, AI, the renderer with lightmaps, volumetric
-> fog, mirrors, particles, coronas, decals and the water, fire and ice textures, the HUD and augmentations including
-> the vision modes, conversations, computers, saving and loading (also of the original game's saves), sound and
-> music. The intro, the training mission and Liberty Island have been played; the later missions and the four
-> endings load and run but have not been played from start to finish, so expect bugs there.
+- **Runs on modern systems.** A native Windows 10/11 and Linux program. No compatibility patches, no Wine, nothing
+  else to install: one small file.
+- **Any screen.** Your monitor's own resolution, including widescreen and ultrawide (16:9, 21:9, 32:9), with a wider
+  view on wider screens instead of a stretched picture.
+- **Smooth and fast.** Hundreds of frames per second on a modern PC, ready for high refresh rate monitors. Choose how
+  vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a frame rate limit.
+- **Best picture, no fiddling.** Every texture, detail and effect at full quality; the old renderer and texture
+  options are gone. Lighting, fog, reflections, water and fire look as the original intended.
+- **Precise mouse aiming.** Tell the game your mouse's DPI, and the sensitivity slider shows how far you move the
+  mouse for a full turn, so aiming feels the same on any mouse.
+- **Better sound.** 128 sound channels instead of 16, so sounds no longer cut each other off, at your system's own
+  audio quality. The original's sound and music engine is recreated faithfully.
+- **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
+  game keeps working side by side.
 
-## Playing
+> **Status: the engine is complete, but the game has not been played through yet.** The intro, the training mission
+> and Liberty Island have been played; the later missions and the endings load and run but have not been played from
+> start to finish, so expect bugs there. Bug reports are welcome in the
+> [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
 
-1. Download the archive for your system from the [releases](https://github.com/Rugaliz/Deus-Ex-Aerugo/releases).
-2. Copy `deusex` (Linux) or `deusex.exe` (Windows) into your Deus Ex folder, the one that contains `System/` and
-   `Maps/`. On Steam that is `steamapps/common/Deus Ex`.
-3. Start it from there (on Linux: `./deusex`). It plays the logo; a click or Esc opens the main menu.
+## How to install
 
-You need a graphics driver with **Vulkan 1.3** (any GPU from roughly 2016 on with a current driver). Nothing else has
-to be installed: SDL3 is built into the executable.
+You need:
+- **Deus Ex: Game of the Year Edition** from Steam or GOG, installed.
+- A 64-bit **Windows 10/11** or **Linux** PC.
+- A graphics card with **Vulkan 1.3**: almost any card from 2016 or later, with an up-to-date driver.
 
-Command line (all optional):
+Then:
+1. Download the file for your system from the [releases page](https://github.com/Rugaliz/Deus-Ex-Aerugo/releases):
+   the `.zip` for Windows, the `.tar.gz` for Linux.
+2. Open your Deus Ex folder, the one that contains `System` and `Maps`. On Steam: right-click Deus Ex in your library,
+   then *Manage* → *Browse local files*. On GOG Galaxy: *More* → *Manage installation* → *Show folder*.
+3. Unpack the download and copy **`deusex.exe`** (Windows) or **`deusex`** (Linux) into that folder.
+4. Double-click it to play (on Linux you can also run `./deusex` in that folder).
 
-```
-deusex ["<Deus Ex folder>"] [<Map>] [--windowed] [--size 1920x1080]
-deusex 00_Training                     # start a map directly
-```
+Your settings and saves are kept in `%APPDATA%\deus-ex-aerugo` (Windows) or `~/.config/deus-ex-aerugo` (Linux). To
+uninstall, delete the file you copied, and that folder if you want your saves gone too.
 
-Settings, key bindings and saved games are kept in your user folder, never in the game folder:
-`~/.config/deus-ex-aerugo/` on Linux, `%APPDATA%\deus-ex-aerugo\` on Windows.
+Extras, from a command prompt in the game folder: `deusex --windowed` plays in a window, `deusex --size 1920x1080`
+sets its size, and `deusex --import-save "Save/Save0001/<map>.dxs"` continues a game saved by the original.
 
-The settings menus are the game's own, with a few changes for current hardware: texture and detail options are gone
-(the best quality is always used), and there are vertical sync modes (off, on, adaptive, fast), a frame rate limit,
-the mouse's DPI with a sensitivity slider labelled in centimetres per full turn, and the sound output rate (the
-system's by default).
+## How to build it yourself
 
-## Building from source
+Install [Rust](https://rustup.rs) and a few build tools; then one script does the rest. The result lands in `dist/`;
+copy it into your Deus Ex folder as in step 3 above.
 
-All builds need a Rust toolchain ([rustup](https://rustup.rs)) and a shader compiler: `glslc` (shaderc, or the
-Vulkan SDK) or `glslangValidator` (glslang).
-
-| Build | Command | Needs |
-|---|---|---|
-| Linux, for this machine | `scripts/build.sh` → `dist/deusex` | SDL3 (`pacman -S rustup sdl3 shaderc vulkan-icd-loader`) |
-| Windows, from Linux | `scripts/build-windows.sh` → `dist/deusex.exe` | MinGW-w64 and CMake (`pacman -S mingw-w64-gcc cmake`) |
-| Windows, on Windows | `.\scripts\build-windows.ps1` → `dist\deusex.exe` | Visual Studio 2022 Build Tools (C++), the Vulkan SDK |
-| Release archives | `scripts/release.sh` → `dist/*.tar.gz`, `dist/*.zip` | Podman or Docker |
-
-`scripts/build.sh --install "<Deus Ex folder>"` and `.\scripts\build-windows.ps1 -Install "<Deus Ex folder>"` also
-copy the executable there. The release build runs in an Ubuntu 22.04 container (`packaging/Containerfile`), so the
-Linux executable works on any distribution with glibc 2.35 or newer; SDL3 is compiled from source and linked into
-both executables.
-
-The test suite runs against your game data:
+**Windows:** install Rust, [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (choose
+*Desktop development with C++*) and the [Vulkan SDK](https://vulkan.lunarg.com). Then, in PowerShell in this folder:
 
 ```
-DEUSEX_DIR="/path/to/Deus Ex" cargo test --release
+.\scripts\build-windows.ps1
 ```
 
-Without `DEUSEX_DIR` the tests that need game data are skipped.
+**Linux with SDL3 available** (for example Arch: `sudo pacman -S rustup sdl3 shaderc vulkan-icd-loader`, then
+`rustup default stable`):
 
-## How it is organised
+```
+scripts/build.sh
+```
+
+**Any Linux with Podman or Docker** (builds both the Linux and the Windows version; nothing else to install):
+
+```
+scripts/release.sh
+```
+
+The scripts can also copy the result for you: `scripts/build.sh --install "/path/to/Deus Ex"` or
+`.\scripts\build-windows.ps1 -Install "C:\path\to\Deus Ex"`. A Windows version can be built on Linux too, with
+`scripts/build-windows.sh` (needs MinGW-w64 and CMake).
+
+<details>
+<summary>For developers</summary>
+
+Written in Rust, with Vulkan for graphics and SDL3 for the window, input and sound. Every engine function the game
+relies on is ported from the original program and checked against it.
 
 | Crate | What it does |
 |---|---|
-| `ue-package` | Unreal Engine 1 package files (`.u`, `.dx`, `.utx`, ...): header, name, import and export tables |
+| `ue-package` | Unreal Engine 1 package files (`.u`, `.dx`, `.utx`, ...) |
 | `ue-registry` | Classes, properties, functions, states and defaults of the script packages |
 | `ue-assets` | Textures, palettes, meshes, sounds, music, fonts and levels |
 | `ue-config` | Ini files and localised text, with a per-user layer that is the only one ever written |
-| `ue-bsp` | Collision against the world: point regions, line and box traces |
+| `ue-bsp` | Collision against the world |
 | `ue-vm` | The UnrealScript virtual machine and the engine's native functions, physics, AI and UI |
-| `dx-vis` | The original renderer's visibility pass (span buffers, front-to-back BSP occlusion) |
-| `dx-light` | Lightmaps, built from the maps' stored shadow data and light actors like the original at load time |
-| `dx-fractal` | Procedural textures (water, fire, ice) generated every frame |
+| `dx-vis` | The original renderer's visibility pass |
+| `dx-light` | Lightmaps, built from the maps' stored shadow data like the original at load time |
+| `dx-fractal` | Procedural textures (water, fire, ice) |
 | `dx-soft` | A CPU reference renderer used to check geometry and texture mapping |
 | `dx-vk` | The Vulkan renderer |
 | `dx-audio` | Sound decoding, the positional mixer, tracker music and the output device |
 | `dx-input` | Key bindings, aliases and input processing |
-| `dx-play` | The game executable: window, main loop, frame pacing, input, audio and rendering together |
+| `dx-play` | The game executable |
 
 `aerugo/` holds the engine's own small UnrealScript package (the extra settings menus), built into the executable.
+Tests run against your game data: `DEUSEX_DIR="/path/to/Deus Ex" cargo test --release` (without `DEUSEX_DIR` the
+tests that need it are skipped).
+
+</details>
 
 ## Legal
 
 MIT licensed (see `LICENSE`). Deus Ex is a trademark of its owners; this project is not affiliated with or endorsed by
 them. It contains no code, scripts or assets of the original game: everything the game needs is read from your own
-copy at run time.
+copy.
