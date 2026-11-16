@@ -487,7 +487,7 @@ impl Session {
             .map_err(|e| e.to_string())?;
             self.view = view;
             self.map_pkg = pi;
-            self.world_lighting = None;
+            self.forget_level();
             self.player = pawn;
             self.pitch = 0;
             self.issues.extend(load.issues);
@@ -540,6 +540,22 @@ impl Session {
             Err(e) => self.issues.push(LoadIssue { actor: self.player, class: "travel".into(), event: "SaveCurrentLevel".into(), error: e.to_string() }),
         }
         self.current_levels.get(&next.to_lowercase()).cloned()
+    }
+
+    /// Forgets what was worked out for the level just left (a travel, a loaded game). These caches are keyed by
+    /// export number or object reference of the map package, or hold actors: kept across a level change they would
+    /// lend the new level the old one's data (after Training, a brush of the combat map got the polygons of the
+    /// Training door with the same export number and stood as a door at the pistol range).
+    pub(crate) fn forget_level(&mut self) {
+        self.world_lighting = None;
+        self.world_light = None;
+        self.brush_polys.clear();
+        self.brush_tracker = None;
+        self.surface_details.clear();
+        self.vis_cache = None;
+        self.vis_flags = None;
+        self.anim_surfs = None;
+        self.anim_frames.clear();
     }
 
     /// `DDeusExGameEngine::GetCurrentMissionNumber` (DeusEx.dll 10011ed0): the level's `DeusExLevelInfo.missionNumber`.

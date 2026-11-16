@@ -666,6 +666,7 @@ impl Renderer {
             w.destroy(&self.cx);
         }
         self.movers.clear();
+        self.mover_errors.clear();
         self.sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         Ok(())
     }

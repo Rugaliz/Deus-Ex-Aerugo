@@ -97,7 +97,7 @@ impl Session {
         let (pawn, load) = self.vm.load_saved_game(pi, snap).map_err(|e| e.to_string())?;
         self.view = view;
         self.map_pkg = pi;
-        self.world_lighting = None;
+        self.forget_level();
         self.player = pawn;
         self.issues.extend(load.issues);
         self.map_name = stem;
@@ -148,7 +148,7 @@ impl Session {
         let (pawn, load, report) = self.vm.import_original_save(pi).map_err(|e| e.to_string())?;
         self.view = view;
         self.map_pkg = pi;
-        self.world_lighting = None;
+        self.forget_level();
         self.player = pawn;
         self.issues.extend(load.issues);
         self.map_name = map_stem;
