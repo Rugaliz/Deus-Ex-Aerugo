@@ -243,6 +243,8 @@ pub struct ClassDef {
 /// One loaded `.u` package.
 pub struct LoadedPackage {
     pub name: String,
+    /// The file `add_package` loaded it from (`None` for the packages the registry starts with).
+    pub source: Option<PathBuf>,
     pub pkg: Package,
     /// Local name-table index -> registry-wide name id.
     pub name_map: Vec<u32>,
@@ -366,7 +368,7 @@ impl Registry {
                 _ => Package::open(&path).map_err(|e| Error::Package(path.clone(), e))?,
             };
             let name_map = pkg.names.iter().map(|e| reg.names.intern(&e.name)).collect();
-            reg.packages.push(LoadedPackage { name: n.clone(), pkg, name_map });
+            reg.packages.push(LoadedPackage { name: n.clone(), source: None, pkg, name_map });
         }
         reg.index_exports();
         reg.build_classes()?;
@@ -396,13 +398,19 @@ impl Registry {
         // with the name `dx` is `dx`, as in the original's paths)
         let id = self.names.intern(name);
         let name = &self.names.str(id).to_string();
+        // a package stays loaded: a map entered again (a restart, a level of the mission kept or not, a saved game)
+        // is the same package. A second copy would never be found by path (the first one keeps the paths), so
+        // everything looked up by path (the movers' brushes) would point into the old copy.
+        if let Some(pi) = self.packages.iter().position(|p| p.name.eq_ignore_ascii_case(name) && p.source.as_deref() == Some(path)) {
+            return Ok(pi);
+        }
         // a mod's package of that name first (a replaced map, a replaced resource package)
         let pkg = match ue_package::mods::package(name) {
             Some(m) => Package::open_source(&m.source).map_err(|e| Error::Package(PathBuf::from(m.source.describe()), e))?,
             None => Package::open(path).map_err(|e| Error::Package(path.to_path_buf(), e))?,
         };
         let name_map = pkg.names.iter().map(|e| self.names.intern(&e.name)).collect();
-        self.packages.push(LoadedPackage { name: name.to_string(), pkg, name_map });
+        self.packages.push(LoadedPackage { name: name.to_string(), source: Some(path.to_path_buf()), pkg, name_map });
         let pi = self.packages.len() - 1;
         self.index_package(pi);
         Ok(pi)

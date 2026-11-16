@@ -396,6 +396,8 @@ pub struct Vm {
     /// `ULevel::FirstDeleted`: actors destroyed and not yet cleaned up (newest first). They stay addressable by the
     /// scripts that still hold them until `cleanup_destroyed` clears every reference (`world.rs`).
     pub(crate) pending_deleted: Vec<u32>,
+    /// Set by `DeleteSaveGameFiles` for the `Current` folder: the host forgets the levels it keeps for the mission.
+    pub clear_current_levels: bool,
     pub(crate) pending_deleted_set: HashSet<u32>,
     /// The render device's `HighDetailActors` (`[<GameRenderDevice>] HighDetailActors` in the game's ini; on for the
     /// shipped D3D device). `LoadMap` copies it into `Level.bHighDetailMode`; `SetupDynamics` leaves out `bHighDetail`
@@ -511,6 +513,7 @@ impl Vm {
             blend_cache: HashMap::new(),
             tick_toggle: false,
             pending_deleted: Vec::new(),
+            clear_current_levels: false,
             pending_deleted_set: HashSet::new(),
             high_detail_actors: true,
             actors_sorted: false,

@@ -79,3 +79,57 @@ fn the_pistol_range_after_training_looks_as_opened_directly() {
     let d = diff(&fresh, &travelled, 60, 180, 740, 560);
     assert!(d < 4.0, "the booth differs after the travel (mean difference {d:.1} per channel)");
 }
+
+/// The movers the renderer gets through the visibility walk (brush export -> fragments), after one drawn frame.
+fn drawn_movers(s: &mut Session, r: &mut Option<dx_vk::renderer::Renderer>) -> Vec<(usize, usize)> {
+    s.render_vk(r, 640, 480).expect("vulkan render");
+    let mut m: Vec<(usize, usize)> = r.as_ref().unwrap().mover_fragments.as_ref().map(|m| m.iter().map(|(e, f)| (*e, f.len())).collect()).unwrap_or_default();
+    m.sort();
+    m
+}
+
+/// A map loaded again in the same session (training restarted from the menu, a return to a level of the mission) is the
+/// same package: a second copy was never found by path, so every mover's brush seemed to belong to another package and
+/// the walk left all movers out (closed doors invisible, the user's report after restarting training).
+#[test]
+fn a_map_loaded_again_still_draws_its_movers() {
+    let Some(game) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut r = None;
+    // training restarted as the menu does it (`StartTrainingMission`: kept levels deleted, a new game started)
+    let mut s = Session::open(&game, "00_Training").unwrap();
+    run(&mut s, 5);
+    let before = drawn_movers(&mut s, &mut r);
+    assert!(!before.is_empty());
+    let p = s.player;
+    s.vm.call_by_name(p, "StartTrainingMission", vec![]).unwrap();
+    run(&mut s, 2);
+    assert!(s.take_map_changed());
+    s.reload_vk_world(r.as_mut().unwrap()).unwrap();
+    run(&mut s, 3);
+    assert_eq!(s.map_name, "00_Training");
+    assert!(s.current_levels.is_empty(), "DeleteSaveGameFiles forgets the kept levels");
+    assert_eq!(drawn_movers(&mut s, &mut r), before, "the movers after the restart");
+    // a return to a kept level: every mover is in the tracker again (the walk sees them wherever the player looks)
+    let mut s = Session::open(&game, "01_NYC_UNATCOIsland").unwrap();
+    run(&mut s, 5);
+    s.reload_vk_world(r.as_mut().unwrap()).unwrap();
+    drawn_movers(&mut s, &mut r);
+    let tracked = |s: &mut Session| {
+        let c = s.vm.reg.class_by_name("DeusExMover").unwrap();
+        let movers: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a).map(|k| s.vm.is_a(k, c)).unwrap_or(false)).collect();
+        movers.iter().filter(|&&m| s.tracked_model(m).map(|t| !t.1.is_empty()).unwrap_or(false)).count()
+    };
+    let before = tracked(&mut s);
+    assert!(before > 0);
+    for url in ["01_NYC_UNATCOHQ#Inside_UN_HQ", "01_NYC_UNATCOIsland#tunnel_drop_nyc"] {
+        s.vm.travel_request = Some(TravelRequest { url: url.into(), items: true });
+        run(&mut s, 2);
+        assert!(s.take_map_changed());
+        s.reload_vk_world(r.as_mut().unwrap()).unwrap();
+        run(&mut s, 3);
+        drawn_movers(&mut s, &mut r);
+    }
+    assert_eq!(s.map_name, "01_NYC_UNATCOIsland");
+    assert_eq!(tracked(&mut s), before, "the island's movers in the tracker after the return");
+    r.take().unwrap().destroy();
+}

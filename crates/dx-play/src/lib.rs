@@ -427,6 +427,9 @@ impl Session {
         }
         let level_before = (self.map_pkg, self.player);
         self.perform_save_requests();
+        if std::mem::take(&mut self.vm.clear_current_levels) {
+            self.current_levels.clear();
+        }
         if let Some(req) = self.vm.travel_request.take() {
             self.handle_travel(req);
         }

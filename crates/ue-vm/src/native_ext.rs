@@ -239,8 +239,16 @@ impl Vm {
                 }
                 Void
             }
-            // saved games do not exist yet (road item E2): deleting finds nothing, saving says so
-            "DeleteSaveGameFiles" => Void,
+            // `ADeusExPlayer::execDeleteSaveGameFiles` (DeusEx 100149f0): without a folder, the `Current` one (the levels
+            // of the running mission kept by travel), as `StartNewGame` and `StartTrainingMission` call it; the host
+            // keeps those levels (`clear_current_levels`)
+            "DeleteSaveGameFiles" => {
+                let dir = match a.first() { Some(Value::Str(d)) => d.trim().to_string(), _ => String::new() };
+                if dir.is_empty() || dir.eq_ignore_ascii_case("Current") {
+                    self.clear_current_levels = true;
+                }
+                Void
+            }
             // saving happens between frames, in the host (`Vm::save_request`)
             "SaveGame" if self.is_class(this, "DeusExPlayer") => {
                 let index = a.first().and_then(Value::as_i32).unwrap_or(0);
