@@ -480,6 +480,17 @@ impl Session {
             let view = MapView::open(&self.game, &stem)?;
             let class = self.vm.class_of(self.player).map(|c| self.vm.reg.class(c).path.rsplit('.').next().unwrap_or("JCDentonMale").to_string()).unwrap_or_else(|| "JCDentonMale".into());
             let kept = self.leave_level(&req.url, &stem);
+            let revisited = kept.is_some();
+            // `FURL(Base, URL, TRAVEL_Relative)`: the current URL's options stay, the travel URL's are added (a key
+            // already there takes the new value)
+            for o in req.url.split('#').next().unwrap_or("").split('?').skip(1).chain(req.url.split_once('#').map(|(_, p)| p).unwrap_or("").split('?').skip(1)) {
+                if let Some((k, v)) = o.split_once('=') {
+                    let k = k.trim().to_string();
+                    self.vm.url_options.retain(|(ok, _)| !ok.eq_ignore_ascii_case(&k));
+                    self.vm.url_options.push((k, v.trim().to_string()));
+                }
+            }
+
             let (pawn, load) = match kept {
                 Some(snap) => self.vm.revisit_level(self.player, pi, &snap, &portal, &class, req.items),
                 None => self.vm.travel_level(self.player, pi, &portal, &class, req.items),
@@ -495,7 +506,8 @@ impl Session {
             // `XLevel->URL`: the map and portal as the travel URL wrote them
             let head = req.url.trim().split('?').next().unwrap_or("");
             let (m, portal) = head.split_once('#').unwrap_or((head, ""));
-            self.vm.url_map = m.trim().to_string();
+            // a kept level is browsed as its file (`Browse`: `<Save>\Current\<map>.dxs`)
+            self.vm.url_map = if revisited { format!("..\\Save\\Current\\{}.dxs", m.trim().trim_end_matches(".dx").trim_end_matches(".DX")) } else { m.trim().to_string() };
             self.vm.url_portal = portal.to_string();
             self.map_changed = true;
         self.vm.ui_after_browse(self.player);

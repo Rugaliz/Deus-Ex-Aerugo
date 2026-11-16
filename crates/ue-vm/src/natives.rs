@@ -603,10 +603,9 @@ pub fn call(vm: &mut Vm, this: u32, name: &str, a: &mut Vec<Value>) -> Res<Value
             Str(vm.reg.config_value("User", "DefaultPlayer", &opt).map(|v| ue_config::unquote(&v)).unwrap_or_default())
         }
         // `GetURLMap()`: the map of the level's URL
-        "GetURLMap" => {
-            let path = if vm.level != 0 { vm.reg.obj_path(ue_registry::ObjId(vm.level)).to_string() } else { String::new() };
-            Str(path.split('.').next().unwrap_or("").to_string())
-        }
+        // `AActor::execGetURLMap` (Engine 10303409): the map of the level's URL as it was browsed (`DX.dx`, the
+        // travel URL's map, `..\Save\Current\<map>.dxs` for a level kept from an earlier visit)
+        "GetURLMap" => Str(vm.url_map.clone()),
         "Normal" => {
             // `FVector::SafeNormal` (10138de0)
             Vector(ue_bsp::safe_normal(vecv(a, 0)?))

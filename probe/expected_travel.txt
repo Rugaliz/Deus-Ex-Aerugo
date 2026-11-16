@@ -1,0 +1,274 @@
+TRAVEL|0|destroyed|ThugMale3
+TRAVEL|A0|map|01_NYC_UNATCOIsland
+TRAVEL|A0|credits|1234
+TRAVEL|A0|energy|77.123459
+TRAVEL|A0|skillpoints|4321
+TRAVEL|A0|health|100 100 100 100 55 100
+TRAVEL|A0|flag.bool|True
+TRAVEL|A0|flag.boolfalse|True False
+TRAVEL|A0|flag.int|42
+TRAVEL|A0|flag.float|1.234568
+TRAVEL|A0|flag.name|Hello
+TRAVEL|A0|flag.vec|1.234568,-2.500000,3.000000
+TRAVEL|A0|flag.exp|True 7
+TRAVEL|A0|inventory.0|WeaponPistol
+TRAVEL|A0|inventory.1|MedKit 2
+TRAVEL|A0|inventory.2|NanoKeyRing 1
+TRAVEL|A0|note.0|first line\second line
+TRAVEL|A0|aug.AugSpeed|0 False
+TRAVEL|A0|aug.AugIFF|0 True
+TRAVEL|A0|aug.AugLight|0 False
+TRAVEL|A0|aug.AugDatalink|0 True
+TRAVEL|A0|skill.pistol|2
+TRAVEL|A0|owned.0|PlayerReplicationInfo
+TRAVEL|A0|owned.1|Shadow
+TRAVEL|A0|owned.2|BarkManager
+TRAVEL|A0|owned.3|ColorThemeManager
+TRAVEL|A0|owned.4|AugmentationManager
+TRAVEL|A0|owned.5|SkillManager
+TRAVEL|A0|managers|1 1 1 1
+TRAVEL|A0|pawns|57
+TRAVEL|A0|player.augsystem|True
+TRAVEL|B|map|01_NYC_UNATCOHQ
+TRAVEL|B|credits|1234
+TRAVEL|B|energy|77.123459
+TRAVEL|B|skillpoints|4321
+TRAVEL|B|health|100 100 100 100 55 100
+TRAVEL|B|flag.bool|True
+TRAVEL|B|flag.boolfalse|True False
+TRAVEL|B|flag.int|42
+TRAVEL|B|flag.float|1.234568
+TRAVEL|B|flag.name|Hello
+TRAVEL|B|flag.vec|1.234568,-2.500000,3.000000
+TRAVEL|B|flag.exp|True 7
+TRAVEL|B|inventory.0|Ammo10mm
+TRAVEL|B|inventory.1|WeaponPistol
+TRAVEL|B|inventory.2|MedKit 2
+TRAVEL|B|inventory.3|NanoKeyRing 1
+TRAVEL|B|note.0|first line
+TRAVEL|B|aug.AugSpeed|0 False
+TRAVEL|B|aug.AugIFF|0 True
+TRAVEL|B|aug.AugLight|0 False
+TRAVEL|B|aug.AugDatalink|0 True
+TRAVEL|B|skill.pistol|2
+TRAVEL|B|owned.0|PlayerReplicationInfo
+TRAVEL|B|owned.1|Shadow
+TRAVEL|B|owned.2|BarkManager
+TRAVEL|B|owned.3|ColorThemeManager
+TRAVEL|B|owned.4|AugmentationManager
+TRAVEL|B|owned.5|SkillManager
+TRAVEL|B|owned.6|AugmentationManager
+TRAVEL|B|owned.7|SkillManager
+TRAVEL|B|owned.8|BarkManager
+TRAVEL|B|owned.9|ColorThemeManager
+TRAVEL|B|owned.10|AugSpeed
+TRAVEL|B|owned.11|SkillWeaponHeavy
+TRAVEL|B|owned.12|ColorThemeMenu_Default
+TRAVEL|B|owned.13|ColorThemeHUD_Default
+TRAVEL|B|owned.14|AugTarget
+TRAVEL|B|owned.15|SkillWeaponPistol
+TRAVEL|B|owned.16|ColorThemeMenu_BlueAndGold
+TRAVEL|B|owned.17|ColorThemeHUD_Amber
+TRAVEL|B|owned.18|AugCloak
+TRAVEL|B|owned.19|SkillWeaponRifle
+TRAVEL|B|owned.20|ColorThemeMenu_CoolGreen
+TRAVEL|B|owned.21|ColorThemeHUD_Cops
+TRAVEL|B|owned.22|AugBallistic
+TRAVEL|B|owned.23|SkillWeaponLowTech
+TRAVEL|B|owned.24|ColorThemeMenu_Cops
+TRAVEL|B|owned.25|ColorThemeHUD_Cyan
+TRAVEL|B|owned.26|AugRadarTrans
+TRAVEL|B|owned.27|SkillDemolition
+TRAVEL|B|owned.28|ColorThemeMenu_Cyan
+TRAVEL|B|owned.29|ColorThemeHUD_DarkBlue
+TRAVEL|B|owned.30|AugShield
+TRAVEL|B|owned.31|SkillEnviro
+TRAVEL|B|owned.32|ColorThemeMenu_DesertStorm
+TRAVEL|B|owned.33|ColorThemeHUD_DesertStorm
+TRAVEL|B|owned.34|AugEnviro
+TRAVEL|B|owned.35|SkillLockpicking
+TRAVEL|B|owned.36|ColorThemeMenu_DriedBlood
+TRAVEL|B|owned.37|ColorThemeHUD_DriedBlood
+TRAVEL|B|owned.38|AugEMP
+TRAVEL|B|owned.39|SkillTech
+TRAVEL|B|owned.40|ColorThemeMenu_Dusk
+TRAVEL|B|owned.41|ColorThemeHUD_Dusk
+TRAVEL|B|owned.42|AugCombat
+TRAVEL|B|owned.43|SkillMedicine
+TRAVEL|B|owned.44|ColorThemeMenu_Earth
+TRAVEL|B|owned.45|ColorThemeHUD_Grey
+TRAVEL|B|owned.46|AugHealing
+TRAVEL|B|owned.47|SkillComputer
+TRAVEL|B|owned.48|ColorThemeMenu_Green
+TRAVEL|B|owned.49|ColorThemeHUD_IonStorm
+TRAVEL|B|owned.50|AugStealth
+TRAVEL|B|owned.51|SkillSwimming
+TRAVEL|B|owned.52|ColorThemeMenu_Grey
+TRAVEL|B|owned.53|ColorThemeHUD_Nightvision
+TRAVEL|B|owned.54|AugIFF
+TRAVEL|B|owned.55|ColorThemeMenu_IonStorm
+TRAVEL|B|owned.56|ColorThemeHUD_Ninja
+TRAVEL|B|owned.57|AugLight
+TRAVEL|B|owned.58|ColorThemeMenu_Lava
+TRAVEL|B|owned.59|ColorThemeHUD_PaleGreen
+TRAVEL|B|owned.60|AugMuscle
+TRAVEL|B|owned.61|ColorThemeMenu_NightVision
+TRAVEL|B|owned.62|ColorThemeHUD_Pastel
+TRAVEL|B|owned.63|AugVision
+TRAVEL|B|owned.64|ColorThemeMenu_Ninja
+TRAVEL|B|owned.65|ColorThemeHUD_Plasma
+TRAVEL|B|owned.66|AugDrone
+TRAVEL|B|owned.67|ColorThemeMenu_Olive
+TRAVEL|B|owned.68|ColorThemeHUD_Primaries
+TRAVEL|B|owned.69|AugDefense
+TRAVEL|B|owned.70|ColorThemeMenu_PaleGreen
+TRAVEL|B|owned.71|ColorThemeHUD_Purple
+TRAVEL|B|owned.72|AugAqualung
+TRAVEL|B|owned.73|ColorThemeMenu_Pastel
+TRAVEL|B|owned.74|ColorThemeHUD_Red
+TRAVEL|B|owned.75|AugDatalink
+TRAVEL|B|owned.76|ColorThemeMenu_Plasma
+TRAVEL|B|owned.77|ColorThemeHUD_SoylentGreen
+TRAVEL|B|owned.78|AugHeartLung
+TRAVEL|B|owned.79|ColorThemeMenu_Primaries
+TRAVEL|B|owned.80|ColorThemeHUD_Starlight
+TRAVEL|B|owned.81|AugPower
+TRAVEL|B|owned.82|ColorThemeMenu_Purple
+TRAVEL|B|owned.83|ColorThemeHUD_SteelGreen
+TRAVEL|B|owned.84|ColorThemeMenu_Red
+TRAVEL|B|owned.85|ColorThemeHUD_Superhero
+TRAVEL|B|owned.86|ColorThemeMenu_Seawater
+TRAVEL|B|owned.87|ColorThemeHUD_Terminator
+TRAVEL|B|owned.88|ColorThemeMenu_SoylentGreen
+TRAVEL|B|owned.89|ColorThemeHUD_Violet
+TRAVEL|B|owned.90|ColorThemeMenu_Starlight
+TRAVEL|B|owned.91|ColorThemeMenu_Steel
+TRAVEL|B|owned.92|ColorThemeMenu_SteelGreen
+TRAVEL|B|owned.93|ColorThemeMenu_Superhero
+TRAVEL|B|owned.94|ColorThemeMenu_Terminator
+TRAVEL|B|owned.95|ColorThemeMenu_Violet
+TRAVEL|B|managers|2 2 2 2
+TRAVEL|B|pawns|20
+TRAVEL|B|player.augsystem|True
+TRAVEL|A1|map|..\Save\Current\01_NYC_UNATCOIsland.dxs
+TRAVEL|A1|credits|1234
+TRAVEL|A1|energy|77.123459
+TRAVEL|A1|skillpoints|4321
+TRAVEL|A1|health|100 100 100 100 55 100
+TRAVEL|A1|flag.bool|True
+TRAVEL|A1|flag.boolfalse|True False
+TRAVEL|A1|flag.int|42
+TRAVEL|A1|flag.float|1.234568
+TRAVEL|A1|flag.name|Hello
+TRAVEL|A1|flag.vec|1.234568,-2.500000,3.000000
+TRAVEL|A1|flag.exp|True 7
+TRAVEL|A1|inventory.0|Ammo10mm
+TRAVEL|A1|inventory.1|WeaponPistol
+TRAVEL|A1|inventory.2|MedKit 2
+TRAVEL|A1|inventory.3|NanoKeyRing 1
+TRAVEL|A1|note.0|first line
+TRAVEL|A1|aug.AugSpeed|0 False
+TRAVEL|A1|aug.AugIFF|0 True
+TRAVEL|A1|aug.AugLight|0 False
+TRAVEL|A1|aug.AugDatalink|0 True
+TRAVEL|A1|skill.pistol|2
+TRAVEL|A1|owned.0|PlayerReplicationInfo
+TRAVEL|A1|owned.1|Shadow
+TRAVEL|A1|owned.2|BarkManager
+TRAVEL|A1|owned.3|ColorThemeManager
+TRAVEL|A1|owned.4|AugmentationManager
+TRAVEL|A1|owned.5|SkillManager
+TRAVEL|A1|owned.6|AugmentationManager
+TRAVEL|A1|owned.7|SkillManager
+TRAVEL|A1|owned.8|BarkManager
+TRAVEL|A1|owned.9|ColorThemeManager
+TRAVEL|A1|owned.10|AugSpeed
+TRAVEL|A1|owned.11|SkillWeaponHeavy
+TRAVEL|A1|owned.12|ColorThemeMenu_Default
+TRAVEL|A1|owned.13|ColorThemeHUD_Default
+TRAVEL|A1|owned.14|AugTarget
+TRAVEL|A1|owned.15|SkillWeaponPistol
+TRAVEL|A1|owned.16|ColorThemeMenu_BlueAndGold
+TRAVEL|A1|owned.17|ColorThemeHUD_Amber
+TRAVEL|A1|owned.18|AugCloak
+TRAVEL|A1|owned.19|SkillWeaponRifle
+TRAVEL|A1|owned.20|ColorThemeMenu_CoolGreen
+TRAVEL|A1|owned.21|ColorThemeHUD_Cops
+TRAVEL|A1|owned.22|AugBallistic
+TRAVEL|A1|owned.23|SkillWeaponLowTech
+TRAVEL|A1|owned.24|ColorThemeMenu_Cops
+TRAVEL|A1|owned.25|ColorThemeHUD_Cyan
+TRAVEL|A1|owned.26|AugRadarTrans
+TRAVEL|A1|owned.27|SkillDemolition
+TRAVEL|A1|owned.28|ColorThemeMenu_Cyan
+TRAVEL|A1|owned.29|ColorThemeHUD_DarkBlue
+TRAVEL|A1|owned.30|AugShield
+TRAVEL|A1|owned.31|SkillEnviro
+TRAVEL|A1|owned.32|ColorThemeMenu_DesertStorm
+TRAVEL|A1|owned.33|ColorThemeHUD_DesertStorm
+TRAVEL|A1|owned.34|AugEnviro
+TRAVEL|A1|owned.35|SkillLockpicking
+TRAVEL|A1|owned.36|ColorThemeMenu_DriedBlood
+TRAVEL|A1|owned.37|ColorThemeHUD_DriedBlood
+TRAVEL|A1|owned.38|AugEMP
+TRAVEL|A1|owned.39|SkillTech
+TRAVEL|A1|owned.40|ColorThemeMenu_Dusk
+TRAVEL|A1|owned.41|ColorThemeHUD_Dusk
+TRAVEL|A1|owned.42|AugCombat
+TRAVEL|A1|owned.43|SkillMedicine
+TRAVEL|A1|owned.44|ColorThemeMenu_Earth
+TRAVEL|A1|owned.45|ColorThemeHUD_Grey
+TRAVEL|A1|owned.46|AugHealing
+TRAVEL|A1|owned.47|SkillComputer
+TRAVEL|A1|owned.48|ColorThemeMenu_Green
+TRAVEL|A1|owned.49|ColorThemeHUD_IonStorm
+TRAVEL|A1|owned.50|AugStealth
+TRAVEL|A1|owned.51|SkillSwimming
+TRAVEL|A1|owned.52|ColorThemeMenu_Grey
+TRAVEL|A1|owned.53|ColorThemeHUD_Nightvision
+TRAVEL|A1|owned.54|AugIFF
+TRAVEL|A1|owned.55|ColorThemeMenu_IonStorm
+TRAVEL|A1|owned.56|ColorThemeHUD_Ninja
+TRAVEL|A1|owned.57|AugLight
+TRAVEL|A1|owned.58|ColorThemeMenu_Lava
+TRAVEL|A1|owned.59|ColorThemeHUD_PaleGreen
+TRAVEL|A1|owned.60|AugMuscle
+TRAVEL|A1|owned.61|ColorThemeMenu_NightVision
+TRAVEL|A1|owned.62|ColorThemeHUD_Pastel
+TRAVEL|A1|owned.63|AugVision
+TRAVEL|A1|owned.64|ColorThemeMenu_Ninja
+TRAVEL|A1|owned.65|ColorThemeHUD_Plasma
+TRAVEL|A1|owned.66|AugDrone
+TRAVEL|A1|owned.67|ColorThemeMenu_Olive
+TRAVEL|A1|owned.68|ColorThemeHUD_Primaries
+TRAVEL|A1|owned.69|AugDefense
+TRAVEL|A1|owned.70|ColorThemeMenu_PaleGreen
+TRAVEL|A1|owned.71|ColorThemeHUD_Purple
+TRAVEL|A1|owned.72|AugAqualung
+TRAVEL|A1|owned.73|ColorThemeMenu_Pastel
+TRAVEL|A1|owned.74|ColorThemeHUD_Red
+TRAVEL|A1|owned.75|AugDatalink
+TRAVEL|A1|owned.76|ColorThemeMenu_Plasma
+TRAVEL|A1|owned.77|ColorThemeHUD_SoylentGreen
+TRAVEL|A1|owned.78|AugHeartLung
+TRAVEL|A1|owned.79|ColorThemeMenu_Primaries
+TRAVEL|A1|owned.80|ColorThemeHUD_Starlight
+TRAVEL|A1|owned.81|AugPower
+TRAVEL|A1|owned.82|ColorThemeMenu_Purple
+TRAVEL|A1|owned.83|ColorThemeHUD_SteelGreen
+TRAVEL|A1|owned.84|ColorThemeMenu_Red
+TRAVEL|A1|owned.85|ColorThemeHUD_Superhero
+TRAVEL|A1|owned.86|ColorThemeMenu_Seawater
+TRAVEL|A1|owned.87|ColorThemeHUD_Terminator
+TRAVEL|A1|owned.88|ColorThemeMenu_SoylentGreen
+TRAVEL|A1|owned.89|ColorThemeHUD_Violet
+TRAVEL|A1|owned.90|ColorThemeMenu_Starlight
+TRAVEL|A1|owned.91|ColorThemeMenu_Steel
+TRAVEL|A1|owned.92|ColorThemeMenu_SteelGreen
+TRAVEL|A1|owned.93|ColorThemeMenu_Superhero
+TRAVEL|A1|owned.94|ColorThemeMenu_Terminator
+TRAVEL|A1|owned.95|ColorThemeMenu_Violet
+TRAVEL|A1|managers|2 2 2 2
+TRAVEL|A1|pawns|57
+TRAVEL|A1|player.augsystem|True
+TRAVEL|END
