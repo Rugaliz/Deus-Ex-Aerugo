@@ -610,6 +610,12 @@ impl Vm {
     /// Puts a snapshot into the level that `load_level_opts(pi, false)` just made: map actors are overwritten (or removed
     /// when they were destroyed), everything else is created. Returns the player pawn.
     pub fn restore_snapshot(&mut self, snap: &Snapshot) -> Res<u32> {
+        self.restore_snapshot_opts(snap, true)
+    }
+
+    /// `restore_snapshot`; `with_rng`: also the random number state saved with it (a loaded game), else the running
+    /// one goes on (a level of the mission entered again).
+    pub fn restore_snapshot_opts(&mut self, snap: &Snapshot, with_rng: bool) -> Res<u32> {
         let rt = |s: String| VmError::Runtime(s);
         // ids of this session
         let names: Vec<u32> = snap.names.iter().map(|n| self.reg.names.intern(n)).collect();
@@ -704,7 +710,9 @@ impl Vm {
         }
         // 4. host-side state
         self.time = snap.time;
-        self.rng = snap.rng;
+        if with_rng {
+            self.rng = snap.rng;
+        }
         self.tick_toggle = snap.tick_toggle;
         if !snap.zone_times.is_empty() {
             self.zone_render_times = snap.zone_times.clone();

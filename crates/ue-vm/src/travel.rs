@@ -238,7 +238,9 @@ impl Vm {
         let keep: HashSet<u32> = objs.iter().copied().collect();
         let old_level = self.unload_level_keeping(&keep);
         let load = self.load_level_opts(pi, false)?;
-        self.restore_snapshot(snap)?;
+        // the random numbers are the C runtime's `rand()`, global to the process and not in a saved level: they go on
+        // (a loaded game restores them, by the port's choice, to continue like the session that saved it)
+        self.restore_snapshot_opts(snap, false)?;
         let new_pawn = self.login_player_at(class_name, portal, Some((old, &actors[..])))?;
         for r in &actors {
             self.set_alive(*r, false);

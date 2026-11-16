@@ -104,3 +104,16 @@ fn kept_levels_go_into_saved_games() {
     assert_eq!(nsf_standing(&mut s), 0);
     let _ = std::fs::remove_dir_all(s.vm.save_dir.clone().unwrap());
 }
+
+/// Arriving inside a teleporter that leads elsewhere does not send the player on: `00_TrainingCombat#backtocombat`
+/// is itself a teleporter to `00_TrainingFinal`, touched when `Login` puts the pawn there, and `ClientTravel` of a pawn
+/// without its `Player` yet does nothing (`APlayerPawn::execClientTravel`). The port bounced the player straight back.
+#[test]
+fn arriving_on_a_teleporter_does_not_travel_again() {
+    let Some(game) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&game, "00_TrainingFinal").unwrap();
+    run(&mut s, 5);
+    travel(&mut s, "00_trainingCombat#backtocombat");
+    run(&mut s, 30);
+    assert_eq!(s.map_name, "00_TrainingCombat");
+}

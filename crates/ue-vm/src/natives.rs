@@ -1450,6 +1450,13 @@ pub fn call(vm: &mut Vm, this: u32, name: &str, a: &mut Vec<Value>) -> Res<Value
         }
         "ResetConfig" => Void,
         "ClientTravel" | "ServerTravel" => {
+            // `APlayerPawn::execClientTravel` (Engine 10301ec4) asks the engine to travel only for a pawn that has a
+            // `Player` (viewport or connection): during `Login` the pawn has none yet (`SpawnPlayActor` gives it one
+            // after), so a player arriving inside a teleporter that leads elsewhere (`00_TrainingCombat#backtocombat`)
+            // is not sent on again by its touch
+            if name == "ClientTravel" && !matches!(vm.get_prop(this, "Player", 0), Ok(Obj(p)) if p != 0) {
+                return Ok(Void);
+            }
             let items = a.get(if name == "ClientTravel" { 2 } else { 1 }).and_then(Value::as_bool).unwrap_or(false);
             vm.travel_request = Some(crate::travel::TravelRequest { url: strv(a, 0)?, items });
             // `UGameEngine::SetClientTravel` (10303f2b): every actor of the level that has a `PreTravel` function
