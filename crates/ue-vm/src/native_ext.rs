@@ -627,3 +627,18 @@ impl Vm {
         })
     }
 }
+
+/// The flags of a flag base after a level change. The original's flags are objects (`FlagFloat.floatValue`, ...)
+/// whose `travel` values cross as text (`UFloatProperty::ExportText`: `%f`, six decimals); the port keeps them in a
+/// store, so the floats (and vector components) take the same rounding.
+pub(crate) fn travel_flags(mut store: FlagStore) -> FlagStore {
+    let f6 = |x: f32| format!("{x:.6}").parse::<f32>().unwrap_or(x);
+    for f in &mut store.flags {
+        f.value = match &f.value {
+            crate::Value::Float(x) => crate::Value::Float(f6(*x)),
+            crate::Value::Vector(v) => crate::Value::Vector([f6(v[0]), f6(v[1]), f6(v[2])]),
+            v => v.clone(),
+        };
+    }
+    store
+}

@@ -5,9 +5,12 @@
 //! that are not actors are kept alive here (the new pawn simply refers to them); actors are re-spawned in the new level
 //! and receive the old ones' travel properties, with references to travelling actors pointing at the new copies.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
+use crate::property_text::Sel;
 use crate::{ref_instance, Value, Vm, VmError};
+use ue_package::object::PropertyKind;
+use ue_registry::PropDef;
 
 const CPF_TRAVEL: u32 = 0x10000;
 
@@ -31,6 +34,22 @@ impl TravelRequest {
         }
         Some((map.to_string(), portal.to_string()))
     }
+}
+
+/// One block of the travel text: an object that travels and its `travel` values that differ from the defaults.
+#[derive(Debug, Clone)]
+pub struct TravelRecord {
+    pub old: u32,
+    pub class: crate::ClassId,
+    pub values: Vec<(PropDef, u32, TravelValue)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TravelValue {
+    /// `ExportText` of the value.
+    Text(String),
+    /// An object reference: the old object (0: None).
+    Ptr(u32),
 }
 
 impl Vm {
@@ -179,19 +198,10 @@ impl Vm {
     /// Changes the level to package `pi`: the player `old` (if any) is carried into it. Returns the new pawn and the
     /// level's load report. With `old == 0` this is a plain (re)load that logs a fresh player in.
     pub fn travel_level(&mut self, old: u32, pi: usize, portal: &str, class_name: &str, items: bool) -> Result<(u32, crate::level::LevelLoad), VmError> {
-        let (mut actors, objs) = if old != 0 { self.travel_closure(old) } else { (Vec::new(), Vec::new()) };
-        if !items {
-            // only the pawn and what it refers to without being an inventory item
-            actors.retain(|&a| a == old || !self.class_of(a).map(|c| self.reg.class_by_name("Inventory").map(|i| self.is_a(c, i)).unwrap_or(false)).unwrap_or(false));
-        }
-        // keep the non-actor objects alive; the travelling actors are parked (dead, memory intact) until their copies exist
-        let keep: HashSet<u32> = objs.iter().copied().collect();
-        let old_level = self.unload_level_keeping(&keep);
+        let records = if old != 0 && items { self.travel_export(old) } else { Vec::new() };
+        let old_level = self.unload_level_keeping(&HashSet::new());
         let load = self.load_level(pi)?;
-        let new_pawn = self.login_player_at(class_name, portal, (old != 0).then_some((old, &actors[..])))?;
-        for r in &actors {
-            self.set_alive(*r, false);
-        }
+        let new_pawn = self.login_player_at(class_name, portal, (old != 0 && items).then_some(&records[..]))?;
         self.set_alive(old_level, false);
         Ok((new_pawn, load))
     }
@@ -234,109 +244,128 @@ impl Vm {
     /// as after any travel: `GameInfo.Login` takes the unoccupied pawn the level kept, `DeusExGameInfo.Login` resets it
     /// and puts it at the portal, and what the player carries comes along (`travel_level`).
     pub fn revisit_level(&mut self, old: u32, pi: usize, snap: &crate::save::Snapshot, portal: &str, class_name: &str, items: bool) -> Result<(u32, crate::level::LevelLoad), VmError> {
-        let (mut actors, objs) = self.travel_closure(old);
-        if !items {
-            actors.retain(|&a| a == old || !self.class_of(a).map(|c| self.reg.class_by_name("Inventory").map(|i| self.is_a(c, i)).unwrap_or(false)).unwrap_or(false));
-        }
-        let keep: HashSet<u32> = objs.iter().copied().collect();
-        let old_level = self.unload_level_keeping(&keep);
+        let records = if items { self.travel_export(old) } else { Vec::new() };
+        let old_level = self.unload_level_keeping(&HashSet::new());
         let load = self.load_level_opts(pi, false)?;
         // the random numbers are the C runtime's `rand()`, global to the process and not in a saved level: they go on
         // (a loaded game restores them, by the port's choice, to continue like the session that saved it)
         self.restore_snapshot_opts(snap, false)?;
-        let new_pawn = self.login_player_at(class_name, portal, Some((old, &actors[..])))?;
-        for r in &actors {
-            self.set_alive(*r, false);
-        }
+        let new_pawn = self.login_player_at(class_name, portal, items.then_some(&records[..]))?;
         if old_level != self.level {
             self.set_alive(old_level, false);
         }
         Ok((new_pawn, load))
     }
 
-    /// A property of a class's default object.
-    fn class_default_value(&mut self, class: crate::ClassId, name: &str, elem: u32) -> Option<Value> {
-        let def = self.reg.find_prop(class, name)?.clone();
-        if elem >= def.dim {
-            return None;
-        }
-        self.class_default_mem(class).ok()?;
-        let mem = self.defaults.get(&class)?;
-        self.read_prop(mem, &def, (def.offset + elem * def.elem_size) as usize).ok()
+
+    /// The `travel` properties of `class` in the order the engine's `TFieldIterator` gives them: the class's own
+    /// fields first, then each super class's.
+    fn travel_defs(&self, class: crate::ClassId) -> Vec<PropDef> {
+        self.reg.chain(class).into_iter().rev().flat_map(|c| self.reg.class(c).props.iter()).filter(|p| p.flags & CPF_TRAVEL != 0).cloned().collect()
     }
 
-    /// Copies the travel properties of the old actors into fresh ones: the pawn is `new_pawn`, the others are spawned.
-    pub(crate) fn import_travel(&mut self, new_pawn: u32, actors: &[u32]) -> Result<Vec<u32>, VmError> {
-        let mut map: HashMap<u32, u32> = HashMap::new();
-        map.insert(actors[0], new_pawn);
-        let loc = self.location(new_pawn);
-        for &old in &actors[1..] {
-            let Some(class) = self.class_of(old) else { continue };
-            if let Some(n) = self.spawn(class, 0, None, Some(loc), None)? {
-                map.insert(old, n);
+    /// The travel export of `UGameEngine` (Engine 10391740), made for a player pawn with a `Player` when it travels
+    /// with its items (`ClientTravel`'s `bItems`; nothing travels otherwise): a worklist from the pawn; each object
+    /// on it that is not an actor, or an actor with `bTravel`, becomes a block (`Class=.. Name=.. Ptr=..`) of its
+    /// `travel` properties whose value differs from the class defaults (`ExportText` against them), as text (newlines
+    /// written as `\`), object references as the old pointer, whose object joins the worklist.
+    pub fn travel_export(&mut self, pawn: u32) -> Vec<TravelRecord> {
+        let mut list = vec![pawn];
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < list.len() {
+            let o = list[k];
+            k += 1;
+            let (Some(i), Some(class)) = (ref_instance(o), self.class_of(o)) else { continue };
+            if !self.is_live(o) || (self.is_actor_class(class) && self.get_prop(o, "bTravel", 0).ok() != Some(Value::Bool(true))) {
+                continue;
             }
-        }
-        // the new pawn's own travel actors (made by its `PostBeginPlay`) are replaced by the carried ones
-        let mut replaced = Vec::new();
-        if let Some(class) = self.class_of(new_pawn) {
-            for (name, dim) in self.travel_props(class) {
-                for i in 0..dim {
-                    if let Ok(Value::Obj(r)) = self.get_prop(new_pawn, &name, i as u32) {
-                        if r != 0 && ref_instance(r).is_some() && self.is_live(r) && self.is_actor_instance(r) && !map.values().any(|&v| v == r) && self.get_prop(r, "Owner", 0).ok() == Some(Value::Obj(new_pawn)) {
-                            replaced.push(r);
+            if self.class_default_mem(class).is_err() {
+                continue;
+            }
+            let mut values = Vec::new();
+            for def in self.travel_defs(class) {
+                for e in 0..def.dim.max(1) {
+                    let off = (def.offset + e * def.elem_size) as usize;
+                    let now = self.read_prop(&self.objects[i].mem, &def, off);
+                    let dflt = self.read_prop(&self.defaults[&class], &def, off);
+                    if let (Ok(a), Ok(b)) = (&now, &dflt) {
+                        if a == b {
+                            continue;
                         }
+                    }
+                    if matches!(def.kind, PropertyKind::Object | PropertyKind::Class) {
+                        let r = match now {
+                            Ok(Value::Obj(r)) => r,
+                            _ => 0,
+                        };
+                        values.push((def.clone(), e, TravelValue::Ptr(r)));
+                        if r != 0 && ref_instance(r).is_some() && !list.contains(&r) {
+                            list.push(r);
+                        }
+                    } else {
+                        let t = self.export_item(Sel::Obj(i), &def, off, 0).replace('\n', "\\");
+                        values.push((def.clone(), e, TravelValue::Text(t)));
                     }
                 }
             }
+            out.push(TravelRecord { old: o, class, values });
         }
-        let pairs: Vec<(u32, u32)> = map.iter().map(|(&o, &n)| (o, n)).collect();
-        for (old, new) in pairs {
-            self.set_alive(old, true);
-            let Some(class) = self.class_of(old) else { continue };
-            for (name, dim) in self.travel_props(class) {
-                for i in 0..dim {
-                    let Ok(mut v) = self.get_prop(old, &name, i as u32) else { continue };
-                    // the engine exports only what differs from the class defaults: a `None` reference leaves what the new
-                    // pawn made for itself (the player's augmentation system after `ResetPlayer`), a value at its default
-                    // leaves what the fresh actor's `PreBeginPlay` set (the pistol skill's level 1 after `ResetSkills`)
-                    if v == Value::Obj(0) || self.class_default_value(class, &name, i as u32).as_ref() == Some(&v) {
+        out
+    }
+
+    /// The travel import of `ULevel::SpawnPlayActor` (Engine 10396bd0), after `Login` gave `new_pawn`: each block
+    /// makes its object (a player pawn's is `new_pawn`; another actor is spawned with the pawn as owner, at its
+    /// location and rotation, without a collision test; anything else is constructed), its lines are imported in
+    /// order (`ImportText`, `\\` back to newlines), object references wait for the end and then take the new object of
+    /// the block with that pointer (none: the slot keeps what the object made). The pawn's own subsystems made by
+    /// `Login` stay in the level when the carried ones replace them. Returns the objects made, in block order.
+    pub(crate) fn import_travel(&mut self, new_pawn: u32, records: &[TravelRecord]) -> Result<Vec<u32>, VmError> {
+        let player_pawn = self.reg.class_by_name("PlayerPawn");
+        let loc = self.location(new_pawn);
+        let rot = self.rotation(new_pawn);
+        let mut made: Vec<(u32, u32)> = Vec::new();
+        for r in records {
+            let new = if player_pawn.map(|c| self.is_a(r.class, c)).unwrap_or(false) {
+                new_pawn
+            } else if self.is_actor_class(r.class) {
+                match self.spawn(r.class, new_pawn, None, Some(loc), Some(rot))? {
+                    Some(n) => n,
+                    None => {
+                        self.log.push(format!("Failed to import travelling actor of class {}", self.reg.class(r.class).path));
                         continue;
                     }
-                    if let Value::Obj(r) = v {
-                        if r != 0 && ref_instance(r).is_some() && self.is_actor_instance(r) {
-                            v = Value::Obj(map.get(&r).copied().unwrap_or(0));
-                        }
+                }
+            } else {
+                self.new_object(r.class)?
+            };
+            made.push((r.old, new));
+        }
+        let new_of = |old: u32, made: &[(u32, u32)]| made.iter().find(|m| m.0 == old).map(|m| m.1);
+        let mut fixups: Vec<(usize, PropDef, usize, u32)> = Vec::new();
+        for r in records {
+            let Some(new) = new_of(r.old, &made) else { continue };
+            let Some(i) = ref_instance(new) else { continue };
+            for (def, e, v) in &r.values {
+                let off = (def.offset + e * def.elem_size) as usize;
+                match v {
+                    TravelValue::Text(t) => {
+                        let t = t.replace('\\', "\n");
+                        let _ = self.import_item(Sel::Obj(i), def, off, &t, 0);
                     }
-                    let _ = self.set_prop(new, &name, i as u32, v);
+                    TravelValue::Ptr(p) => fixups.push((i, def.clone(), off, *p)),
                 }
             }
-            if new != new_pawn {
-                let owner = match self.get_prop(old, "Owner", 0) {
-                    Ok(Value::Obj(o)) => map.get(&o).copied().unwrap_or(0),
-                    _ => 0,
-                };
-                let _ = self.set_prop(new, "Owner", 0, Value::Obj(owner));
-            }
-            self.set_alive(old, false);
-        }
-        // what the new pawn still refers to (a `None` was not carried over) stays
-        let mut kept: Vec<u32> = Vec::new();
-        if let Some(class) = self.class_of(new_pawn) {
-            for (name, dim) in self.travel_props(class) {
-                for i in 0..dim {
-                    if let Ok(Value::Obj(r)) = self.get_prop(new_pawn, &name, i as u32) {
-                        kept.push(r);
-                    }
-                }
+            // the flag base keeps its flags natively here; the original's flag objects travel as text (`%f` floats)
+            if let Some(store) = self.flag_stores.remove(&r.old) {
+                self.flag_stores.insert(new, crate::native_ext::travel_flags(store));
             }
         }
-        for r in replaced {
-            if !kept.contains(&r) {
-                let _ = self.destroy(r);
+        for (i, def, off, p) in fixups {
+            if let Some(n) = new_of(p, &made) {
+                self.sel_write(Sel::Obj(i), &def, off, Value::Obj(n));
             }
         }
-        let mut order = vec![new_pawn];
-        order.extend(actors[1..].iter().filter_map(|a| map.get(a).copied()));
-        Ok(order)
+        Ok(made.into_iter().map(|m| m.1).collect())
     }
 }

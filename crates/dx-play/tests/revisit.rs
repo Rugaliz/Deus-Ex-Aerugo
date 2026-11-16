@@ -73,8 +73,12 @@ fn liberty_island_stays_cleared_after_unatco() {
     run(&mut s, 30);
     assert_eq!(nsf_standing(&mut s), 0, "the NSF are back on the island ({before} at the start)");
     assert_eq!(of_class(&mut s, "JCDentonMale").len(), 1, "one player pawn");
-    assert_eq!(of_class(&mut s, "AugmentationManager").len(), 1, "one augmentation manager");
-    assert_eq!(of_class(&mut s, "SkillManager").len(), 1, "one skill manager");
+    // the managers the player uses are the carried ones (`Login` made its own too, left unreferenced as in the
+    // original: `ResetPlayerToDefaults` -> `InitializeSubSystems` before the travel import replaces them)
+    for (field, class) in [("AugmentationSystem", "AugmentationManager"), ("SkillSystem", "SkillManager")] {
+        let m = match s.vm.get_prop(s.player, field, 0) { Ok(Value::Obj(m)) => m, _ => 0 };
+        assert!(m != 0 && s.vm.is_live(m) && of_class(&mut s, class).contains(&m), "{field}");
+    }
     assert!(flag(&mut s, "MS_MissionComplete"), "the flags travelled");
     let new_log: Vec<String> = s.vm.log[log_before..].to_vec();
     // the return logs what any travel logs (`Login`, the inventory accepted, the mission script started), no errors

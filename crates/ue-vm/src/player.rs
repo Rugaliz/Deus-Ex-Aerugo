@@ -78,7 +78,7 @@ impl Vm {
     /// role and show flags; the pawn's `TravelPreAccept`; the travelling actors made; their `TravelPreAccept` from the
     /// last to the first; `AcceptInventory`; their `TravelPostAccept` from the last to the first; the pawn's
     /// `TravelPostAccept`; `PostLogin`.
-    pub fn login_player_at(&mut self, class_name: &str, portal: &str, travel: Option<(u32, &[u32])>) -> Result<u32, VmError> {
+    pub fn login_player_at(&mut self, class_name: &str, portal: &str, travel: Option<&[crate::travel::TravelRecord]>) -> Result<u32, VmError> {
         self.spawn_play_actor(class_name, portal, travel, "")
     }
 
@@ -104,7 +104,7 @@ impl Vm {
     }
 
     /// `ULevel::SpawnPlayActor` (10396bd0); `extra_options` are appended to the URL's options (`?key` each).
-    fn spawn_play_actor(&mut self, class_name: &str, portal: &str, travel: Option<(u32, &[u32])>, extra_options: &str) -> Result<u32, VmError> {
+    fn spawn_play_actor(&mut self, class_name: &str, portal: &str, travel: Option<&[crate::travel::TravelRecord]>, extra_options: &str) -> Result<u32, VmError> {
         let rt = |s: String| VmError::Runtime(s);
         let game = match self.get_prop(self.level, "Game", 0)? {
             Value::Obj(g) if g != 0 => g,
@@ -126,7 +126,7 @@ impl Vm {
             self.log.push(format!("TravelPreAccept: {e}"));
         }
         let carried = match travel {
-            Some((_, actors)) if !actors.is_empty() => self.import_travel(pawn, actors)?,
+            Some(records) if !records.is_empty() => self.import_travel(pawn, records)?,
             _ => vec![pawn],
         };
         let others: Vec<u32> = carried.iter().rev().copied().filter(|&a| a != pawn).collect();
