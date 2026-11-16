@@ -603,6 +603,8 @@ pub struct Renderer {
     presenter: Option<Presenter>,
     /// Brush models of movers by export index in the map package (build with `add_mover`).
     mover_worlds: HashMap<usize, World>,
+    /// Movers whose brush could not be uploaded or drawn (reported once each; they are not drawn).
+    mover_errors: std::collections::HashSet<usize>,
     /// Movers to draw this frame: brush export and where it stands. Set before `render`/`render_present`.
     pub movers: Vec<(usize, Placement)>,
     /// The viewport clock in seconds (real time, runs while the game is paused): procedural textures step by it.
@@ -649,7 +651,7 @@ impl Renderer {
         let sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2 * crate::FRAMES_IN_FLIGHT as u32), None)? };
         let rt = if cx.quality().ray_traced() { Renderer::make_rt(&cx)? } else { None };
-        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: [false; crate::FRAMES_IN_FLIGHT], gpu_ms: None, cpu_ms: Vec::new(), rt, queued: None })
+        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), mover_errors: Default::default(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: [false; crate::FRAMES_IN_FLIGHT], gpu_ms: None, cpu_ms: Vec::new(), rt, queued: None })
     }
 
     /// Replaces the map being drawn (level travel): the world, the movers and the sky position. Meshes and textures
@@ -742,7 +744,15 @@ impl Renderer {
 
     /// Uploads the brush model of a mover with lightmaps made by the caller (`dx_light::bake_brush`).
     pub fn add_mover(&mut self, view: &MapView, brush_export: usize, model: &ue_assets::model::Model, lighting: Option<&dx_light::MapLighting>, maps: Option<dx_light::Lightmaps>) -> Result<()> {
-        let w = World::build(&self.cx, view, model, lighting, maps)?;
+        let w = match World::build(&self.cx, view, model, lighting, maps) {
+            Ok(w) => w,
+            Err(e) => {
+                if self.mover_errors.insert(brush_export) {
+                    eprintln!("[renderer] mover brush (export {brush_export}) not drawn: {e}");
+                }
+                return Err(e);
+            }
+        };
         self.mover_worlds.insert(brush_export, w);
         Ok(())
     }
@@ -780,7 +790,10 @@ impl Renderer {
         }
         for (export, w) in self.mover_worlds.iter_mut() {
             let frags = self.mover_fragments.as_ref().map(|m| m.get(export).cloned().unwrap_or_default());
-            if w.set_fragments(&self.cx, frags).is_err() {
+            if let Err(e) = w.set_fragments(&self.cx, frags) {
+                if self.mover_errors.insert(*export) {
+                    eprintln!("[renderer] mover brush (export {export}) not drawn: {e}");
+                }
                 let _ = w.set_fragments(&self.cx, None);
             }
         }

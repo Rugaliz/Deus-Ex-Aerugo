@@ -1,4 +1,6 @@
 #version 450
+// the same position for the same vertex in every pipeline that draws it (depth-equal multi-pass drawing)
+invariant gl_Position;
 // A decal piece (`URender::ClipDecal`): its triangles are in the per-frame slot buffer, two vec4 per vertex (world
 // position, texel coordinates); `params.x` holds the first vec4's index (as bits), `params.zw` the texture's size.
 layout(push_constant) uniform Push {

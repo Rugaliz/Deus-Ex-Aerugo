@@ -31,14 +31,31 @@ fn fatal(msg: &str, code: i32) -> ! {
     std::process::exit(code)
 }
 
+/// Started from a console, the output goes to that console; otherwise (from the file manager or Steam) stdout and
+/// stderr go to `deusex.log` in the per-user configuration directory, so problem reports can include it.
 #[cfg(windows)]
 fn attach_parent_console() {
+    use std::os::windows::io::IntoRawHandle;
     #[link(name = "kernel32")]
     extern "system" {
         fn AttachConsole(process: u32) -> i32;
+        fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
     }
     // SAFETY: plain Win32 call; ATTACH_PARENT_PROCESS
-    unsafe { AttachConsole(u32::MAX) };
+    if unsafe { AttachConsole(u32::MAX) } != 0 {
+        return;
+    }
+    let Some(dir) = dx_play::config_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let Ok(file) = std::fs::File::create(dir.join("deusex.log")) else { return };
+    let handle = file.into_raw_handle();
+    // STD_OUTPUT_HANDLE, STD_ERROR_HANDLE (the standard library looks the handle up on every write; the file stays
+    // open for the whole run)
+    // SAFETY: plain Win32 calls with a handle this process owns
+    unsafe {
+        SetStdHandle(-11i32 as u32, handle);
+        SetStdHandle(-12i32 as u32, handle);
+    }
 }
 
 fn main() {

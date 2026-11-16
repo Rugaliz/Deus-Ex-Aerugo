@@ -1,4 +1,6 @@
 #version 450
+// the same position for the same vertex in every pipeline that draws it (depth-equal multi-pass drawing)
+invariant gl_Position;
 layout(push_constant) uniform Push {
     mat4 view_proj;
     vec4 cam_pos;

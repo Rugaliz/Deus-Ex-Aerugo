@@ -21,14 +21,16 @@ layout(location = 4) in vec3 v_normal;
 layout(location = 5) flat in uint v_light;
 layout(location = 0) out vec4 out_color;
 void main() {
+    // sampled, and the alpha's derivative taken, before anything is discarded (see world.frag)
+    vec4 c = texture(tex, v_uv);
+    float alpha_width = fwidth(c.a);
     // a mirror frame's `NearClip`: `DrawLodMesh` clips each polygon at it (Render 10b0bab0), keeping distance >= 0
     if (pc.clip.xyz != vec3(0.0) && dot(pc.clip.xyz, v_pos) - pc.clip.w < 0.0) discard;
-    vec4 c = texture(tex, v_uv);
     float alpha = 1.0;
     if (pc.params.x != 0u) {
         if (A2C) {
             // multisampled: the texel's alpha sharpened to about one pixel's width, as sample coverage (smooth cut-outs)
-            alpha = clamp((c.a - 0.5) / max(fwidth(c.a), 1e-4) + 0.5, 0.0, 1.0);
+            alpha = clamp((c.a - 0.5) / max(alpha_width, 1e-4) + 0.5, 0.0, 1.0);
             if (alpha <= 0.0) discard;
         } else if (c.a * 255.0 <= 127.0) discard; // D3D ALPHAFUNC GREATER, ALPHAREF 127
     }

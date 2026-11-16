@@ -795,7 +795,7 @@ impl World {
 
             let vb = cx.upload(&vertices, vk::BufferUsageFlags::VERTEX_BUFFER)?;
             let ib = cx.upload(&indices, vk::BufferUsageFlags::INDEX_BUFFER)?;
-            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, uv_scale, rt_blas, dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, 8 << 20)?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, 4 << 20)?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, mask_equal, solid_nodes })
+            Ok(World { anim, anim_keys, anim_frame: HashMap::new(), mirror_ranges, blended_nodes, blended_order: None, mirror_order: None, solid_mirror_order: None, main_solid: None, mask, vertices: vb, indices: ib, batches, textures, uv_scale, rt_blas, dynamic, sets, set_layout, pool, sampler, layout, pipeline, backdrop, mirror_planes, nodes: model.nodes.iter().map(|n| (n.plane, n.i_front, n.i_back, n.i_zone)).collect(), zone_visibility: model.zones.iter().map(|z| z.visibility).collect(), time: 0.0, translucent, modulated, face_count, lightmap: Some((lm_tex, lm_set, lm_sampler)), use_lightmaps: maps.is_some(), plain_textures: false, light_scale: 4.0, lightmap_info, lightmap_pool: lm_pool, lightmap_updates: if maps.is_some() { Some(RectStaging::new(cx, staging_capacity(fog_size, 8 << 20))?) } else { None }, fog: (fog_tex, fog_set), fog_frames: HashMap::new(), fog_zero: (fog_zero_tex, fog_zero_pool, fog_zero_set), fog_size, fog_bind: std::cell::Cell::new(fog_set), fog_updates: if maps.is_some() { Some(RectStaging::new(cx, staging_capacity(fog_size, 4 << 20))?) } else { None }, fog_on: true, surf_draws, zone_ambient, zone_pan, fragments: None, opaque_mirrors, depth_far, mask_always, mask_equal, solid_nodes })
         }
     }
 
@@ -1375,7 +1375,7 @@ impl World {
             let (w, h) = self.fog_size;
             let tex = GpuTexture::new(cx, &[(w, h, vec![0; (w * h * 4) as usize])])?;
             let (pool, set) = make_fog_set(cx, self.set_layout, *sampler, &tex)?;
-            let staging = RectStaging::new(cx, 4 << 20)?;
+            let staging = RectStaging::new(cx, staging_capacity((w, h), 4 << 20))?;
             self.fog_frames.insert(frame, FogAtlas { tex, pool, set, staging });
         }
         let a = self.fog_frames.get_mut(&frame).unwrap();
@@ -1461,6 +1461,12 @@ impl World {
         cx.destroy_buffer(self.vertices);
         cx.destroy_buffer(self.indices);
     }
+}
+
+/// Bytes of a frame's staging for an atlas of `size` texels (RGBA8): every texel twice over (a frame redoes each
+/// rectangle at most once), at most `cap`. A mover's atlas is small, and every mover has a world of its own.
+fn staging_capacity(size: (u32, u32), cap: usize) -> usize {
+    (size.0 as usize * size.1 as usize * 8).clamp(4096, cap)
 }
 
 /// A child frame's own fog atlas (same size and places as the lightmap atlas).

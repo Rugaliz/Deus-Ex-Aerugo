@@ -26,7 +26,8 @@ layout(location = 0) out vec4 out_color;
 // (the atlas keeps two replicated texels around every rectangle, so the wider footprint stays on its own surface).
 vec4 atlas(sampler2D t, vec2 pos) {
     vec2 size = vec2(textureSize(t, 0));
-    if (!SMOOTH_LM) return texture(t, pos / size);
+    // (one level, linear both ways: level 0 explicitly, so no derivatives are needed after a discard)
+    if (!SMOOTH_LM) return textureLod(t, pos / size, 0.0);
     vec2 p = pos - 0.5;
     vec2 i = floor(p);
     vec2 f = p - i;
@@ -38,11 +39,18 @@ vec4 atlas(sampler2D t, vec2 pos) {
     vec2 g0 = w0 + w1, g1 = w2 + w3;
     vec2 h0 = (i - 0.5 + w1 / g0) / size;
     vec2 h1 = (i + 1.5 + w3 / g1) / size;
-    return g0.y * (g0.x * texture(t, vec2(h0.x, h0.y)) + g1.x * texture(t, vec2(h1.x, h0.y)))
-         + g1.y * (g0.x * texture(t, vec2(h0.x, h1.y)) + g1.x * texture(t, vec2(h1.x, h1.y)));
+    return g0.y * (g0.x * textureLod(t, vec2(h0.x, h0.y), 0.0) + g1.x * textureLod(t, vec2(h1.x, h0.y), 0.0))
+         + g1.y * (g0.x * textureLod(t, vec2(h0.x, h1.y), 0.0) + g1.x * textureLod(t, vec2(h1.x, h1.y), 0.0));
 }
 
 void main() {
+    // texture coordinates count in the game's texels; a mod's bigger picture (vis.w: its scale) maps the same way.
+    // Sampled, and the alpha's screen-space derivative taken, before anything is discarded: a fragment discarded in
+    // its 2x2 quad leaves the quad's implicit derivatives (mip level, fwidth) undefined.
+    vec2 tex_size = vec2(textureSize(tex, 0));
+    if (pc.vis.w != 0u) tex_size /= uintBitsToFloat(pc.vis.w);
+    vec4 c = texture(tex, v_uv / tex_size);
+    float alpha_width = fwidth(c.a);
     if (pc.vis.z != 0u) {
         uint z0 = (v_flags >> 8) & 255u;
         uint z1 = (v_flags >> 16) & 255u;
@@ -53,15 +61,11 @@ void main() {
     if (pc.clip.xyz != vec3(0.0) && dot(pc.clip.xyz, v_pos) < pc.clip.w) discard;
     // One-sided surfaces are only visible from the side their normal points to.
     if ((v_flags & 1u) == 0u && dot(v_normal, pc.cam_pos.xyz - v_pos) <= 0.0) discard;
-    // texture coordinates count in the game's texels; a mod's bigger picture (vis.w: its scale) maps the same way
-    vec2 tex_size = vec2(textureSize(tex, 0));
-    if (pc.vis.w != 0u) tex_size /= uintBitsToFloat(pc.vis.w);
-    vec4 c = texture(tex, v_uv / tex_size);
     float alpha = 1.0;
     if (pc.misc.x != 0u) {
         if (A2C) {
             // multisampled: the texel's alpha sharpened to about one pixel's width, as sample coverage (smooth cut-outs)
-            alpha = clamp((c.a - 0.5) / max(fwidth(c.a), 1e-4) + 0.5, 0.0, 1.0);
+            alpha = clamp((c.a - 0.5) / max(alpha_width, 1e-4) + 0.5, 0.0, 1.0);
             if (alpha <= 0.0) discard;
         } else if (c.a * 255.0 <= 127.0) discard; // D3D ALPHAFUNC GREATER, ALPHAREF 127
     }

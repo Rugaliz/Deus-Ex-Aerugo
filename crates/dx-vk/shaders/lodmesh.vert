@@ -1,4 +1,6 @@
 #version 450
+// the same position for the same vertex in every pipeline that draws it (depth-equal multi-pass drawing)
+invariant gl_Position;
 // A mesh triangle as `DrawLodMesh` (Render 10b0ea80) hands it to the device: world position, texture coordinates (in
 // units of the texture) and the vertex colour (`FLightManager::Light`, the glow colour of unlit faces, white for
 // modulated ones) and fog (`FLightManager::Fog`, D3D's specular colour), all computed on the CPU (`lodmesh::build`).

@@ -204,6 +204,34 @@ unsafe extern "system" fn debug_callback(
     vk::FALSE
 }
 
+/// Writes the chosen device, its driver and its memory heaps and types to stderr (the log file on Windows), for
+/// reports from machines we cannot test on.
+unsafe fn log_device(instance: &ash::Instance, physical: vk::PhysicalDevice, props: &vk::PhysicalDeviceProperties, mem: &vk::PhysicalDeviceMemoryProperties) {
+    let mut driver = vk::PhysicalDeviceDriverProperties::default();
+    let mut p2 = vk::PhysicalDeviceProperties2::default().push_next(&mut driver);
+    instance.get_physical_device_properties2(physical, &mut p2);
+    let text = |c: std::result::Result<&CStr, std::ffi::FromBytesUntilNulError>| c.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+    let v = props.api_version;
+    eprintln!(
+        "[vulkan] {} ({:?}), {} {} ({:?}), Vulkan {}.{}.{}, driver version {:#x}",
+        text(props.device_name_as_c_str()),
+        props.device_type,
+        text(driver.driver_name_as_c_str()),
+        text(driver.driver_info_as_c_str()),
+        driver.driver_id,
+        vk::api_version_major(v),
+        vk::api_version_minor(v),
+        vk::api_version_patch(v),
+        props.driver_version
+    );
+    for (i, h) in mem.memory_heaps[..mem.memory_heap_count as usize].iter().enumerate() {
+        eprintln!("[vulkan] heap {i}: {} MB {:?}", h.size >> 20, h.flags);
+    }
+    for (i, t) in mem.memory_types[..mem.memory_type_count as usize].iter().enumerate() {
+        eprintln!("[vulkan] memory type {i}: heap {} {:?}", t.heap_index, t.property_flags);
+    }
+}
+
 impl Context {
     /// `validation`: enable the Khronos validation layer if it is installed (messages go to stderr).
     /// `instance_extensions`: extra extensions, e.g. the ones SDL needs for a window surface.
@@ -330,6 +358,7 @@ impl Context {
                 None,
             )?;
             let mem_props = instance.get_physical_device_memory_properties(physical);
+            log_device(&instance, physical, &props, &mem_props);
             let timestamp_period = props.limits.timestamp_period;
             let rt = if rt_ok { Some(rt::RtSupport::new(&instance, &device)?) } else { None };
             Ok(Context {
