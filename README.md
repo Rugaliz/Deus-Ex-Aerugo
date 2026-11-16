@@ -45,10 +45,12 @@ Then:
 2. Open your Deus Ex folder, the one that contains `System` and `Maps`. On Steam: right-click Deus Ex in your library,
    then *Manage* → *Browse local files*. On GOG Galaxy: *More* → *Manage installation* → *Show folder*.
 3. Unpack the download and copy **`deusex.exe`** (Windows) or **`deusex`** (Linux) into that folder.
-4. Double-click it to play (on Linux you can also run `./deusex` in that folder).
+4. Double-click it to play (on Linux you can also run `./deusex` in that folder). Windows may warn that the program is
+   from an unknown publisher (it is not code-signed): choose *More info* → *Run anyway*.
 
 Your settings and saves are kept in `%APPDATA%\deus-ex-aerugo` (Windows) or `~/.config/deus-ex-aerugo` (Linux). To
-uninstall, delete the file you copied, and that folder if you want your saves gone too.
+uninstall, delete the file you copied, and that folder if you want your saves gone too. On Windows that folder also
+holds `deusex.log` (your graphics card, driver and any errors): please attach it to bug reports.
 
 Extras, from a command prompt in the game folder: `deusex --windowed` plays in a window, `deusex --size 1920x1080`
 sets its size, and `deusex --import-save "Save/Save0001/<map>.dxs"` continues a game saved by the original.
