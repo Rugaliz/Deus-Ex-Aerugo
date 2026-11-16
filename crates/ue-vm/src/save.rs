@@ -464,6 +464,12 @@ impl Vm {
 
     /// Captures the level as it is now.
     pub fn make_snapshot(&mut self, map: &str, player: u32) -> Res<Snapshot> {
+        self.make_snapshot_excluding(map, player, &HashSet::new())
+    }
+
+    /// `make_snapshot` without the objects `exclude` (references to them are saved as `None`): a level left for
+    /// another of the same mission, as `DDeusExGameEngine::SaveCurrentLevel` writes it after `PruneTravelActors`.
+    pub fn make_snapshot_excluding(&mut self, map: &str, player: u32, exclude: &HashSet<u32>) -> Res<Snapshot> {
         // the game rules object and what it owns are saved like the other actors (the original's saves hold the
         // level's `GameInfo`); `game` stays empty (older saves referred to the running one through it)
         let game: Vec<(u32, String, u32)> = Vec::new();
@@ -472,7 +478,7 @@ impl Vm {
         let mut order: Vec<u32> = Vec::new();
         let mut index: HashMap<u32, u32> = HashMap::new();
         for a in self.live_actors() {
-            if game_index.contains_key(&a) || self.class_of(a).map(|c| self.excluded_class(c)).unwrap_or(true) {
+            if game_index.contains_key(&a) || exclude.contains(&a) || self.class_of(a).map(|c| self.excluded_class(c)).unwrap_or(true) {
                 continue;
             }
             index.insert(a, order.len() as u32);
@@ -481,7 +487,7 @@ impl Vm {
         let mut i = 0;
         while i < order.len() {
             for v in self.object_ref_values(order[i]) {
-                if ref_instance(v).is_none() || !self.is_live(v) || index.contains_key(&v) || game_index.contains_key(&v) || self.con_paths.contains_key(&v) {
+                if ref_instance(v).is_none() || !self.is_live(v) || index.contains_key(&v) || exclude.contains(&v) || game_index.contains_key(&v) || self.con_paths.contains_key(&v) {
                     continue;
                 }
                 if self.class_of(v).map(|c| self.excluded_class(c)).unwrap_or(true) {

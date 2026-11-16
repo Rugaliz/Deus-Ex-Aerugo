@@ -193,6 +193,62 @@ impl Vm {
         Ok((new_pawn, load))
     }
 
+    /// `DDeusExGameEngine::PruneTravelActors` (DeusEx.dll 1000f9b0), run on the level being left for another map of
+    /// the same mission before it is saved: the player's augmentations (`AugmentationSystem.FirstAug`, `Next`) and
+    /// their manager, its skills (`SkillSystem.FirstSkill`, `Next`) and their manager, its flag base and its carried
+    /// decoration are destroyed and the references cleared. They travel with the player, so the saved level must not
+    /// keep them. Here the level is only captured (`make_snapshot_excluding`) and then dropped, and the player's own
+    /// objects are still needed for the travel, so this returns what the capture leaves out instead.
+    pub fn prune_travel_actors(&mut self, player: u32) -> HashSet<u32> {
+        let mut out = HashSet::new();
+        let obj = |vm: &mut Vm, r: u32, name: &str| match vm.get_prop(r, name, 0) {
+            Ok(Value::Obj(o)) if o != 0 && vm.is_live(o) => Some(o),
+            _ => None,
+        };
+        for (manager, first, next) in [("AugmentationSystem", "FirstAug", "Next"), ("SkillSystem", "FirstSkill", "Next")] {
+            if let Some(m) = obj(self, player, manager) {
+                let mut item = obj(self, m, first);
+                while let Some(i) = item {
+                    if !out.insert(i) {
+                        break;
+                    }
+                    item = obj(self, i, next);
+                }
+                out.insert(m);
+            }
+        }
+        for field in ["FlagBase", "carriedDecoration"] {
+            if let Some(o) = obj(self, player, field) {
+                out.insert(o);
+            }
+        }
+        out
+    }
+
+    /// Travel to a map of the same mission visited before: `DDeusExGameEngine::Browse` (DeusEx.dll 10010b90) finds
+    /// `<Save>\Current\<map>.dxs` and browses to it instead of the map, so the level comes back as it was left
+    /// (`snap`) and `UGameEngine::LoadMap` starts it as a saved level (`restore_snapshot`). The player then logs in
+    /// as after any travel: `GameInfo.Login` takes the unoccupied pawn the level kept, `DeusExGameInfo.Login` resets it
+    /// and puts it at the portal, and what the player carries comes along (`travel_level`).
+    pub fn revisit_level(&mut self, old: u32, pi: usize, snap: &crate::save::Snapshot, portal: &str, class_name: &str, items: bool) -> Result<(u32, crate::level::LevelLoad), VmError> {
+        let (mut actors, objs) = self.travel_closure(old);
+        if !items {
+            actors.retain(|&a| a == old || !self.class_of(a).map(|c| self.reg.class_by_name("Inventory").map(|i| self.is_a(c, i)).unwrap_or(false)).unwrap_or(false));
+        }
+        let keep: HashSet<u32> = objs.iter().copied().collect();
+        let old_level = self.unload_level_keeping(&keep);
+        let load = self.load_level_opts(pi, false)?;
+        self.restore_snapshot(snap)?;
+        let new_pawn = self.login_player_at(class_name, portal, Some((old, &actors[..])))?;
+        for r in &actors {
+            self.set_alive(*r, false);
+        }
+        if old_level != self.level {
+            self.set_alive(old_level, false);
+        }
+        Ok((new_pawn, load))
+    }
+
     /// A property of a class's default object.
     fn class_default_value(&mut self, class: crate::ClassId, name: &str, elem: u32) -> Option<Value> {
         let def = self.reg.find_prop(class, name)?.clone();

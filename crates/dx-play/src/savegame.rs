@@ -35,6 +35,15 @@ impl Session {
         std::fs::write(&tmp, snap.encode()).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, slot.join("save.dxs")).map_err(|e| e.to_string())?;
         std::fs::write(slot.join("info.txt"), meta.to_text()).map_err(|e| e.to_string())?;
+        // the mission's levels left before (`SaveGame` copies the `Current` folder into the slot)
+        let current = slot.join("Current");
+        let _ = std::fs::remove_dir_all(&current);
+        if !self.current_levels.is_empty() {
+            std::fs::create_dir_all(&current).map_err(|e| e.to_string())?;
+            for (map, snap) in &self.current_levels {
+                std::fs::write(current.join(format!("{map}.dxs")), snap.encode()).map_err(|e| e.to_string())?;
+            }
+        }
         // `DDeusExGameEngine::SaveGame`: the saved game's picture (`SaveInfo.Snapshot`) unless the render device is
         // OpenGL: the root's snapshot size set to 160 x 120, the greyscale picture of the frame on screen (written once
         // the host has taken it)
@@ -62,7 +71,22 @@ impl Session {
         let slot = self.vm.save_slot_dir(index).ok_or("no folder for saved games")?;
         let bytes = std::fs::read(slot.join("save.dxs")).map_err(|e| format!("cannot read the saved game: {e}"))?;
         let snap = Snapshot::decode(&bytes).map_err(|e| e.to_string())?;
-        self.load_snapshot(&snap)
+        // `Browse` on `?loadgame=N`: the `Current` folder is emptied and the slot's levels copied into it
+        let mut current = std::collections::HashMap::new();
+        if let Ok(dir) = std::fs::read_dir(slot.join("Current")) {
+            for e in dir.flatten() {
+                let path = e.path();
+                let Some(map) = path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_lowercase()) else { continue };
+                if path.extension().and_then(|x| x.to_str()) != Some("dxs") {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).map_err(|e| format!("cannot read the saved game: {e}"))?;
+                current.insert(map, Snapshot::decode(&bytes).map_err(|e| e.to_string())?);
+            }
+        }
+        self.load_snapshot(&snap)?;
+        self.current_levels = current;
+        Ok(())
     }
 
     pub fn load_snapshot(&mut self, snap: &Snapshot) -> Result<(), String> {

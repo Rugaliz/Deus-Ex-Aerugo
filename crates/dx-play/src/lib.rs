@@ -39,6 +39,10 @@ pub struct Input {
 }
 
 pub struct Session {
+    /// The levels of the running mission left for another of its maps, by lower-case map name: the original's
+    /// `<Save>\Current\<map>.dxs` files (`DDeusExGameEngine::Browse`, `SaveCurrentLevel`). Kept in memory here and
+    /// written into each saved game.
+    pub current_levels: std::collections::HashMap<String, ue_vm::save::Snapshot>,
     pub vm: Vm,
     pub view: MapView,
     pub player: u32,
@@ -195,7 +199,7 @@ impl Session {
         let rot = view.find_actor("PlayerStart").map(|(_, r)| r).unwrap_or([0.0; 3]);
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
-        let mut s = Session { vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
+        let mut s = Session { current_levels: Default::default(), vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
         s.install_key_commands();
         s.apply_yaw();
         s.vm.ui_after_browse(s.player);
@@ -475,7 +479,12 @@ impl Session {
             let pi = self.vm.reg.add_package(&path, &stem).map_err(|e| e.to_string())?;
             let view = MapView::open(&self.game, &stem)?;
             let class = self.vm.class_of(self.player).map(|c| self.vm.reg.class(c).path.rsplit('.').next().unwrap_or("JCDentonMale").to_string()).unwrap_or_else(|| "JCDentonMale".into());
-            let (pawn, load) = self.vm.travel_level(self.player, pi, &portal, &class, req.items).map_err(|e| e.to_string())?;
+            let kept = self.leave_level(&req.url, &stem);
+            let (pawn, load) = match kept {
+                Some(snap) => self.vm.revisit_level(self.player, pi, &snap, &portal, &class, req.items),
+                None => self.vm.travel_level(self.player, pi, &portal, &class, req.items),
+            }
+            .map_err(|e| e.to_string())?;
             self.view = view;
             self.map_pkg = pi;
             self.world_lighting = None;
@@ -500,6 +509,44 @@ impl Session {
             a.level_changed(&mut self.vm);
             self.audio = Some(a);
         }
+    }
+
+    /// What `DDeusExGameEngine::Browse` (DeusEx.dll 10010b90) does with the level being left for map `next` (`url`
+    /// the travel URL): within one mission the level is kept (`PruneTravelActors`, `SaveCurrentLevel(-2)`), and a map
+    /// of it kept before is returned to be entered as it was left. A map whose name does not start with a mission
+    /// number, `?loadonly`, another mission or a player starting a new game (`bStartingNewGame`, then cleared) forget
+    /// every kept level instead (`DeleteSaveGameFiles`).
+    fn leave_level(&mut self, url: &str, next: &str) -> Option<ue_vm::save::Snapshot> {
+        let current = self.mission_number();
+        let next_mission = mission_of_map(next);
+        let loadonly = url.split('?').skip(1).any(|o| o.eq_ignore_ascii_case("loadonly"));
+        if next_mission.is_none() || loadonly {
+            self.current_levels.clear();
+            return None;
+        }
+        let new_game = matches!(self.vm.get_prop(self.player, "bStartingNewGame", 0), Ok(Value::Bool(true)));
+        if next_mission != current || new_game {
+            self.current_levels.clear();
+            if new_game {
+                let _ = self.vm.set_prop(self.player, "bStartingNewGame", 0, Value::Bool(false));
+            }
+            return None;
+        }
+        let pruned = self.vm.prune_travel_actors(self.player);
+        match self.vm.make_snapshot_excluding(&self.map_name, self.player, &pruned) {
+            Ok(snap) => {
+                self.current_levels.insert(self.map_name.to_lowercase(), snap);
+            }
+            Err(e) => self.issues.push(LoadIssue { actor: self.player, class: "travel".into(), event: "SaveCurrentLevel".into(), error: e.to_string() }),
+        }
+        self.current_levels.get(&next.to_lowercase()).cloned()
+    }
+
+    /// `DDeusExGameEngine::GetCurrentMissionNumber` (DeusEx.dll 10011ed0): the level's `DeusExLevelInfo.missionNumber`.
+    fn mission_number(&mut self) -> Option<i32> {
+        let c = self.vm.reg.class_by_name("DeusExLevelInfo")?;
+        let info = self.vm.live_actors().into_iter().find(|&a| self.vm.class_of(a).map(|k| self.vm.is_a(k, c)).unwrap_or(false))?;
+        self.vm.get_prop(info, "missionNumber", 0).ok().and_then(|v| v.as_i32())
     }
 
     /// True once after a level change: a renderer must then be given the new map (`reload_vk_world`).
@@ -2263,6 +2310,16 @@ fn plot(img: &mut Image, w: i32, h: i32, x: i32, y: i32, c: [u8; 4]) {
         let i = (y * w + x) as usize * 4;
         img.rgba[i..i + 4].copy_from_slice(&c);
     }
+}
+
+/// `DDeusExGameEngine::GetNextMissionNumber` (DeusEx.dll 10011ef0): the number a map's name starts with
+/// (`01_NYC_UNATCOIsland`: 1), none when it does not start with a digit.
+pub fn mission_of_map(map: &str) -> Option<i32> {
+    let digits: String = map.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// The per-user configuration directory of this port (see `ue_config::user_config_dir`).
