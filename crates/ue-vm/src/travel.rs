@@ -139,6 +139,9 @@ impl Vm {
         }
         self.time = 0.0;
         self.ai.reset();
+        // the level's destroyed actors go with it (`CleanupDestroyed(1)` when the level is left)
+        self.pending_deleted.clear();
+        self.pending_deleted_set.clear();
         // the conversation data objects were just parked with everything else: they are loaded again on demand
         self.con_objects.clear();
         self.con_paths.clear();

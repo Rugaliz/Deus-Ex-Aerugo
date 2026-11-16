@@ -317,12 +317,82 @@ impl Vm {
         // ours drops them with the actor
         self.hash_remove(obj);
         self.set_prop(obj, "bDeleteMe", 0, Value::Bool(true))?;
+        // `UObject::ConditionalDestroy` -> `Destroy` -> `ExitProperties`: the actor's strings are freed (read as empty);
+        // everything else stays readable until the cleanup
+        self.clear_strings(obj);
         let o = &mut self.objects[i];
         o.alive = false;
         o.exec = None;
         o.latent = None;
-        self.ai.forget(obj);
+        // `Actor->Deleted = FirstDeleted; FirstDeleted = Actor`: the AI event manager forgets it at the cleanup
+        // (`ULevel::CleanupDestroyed`, `UEventManager::DestroyActor`)
+        self.pending_deleted.insert(0, obj);
+        self.pending_deleted_set.insert(obj);
+        self.ai.con_bound.remove(&obj);
         Ok(true)
+    }
+
+    /// A destroyed actor not yet cleaned up (`bDeleteMe`, on `ULevel::FirstDeleted`): scripts holding it still read and
+    /// call through it (`UObject::execContext` only rejects a null pointer).
+    pub fn is_pending_deleted(&self, r: u32) -> bool {
+        self.pending_deleted_set.contains(&r)
+    }
+
+    /// `ULevel::CleanupDestroyed` (Engine 103965a0), at the end of every level tick (`force` false) and forced when a
+    /// game is saved (`UGameEngine::SaveGame`) or the level is left. Nothing happens until more than 127 actors wait
+    /// (unless forced); then every object property of every actor of the level (arrays and structs included) that
+    /// points to one of them is cleared (`UStruct::CleanupDestroyed`, Core: `IsPendingKill`), the AI event manager forgets
+    /// each (`UEventManager::DestroyActor`, newest first) and they are freed. (`CompactActors` first: the actor list keeps
+    /// its order without the empty slots, which the port's list never has.)
+    pub fn cleanup_destroyed(&mut self, force: bool) {
+        if self.pending_deleted.is_empty() || (self.pending_deleted.len() < 128 && !force) {
+            return;
+        }
+        let gone = std::mem::take(&mut self.pending_deleted_set);
+        for i in 0..self.objects.len() {
+            let r = inst_ref(i);
+            if !self.objects[i].alive || !self.objects[i].actor {
+                continue;
+            }
+            let Some(class) = self.class_of(r) else { continue };
+            let mut data = std::mem::take(&mut self.objects[i].mem.data);
+            self.map_slots(class, &mut data, &mut |kind, v| if kind == crate::save::Val::Obj && gone.contains(&v) { 0 } else { v });
+            self.objects[i].mem.data = data;
+        }
+        for a in std::mem::take(&mut self.pending_deleted) {
+            self.ai.events.destroy_actor(a);
+        }
+    }
+
+    /// Frees the string properties of `obj` (structs included): they read as empty.
+    fn clear_strings(&mut self, obj: u32) {
+        let (Some(i), Some(class)) = (ref_instance(obj), self.class_of(obj)) else { return };
+        let mut data = std::mem::take(&mut self.objects[i].mem.data);
+        let props: Vec<ue_registry::PropDef> = self.reg.all_props(class).into_iter().cloned().collect();
+        for p in &props {
+            self.clear_string_slots(p, p.offset as usize, &mut data);
+        }
+        self.objects[i].mem.data = data;
+    }
+
+    fn clear_string_slots(&self, p: &ue_registry::PropDef, base: usize, data: &mut [u8]) {
+        use ue_package::object::PropertyKind;
+        for e in 0..p.dim.max(1) as usize {
+            let off = base + e * p.elem_size as usize;
+            match (&p.kind, &p.target) {
+                (PropertyKind::Str, _) => {
+                    if let Some(slot) = data.get_mut(off..off + 4) {
+                        slot.copy_from_slice(&0u32.to_le_bytes());
+                    }
+                }
+                (PropertyKind::Struct, ue_registry::Target::Struct(sid)) => {
+                    for m in self.struct_members(*sid) {
+                        self.clear_string_slots(&m, off + m.offset as usize, data);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Advances the world by `dt` seconds: level time, then for every actor that existed at the start of the frame
@@ -419,6 +489,8 @@ impl Vm {
             }
         }
         self.tick_toggle = !self.tick_toggle;
+        // the end of `ULevel::Tick`
+        self.cleanup_destroyed(false);
     }
 
     /// `AActor::InStasis` (1036bfe0): an actor with `bStasis` that is not moving on its own (`bForceStasis`, or physics

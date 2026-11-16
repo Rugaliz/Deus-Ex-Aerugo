@@ -45,6 +45,8 @@ impl Vm {
         self.drop_collision_hash();
         self.decals.clear();
         self.surf_decals.clear();
+        self.pending_deleted.clear();
+        self.pending_deleted_set.clear();
         self.con_objects.clear();
         self.con_paths.clear();
         self.con_labels.clear();

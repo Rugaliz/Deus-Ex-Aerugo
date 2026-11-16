@@ -393,6 +393,10 @@ pub struct Vm {
     pub(crate) blend_cache: HashMap<(u32, u8), animation::PoseCache>,
     /// `ULevel`'s tick toggle: an actor has ticked this frame when its `bTicked` equals it; flips after every frame.
     pub(crate) tick_toggle: bool,
+    /// `ULevel::FirstDeleted`: actors destroyed and not yet cleaned up (newest first). They stay addressable by the
+    /// scripts that still hold them until `cleanup_destroyed` clears every reference (`world.rs`).
+    pub(crate) pending_deleted: Vec<u32>,
+    pub(crate) pending_deleted_set: HashSet<u32>,
     /// The render device's `HighDetailActors` (`[<GameRenderDevice>] HighDetailActors` in the game's ini; on for the
     /// shipped D3D device). `LoadMap` copies it into `Level.bHighDetailMode`; `SetupDynamics` leaves out `bHighDetail`
     /// actors when it is off. Read when a map loads.
@@ -506,6 +510,8 @@ impl Vm {
             url_options: Vec::new(),
             blend_cache: HashMap::new(),
             tick_toggle: false,
+            pending_deleted: Vec::new(),
+            pending_deleted_set: HashSet::new(),
             high_detail_actors: true,
             actors_sorted: false,
             canvas_draws: Vec::new(),

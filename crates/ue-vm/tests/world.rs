@@ -104,12 +104,47 @@ fn destroy_removes_the_actor() {
     assert_eq!(vm.get_prop(a, "bDeleteMe", 0).unwrap(), Value::Bool(true));
     assert!(!vm.is_live(a) && vm.is_live(b));
     assert_eq!(live_actors(&mut vm), before - 1);
-    // destroying twice is harmless (`DestroyActor` answers true for a deleted actor), and a destroyed object reads
-    // as none
+    // destroying twice is harmless (`DestroyActor` answers true for a deleted actor)
     assert!(vm.destroy(a).unwrap());
+    // until `ULevel::CleanupDestroyed` the destroyed actor is still read through (`execContext` only rejects null)
+    let n = vm.log.len();
+    vm.call_by_name(ti, "TestNullContext", vec![Value::Obj(a)]).unwrap();
+    assert!(!vm.log[n..].iter().any(|l| l.contains("Accessed None")), "{:?}", &vm.log[n..]);
+    // a level tick does not clean up fewer than 128; a forced cleanup frees it, and then it reads as none
+    vm.tick(0.01).unwrap();
+    assert!(vm.is_pending_deleted(a));
+    vm.cleanup_destroyed(true);
+    assert!(!vm.is_pending_deleted(a));
     let n = vm.log.len();
     vm.call_by_name(ti, "TestNullContext", vec![Value::Obj(a)]).unwrap();
     assert!(vm.log[n..].iter().any(|l| l.contains("Accessed None")));
+}
+
+/// `ULevel::CleanupDestroyed` clears every actor's reference to a destroyed actor (`UStruct::CleanupDestroyed`), and
+/// only once more than 127 wait (or when forced).
+#[test]
+fn cleanup_clears_references_to_destroyed_actors() {
+    let Some(mut vm) = world() else { return };
+    let c = class(&vm, "Counter");
+    let holder = vm.spawn(c, 0, None, None, None).unwrap().unwrap();
+    let mut gone = Vec::new();
+    for _ in 0..127 {
+        gone.push(vm.spawn(c, 0, None, None, None).unwrap().unwrap());
+    }
+    vm.set_prop(holder, "Owner", 0, Value::Obj(0)).unwrap();
+    vm.set_prop(holder, "Target", 0, Value::Obj(gone[0])).unwrap();
+    for &g in &gone {
+        vm.destroy(g).unwrap();
+    }
+    // 127 waiting: the tick leaves them
+    vm.tick(0.01).unwrap();
+    assert_eq!(vm.get_prop(holder, "Target", 0).unwrap(), Value::Obj(gone[0]));
+    // the 128th: the end of the next tick clears the reference
+    let one_more = vm.spawn(c, 0, None, None, None).unwrap().unwrap();
+    vm.destroy(one_more).unwrap();
+    vm.tick(0.01).unwrap();
+    assert_eq!(vm.get_prop(holder, "Target", 0).unwrap(), Value::Obj(0));
+    assert!(!vm.is_pending_deleted(gone[0]));
 }
 
 #[test]

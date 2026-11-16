@@ -361,7 +361,7 @@ impl Vm {
                     Value::Obj(o) => o,
                     _ => 0,
                 };
-                if !self.is_live(o) {
+                if !self.is_live(o) && !self.is_pending_deleted(o) {
                     let cls = self.accessed_none_place(f.this);
                     if trace_enabled() { eprintln!("!! Accessed None in {cls}"); }
                     self.log.push(format!("Accessed None in {cls}"));
@@ -381,7 +381,7 @@ impl Vm {
                     Value::Obj(o) => o,
                     _ => 0,
                 };
-                if !self.is_live(o) {
+                if !self.is_live(o) && !self.is_pending_deleted(o) {
                     return Ok(None);
                 }
                 self.in_context(f, o, |s, f| s.place(f, p))
@@ -455,7 +455,7 @@ impl Vm {
                     Value::Obj(o) => o,
                     _ => 0,
                 };
-                if !self.is_live(o) {
+                if !self.is_live(o) && !self.is_pending_deleted(o) {
                     let cls = self.accessed_none_place(f.this);
                     if trace_enabled() { eprintln!("!! Accessed None in {cls}"); }
                     self.log.push(format!("Accessed None in {cls}"));
@@ -828,7 +828,7 @@ impl Vm {
         // `foreach other.Iterator(...)`: the iterator runs on `other`, its arguments belong to the writer
         let (e, target) = match e {
             Expr::Context { obj, inner } => match self.eval(f, obj)? {
-                Value::Obj(r) if self.is_live(r) => (&**inner, r),
+                Value::Obj(r) if self.is_live(r) || self.is_pending_deleted(r) => (&**inner, r),
                 _ => return Ok((Vec::new(), Vec::new(), Vec::new(), None)),
             },
             other => (other, f.this),

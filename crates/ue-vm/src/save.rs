@@ -406,14 +406,14 @@ impl Snapshot {
 // ---- walking the memory image ------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq)]
-enum Val {
+pub(crate) enum Val {
     Name,
     Obj,
 }
 
 impl Vm {
     /// Calls `f` for every Name and object-reference slot of an object's memory image and stores the result back.
-    fn map_slots(&self, class: ClassId, data: &mut [u8], f: &mut dyn FnMut(Val, u32) -> u32) {
+    pub(crate) fn map_slots(&self, class: ClassId, data: &mut [u8], f: &mut dyn FnMut(Val, u32) -> u32) {
         let props: Vec<PropDef> = self.reg.all_props(class).into_iter().cloned().collect();
         for p in &props {
             self.map_prop_slots(p, p.offset as usize, data, f);

@@ -18,6 +18,9 @@ impl Session {
         // the count of saves of this game goes into the file
         let count = self.vm.get_prop(self.player, "saveCount", 0).ok().and_then(|v| v.as_i32()).unwrap_or(0) + 1;
         let _ = self.vm.set_prop(self.player, "saveCount", 0, Value::Int(count));
+        // `DDeusExGameEngine::SaveCurrentLevel` (DeusEx 1000fac0) forces `CleanupDestroyed(1)` first: the running game
+        // goes on without the references to destroyed actors
+        self.vm.cleanup_destroyed(true);
         let snap = self.vm.make_snapshot(&self.map_name, self.player).map_err(|e| e.to_string())?;
         let location = self.level_info_text("MissionLocation");
         let meta = SaveMeta {
