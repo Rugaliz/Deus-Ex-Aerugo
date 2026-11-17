@@ -20,4 +20,7 @@ mkdir -p target dist
 # rootless Podman maps the caller to root in the container; Docker needs the caller's uid so the output is theirs
 user=()
 case "$(basename "$engine")" in docker) user=(--user "$(id -u):$(id -g)") ;; esac
-"$engine" run --rm "${user[@]}" -v "$root:/src:Z" "$image" bash packaging/build-release.sh "$version"
+# the build's tag or commit for the main menu (the container sees no git history: a worktree's .git points outside)
+build="$(git -C "$root" describe --tags --exact-match 2>/dev/null || git -C "$root" rev-parse --short=7 HEAD 2>/dev/null || true)"
+if [ -n "$build" ] && [ -n "$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)" ]; then build="$build+"; fi
+"$engine" run --rm "${user[@]}" -e AERUGO_BUILD="$build" -v "$root:/src:Z" "$image" bash packaging/build-release.sh "$version"

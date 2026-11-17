@@ -2356,6 +2356,15 @@ pub fn mission_of_map(map: &str) -> Option<i32> {
     digits.parse().ok()
 }
 
+/// The port's version line for the main menu: `Aerugo <tag or commit>` as `build.rs` found it (`Aerugo v0.4.2` for a
+/// release build, `Aerugo 56fba9b` otherwise, `+` for uncommitted changes); the crate version without git.
+pub fn port_version() -> String {
+    match env!("AERUGO_BUILD") {
+        "" => format!("Aerugo {}", env!("CARGO_PKG_VERSION")),
+        build => format!("Aerugo {build}"),
+    }
+}
+
 /// The per-user configuration directory of this port (see `ue_config::user_config_dir`).
 /// A cargo test harness (`target/<profile>/deps/<name>-<hash>`) gets a directory of its own under the system's
 /// temporary directory instead, so tests neither read the player's settings nor write over them.

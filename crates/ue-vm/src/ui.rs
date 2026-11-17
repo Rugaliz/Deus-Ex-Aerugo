@@ -357,6 +357,25 @@ impl Vm {
         }
     }
 
+    /// The port's version line on the main menu, beside the original's (`MenuMain.ShowVersionInfo`: a white text window
+    /// at the menu's bottom right): the same kind of window, made with the same calls, at the bottom left of the same row.
+    fn ui_add_port_version(&mut self, menu: u32) {
+        let Some(text) = self.port_version.clone() else { return };
+        let Some(class) = self.reg.class_by_name("TextWindow") else { return };
+        let path = self.reg.class(class).path.clone();
+        let class_ref = Value::Obj(self.reg.obj_id(&path).0);
+        let Ok(Value::Obj(t)) = self.call_by_name(menu, "NewChild", vec![class_ref]) else { return };
+        if t == 0 {
+            return;
+        }
+        // HALIGN_Left 0, VALIGN_Bottom 2
+        let _ = self.call_by_name(t, "SetTextMargins", vec![Value::Float(0.0), Value::Float(0.0)]);
+        let _ = self.call_by_name(t, "SetWindowAlignments", vec![Value::Byte(0), Value::Byte(2)]);
+        let _ = self.call_by_name(t, "SetTextColorRGB", vec![Value::Int(255), Value::Int(255), Value::Int(255)]);
+        let _ = self.call_by_name(t, "SetTextAlignments", vec![Value::Byte(0), Value::Byte(2)]);
+        let _ = self.call_by_name(t, "SetText", vec![Value::Str(text)]);
+    }
+
     /// `CreateNewWindow`: constructs a window of `class` as a child of `parent` and runs its `InitWindow`.
     pub(crate) fn ui_create_window(&mut self, class: u32, parent: u32, show: bool) -> Res<u32> {
         let Some(c) = self.class_of_ref(class) else { return Ok(0) };
@@ -364,6 +383,9 @@ impl Vm {
         self.ui_init(w, parent);
         self.ui_lock(w);
         self.ui_event(w, "InitWindow", vec![]);
+        if self.port_version.is_some() && self.is_class(w, "MenuMain") {
+            self.ui_add_port_version(w);
+        }
         if show {
             self.ui_set_visibility(w, true);
         }

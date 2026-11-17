@@ -167,6 +167,8 @@ fn main() {
         Ok(s) => s,
         Err(e) => fatal(&format!("error: {e}"), 1),
     };
+    // the port's version line on the main menu, beside the original's
+    session.vm.port_version = Some(dx_play::port_version());
     // started without a map: like the original, the game plays the logo cutscene of the `DX` level (a click or the menu key
     // brings up the main menu); headless runs (screenshots, tests) and `--no-logo` go straight to the menu
     if map == "DX" && !flag("--no-menu") && (flag("--headless") || flag("--no-logo")) {

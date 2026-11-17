@@ -190,3 +190,41 @@ fn the_port_menus_set_what_the_host_reads() {
         assert_eq!(s.max_decals, n);
     }
 }
+
+/// The game's main menu shows the port's version line (`Aerugo <tag or commit>`) beside the original's version text,
+/// at the bottom left of the same row; without it (tests, probes) the menu is the original's.
+#[test]
+fn the_main_menu_shows_the_port_version_beside_the_original() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let texts = |s: &mut Session| -> Vec<(String, f32, f32)> {
+        let root = s.vm.ui_root(s.player);
+        let menu = find_window(s, root, "MenuMain");
+        assert_ne!(menu, 0, "the main menu is open");
+        let mut out = Vec::new();
+        let mut c = obj(s, menu, "firstChild");
+        while c != 0 {
+            if class_name(s, c) == "TextWindow" {
+                let t = match s.vm.call_by_name(c, "GetText", vec![]) { Ok(Value::Str(t)) => t, _ => String::new() };
+                let f = |n: &str| s.vm.get_prop(c, n, 0).ok().and_then(|v| v.as_f32()).unwrap_or(-1.0);
+                out.push((t, f("x"), f("width")));
+            }
+            c = obj(s, c, "nextSibling");
+        }
+        out
+    };
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("ShowMainMenu");
+    s.step_bound(DT);
+    let plain = texts(&mut s);
+    assert_eq!(plain.len(), 1, "only the original's version text: {plain:?}");
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.vm.port_version = Some(dx_play::port_version());
+    s.exec("ShowMainMenu");
+    s.step_bound(DT);
+    let both = texts(&mut s);
+    let original = both.iter().find(|t| t.0.contains("v1.112fm")).expect("the original's version text").clone();
+    let port = both.iter().find(|t| t.0.starts_with("Aerugo ")).expect("the port's version line").clone();
+    eprintln!("{both:?}");
+    assert_eq!(original, plain[0], "the original's text and place unchanged");
+    assert!(port.1 + port.2 <= original.1, "the port's line overlaps the original's: {port:?} {original:?}");
+}

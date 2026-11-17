@@ -326,6 +326,10 @@ pub struct Vm {
     pub entry_level_info: u32,
     /// The map of the URL the level was browsed with, as written (`DX.dx`, `01_NYC_UNATCOIsland`): `XLevel->URL.Map`.
     pub url_map: String,
+    /// The port's own version line for the main menu (`Aerugo <version> (<tag or commit>)`), set by the game
+    /// executable; the port adds it beside the original's version text (`ui_add_port_version`). `None` in tests and
+    /// probes, which keep the original's window tree.
+    pub port_version: Option<String>,
     /// The portal of that URL (`#Name`), if any.
     pub url_portal: String,
     /// `appClipboardCopy`/`appClipboardPaste`'s text.
@@ -483,6 +487,7 @@ impl Vm {
             laser_items: std::collections::HashMap::new(),
             entry_level_info: 0,
             url_map: String::new(),
+            port_version: None,
             url_portal: String::new(),
             clipboard: String::new(),
             ai: ai::AiState::default(),
