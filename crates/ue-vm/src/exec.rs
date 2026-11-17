@@ -125,7 +125,8 @@ impl Vm {
             return None;
         }
         match ref_instance(r) {
-            Some(i) => self.objects.get(i).filter(|o| o.alive).map(|o| o.class),
+            // a destroyed actor waiting for `CleanupDestroyed` still answers calls (`execContext` only rejects null)
+            Some(i) => self.objects.get(i).filter(|o| o.alive || self.pending_deleted_set.contains(&r)).map(|o| o.class),
             None => self.reg.class_by_path(self.reg.obj_path(ue_registry::ObjId(r))),
         }
     }
