@@ -81,6 +81,14 @@ pub struct Mip {
     pub data: Vec<u8>,
 }
 
+/// `Texture`'s surface bools in declaration order: bit `i` of the texture's `PolyFlags` is bool `i`.
+pub const SURFACE_BOOLS: [&str; 32] = [
+    "bInvisible", "bMasked", "bTransparent", "bNotSolid", "bEnvironment", "bSemisolid", "bModulate", "bFakeBackdrop",
+    "bTwoSided", "bAutoUPan", "bAutoVPan", "bNoSmooth", "bBigWavy", "bSmallWavy", "bWaterWavy", "bLowShadowDetail",
+    "bNoMerge", "bCloudWavy", "bDirtyShadows", "bHighLedge", "bSpecialLit", "bGouraud", "bUnlit", "bHighShadowDetail",
+    "bPortal", "bMirrored", "bX2", "bX3", "bX4", "bX5", "bX6", "bX7",
+];
+
 #[derive(Debug, Clone)]
 pub struct Texture {
     pub format: Format,
@@ -89,6 +97,10 @@ pub struct Texture {
     pub u_size: u32,
     pub v_size: u32,
     pub masked: bool,
+    /// The texture's `PolyFlags`: `Texture`'s 32 surface bools (`bInvisible`, `bMasked`, `bTransparent`, ...) are
+    /// declared in the poly flags' bit order and packed into that one word; the walk and the renderer OR it into a
+    /// surface's own flags.
+    pub poly_flags: u32,
     /// The texture's own blend flags (`bTransparent`, `bModulate`): actors and decals drawn with it blend that way.
     pub translucent: bool,
     pub modulated: bool,
@@ -179,6 +191,7 @@ impl Texture {
             u_size: p.int(pkg, "USize").unwrap_or(0) as u32,
             v_size: p.int(pkg, "VSize").unwrap_or(0) as u32,
             masked: p.bool(pkg, "bMasked"),
+            poly_flags: SURFACE_BOOLS.iter().enumerate().filter(|(_, n)| p.bool(pkg, n)).fold(0, |f, (i, _)| f | 1 << i),
             translucent: p.bool(pkg, "bTransparent"),
             modulated: p.bool(pkg, "bModulate"),
             source_texture: p.object(pkg, "SourceTexture").unwrap_or(0),

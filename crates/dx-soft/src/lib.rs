@@ -348,6 +348,18 @@ impl MapView {
         (0..t.mips.len()).map(|i| Some((t.mips[i].u_size, t.mips[i].v_size, t.mip_rgba_with(i, &pal, false).ok()?))).collect()
     }
 
+    /// The `PolyFlags` of a surface's texture (map reference `raw`): its surface bools packed in flag order, with a fire
+    /// texture's `bMasked` cleared as the engine does when it loads one. 0 when it cannot be read.
+    pub fn texture_poly_flags(&self, raw: i32) -> u32 {
+        (|| {
+            let (pkg, export) = self.files.resolve(&self.map, raw)?;
+            let t = Texture::load_any(&pkg.pkg, export).ok()?;
+            let fire = pkg.pkg.export_class_name(export) == "FireTexture";
+            Some(if fire { t.poly_flags & !PF_MASKED } else { t.poly_flags })
+        })()
+        .unwrap_or(0)
+    }
+
     /// The texture's own `bMasked` (`PF_Masked`; the engine clears a fire texture's when it loads).
     pub fn texture_masked_by_path(&self, path: &str) -> bool {
         (|| {
@@ -479,8 +491,11 @@ impl MapView {
         let near = 1.0f32;
 
         let faces = self.model.faces();
+        let mut tex_flags: HashMap<i32, u32> = HashMap::new();
         for face in &faces {
-            let surf = self.model.surfs[face.surf].clone();
+            let mut surf = self.model.surfs[face.surf].clone();
+            // the surface's flags with its texture's (as the walk hands them to the device)
+            surf.poly_flags |= *tex_flags.entry(surf.texture).or_insert_with(|| self.texture_poly_flags(surf.texture));
             if surf.poly_flags & (PF_INVISIBLE | PF_PORTAL | PF_FAKEBACKDROP) != 0 {
                 continue;
             }

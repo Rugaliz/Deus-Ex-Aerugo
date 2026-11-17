@@ -256,7 +256,7 @@ fn a_mirror_on_a_mover_shows_the_room() {
     let stats = |x0: u32, y0: u32, x1: u32, y1: u32| {
         let lum: Vec<f64> = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y, x))).map(|(y, x)| {
             let i = ((y * img.width + x) * 4) as usize;
-            (img.rgba[i] as f64 * 0.3 + img.rgba[i + 1] as f64 * 0.59 + img.rgba[i + 2] as f64 * 0.11)
+            img.rgba[i] as f64 * 0.3 + img.rgba[i + 1] as f64 * 0.59 + img.rgba[i + 2] as f64 * 0.11
         }).collect();
         let mean = lum.iter().sum::<f64>() / lum.len() as f64;
         (lum.iter().map(|l| (l - mean) * (l - mean)).sum::<f64>() / lum.len() as f64).sqrt()

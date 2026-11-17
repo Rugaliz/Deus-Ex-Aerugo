@@ -237,7 +237,9 @@ impl Session {
     }
 
     /// The poly flags of every world surface with its texture's `PolyFlags` merged in (the walk ORs them before
-    /// deciding whether a surface hides what is behind it). Cached per map.
+    /// deciding whether a surface hides what is behind it): `Texture`'s surface bools packed in flag order (there is
+    /// no `PolyFlags` property to read; looking one up found nothing, so masked textures hid what was behind them).
+    /// Cached per map.
     fn vis_surf_flags(&mut self) -> &Vec<u32> {
         if self.vis_flags.as_ref().map(|(m, _)| *m != self.map_pkg).unwrap_or(true) {
             let mut cache: std::collections::HashMap<i32, u32> = Default::default();
@@ -245,17 +247,7 @@ impl Session {
             for i in 0..self.view.model.surfs.len() {
                 let s = &self.view.model.surfs[i];
                 let (flags, tex) = (s.poly_flags, s.texture);
-                let tf = *cache.entry(tex).or_insert_with(|| {
-                    (|| {
-                        let path = self.vm.reg.ref_path(self.map_pkg, tex)?;
-                        let (pi, ei) = self.vm.reg.export_by_path(&path)?;
-                        let class = self.vm.reg.class_of_export(pi, ei)?;
-                        let off = self.vm.reg.find_prop(class, "PolyFlags")?.offset as usize;
-                        let (inst, _) = self.vm.reg.instantiate_object(class, pi, ei).ok()?;
-                        Some(u32::from_le_bytes(inst.data.get(off..off + 4)?.try_into().ok()?))
-                    })()
-                    .unwrap_or(0)
-                });
+                let tf = *cache.entry(tex).or_insert_with(|| self.view.texture_poly_flags(tex));
                 out.push(flags | tf);
             }
             self.vis_flags = Some((self.map_pkg, out));

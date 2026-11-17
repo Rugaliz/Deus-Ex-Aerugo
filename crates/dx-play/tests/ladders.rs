@@ -96,3 +96,29 @@ fn the_player_climbs_a_ladder() {
     }
     assert!(climbed, "no ladder could be climbed (log: {:?})", s.vm.log);
 }
+
+/// Grates, fences and ladders whose surface is not flagged masked but whose texture is (`ladder_a`, `HevyMetlGrate_A`,
+/// `metalgrate_a`, ...): `Texture`'s 32 surface bools are its `PolyFlags` (declared in flag order, packed in one
+/// word), and the walk and the renderer OR them into the surface's. The port looked for a `PolyFlags` property that
+/// does not exist and drew these solid with black between the bars (the tester's "black backgrounds"); the walk also
+/// let them hide what lay behind. A ceiling grate of the sewers, looked at from below.
+#[test]
+fn masked_textures_make_their_surfaces_masked() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "02_NYC_Underground").unwrap();
+    run(&mut s, 3);
+    let pkg = ue_package::Package::open(g.join("Maps").join("02_NYC_Underground.dx")).unwrap();
+    let grate = |raw: i32| pkg.object_path(ue_package::ObjectRef::from_index(raw)).map(|p| p.ends_with("HevyMetlGrate_A")).unwrap_or(false);
+    // every grate surface of the map: not masked itself, masked through its texture
+    let model = s.view.model.clone();
+    let surfs: Vec<usize> = (0..model.surfs.len()).filter(|&i| grate(model.surfs[i].texture)).collect();
+    assert!(!surfs.is_empty());
+    assert!(surfs.iter().all(|&i| model.surfs[i].poly_flags & 2 == 0), "the map flags them masked itself");
+    assert!(surfs.iter().all(|&i| s.view.texture_poly_flags(model.surfs[i].texture) & 2 != 0), "the texture's PolyFlags carry bMasked");
+    // the walk lists the ceiling grate with the merged flags
+    let cam = dx_soft::Camera { pos: [-2988.0, 994.0, -1060.0], pitch: 14000, yaw: 49152, fov: 90.0, roll: 0 };
+    let (_, frames) = s.compute_visibility(&cam, 800, 600);
+    let listed: Vec<u32> = frames[0].vis.surfaces.iter().filter(|(n, _, _)| model.nodes.get(*n as usize).map(|nd| nd.i_surf >= 0 && grate(model.surfs[nd.i_surf as usize].texture)).unwrap_or(false)).map(|&(_, f, _)| f).collect();
+    assert!(!listed.is_empty(), "the grate is not in view");
+    assert!(listed.iter().all(|f| f & 2 != 0), "the walk lists the grate unmasked: {listed:x?}");
+}

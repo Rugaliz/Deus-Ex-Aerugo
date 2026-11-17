@@ -461,8 +461,13 @@ impl World {
         let mut surf_draws: Vec<Option<SurfDraw>> = vec![None; model.surfs.len()];
         let zone_ambient: Vec<[f32; 3]> = lighting.map(|l| l.zone_ambient.clone()).unwrap_or_default();
         let zone_pan: Vec<[f32; 2]> = lighting.map(|l| l.zone_pan.clone()).unwrap_or_default();
+        let mut tex_flags: HashMap<i32, u32> = HashMap::new();
         for face in &model_faces {
-            let surf = &model.surfs[face.surf];
+            // the surface's flags with its texture's (`Texture`'s surface bools: a masked texture makes any surface it is
+            // on masked), as the walk hands them to the device
+            let mut surf = model.surfs[face.surf].clone();
+            surf.poly_flags |= *tex_flags.entry(surf.texture).or_insert_with(|| view.texture_poly_flags(surf.texture));
+            let surf = &surf;
             // zone portals are drawn unless they are also invisible (a water surface is a visible portal between the air
             // and the water zone; Render.dll draws a portal surface itself when PF_Invisible is clear)
             if surf.poly_flags & PF_INVISIBLE != 0 {
