@@ -121,3 +121,58 @@ fn arriving_on_a_teleporter_does_not_travel_again() {
     run(&mut s, 30);
     assert_eq!(s.map_name, "00_TrainingCombat");
 }
+
+/// The tester's crash taking the smugglers' elevator up to the street: a scorch mark lay on a door there. A mover's
+/// surfaces and nodes exist only while the level's moving-brush tracker does (its teardown, 1037b0b0, removes them and
+/// the decals on them when the level is saved or left); the kept street came back with the decal's entry naming a
+/// dynamic node of the old tracker, past the end of the new model, and drawing it panicked. Now the decal is on no
+/// surface after the return, and the level draws.
+#[test]
+fn a_decal_on_a_door_does_not_outlive_the_level() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "02_NYC_Street").unwrap();
+    s.vm.save_dir = Some(std::env::temp_dir().join(format!("aerugo-decal-{}", std::process::id())));
+    run(&mut s, 5);
+    let mut r = None;
+    s.render_vk(&mut r, 640, 480).expect("vulkan render");
+    let scorch = s.vm.reg.class_by_name("ScorchMark").unwrap();
+    let level_surfs = s.vm.surf_info.len();
+    // a scorch mark on the face of a door (a vertical node of a mover)
+    let mut placed = None;
+    'doors: for m in of_class(&mut s, "DeusExMover") {
+        let Some((model, nodes, _)) = s.tracked_model(m) else { continue };
+        let faces: Vec<([f32; 3], [f32; 3])> = nodes
+            .iter()
+            .filter_map(|&n| {
+                let nd = &model.nodes[n];
+                let pts: Vec<[f32; 3]> = (0..nd.num_vertices as usize).map(|k| model.points[model.verts[nd.i_vert_pool as usize + k].p_vertex as usize]).collect();
+                (pts.len() >= 3 && nd.plane[2].abs() < 0.3).then(|| (pts.iter().fold([0.0; 3], |a, p| [a[0] + p[0] / pts.len() as f32, a[1] + p[1] / pts.len() as f32, a[2] + p[2] / pts.len() as f32]), [nd.plane[0], nd.plane[1], nd.plane[2]]))
+            })
+            .collect();
+        for (c, n) in faces {
+            let at = [c[0] + n[0] * 8.0, c[1] + n[1] * 8.0, c[2] + n[2] * 8.0];
+            let yaw = ((-n[1]).atan2(-n[0]) / std::f32::consts::PI * 32768.0) as i32 & 0xffff;
+            let Ok(Some(d)) = s.vm.spawn(scorch, 0, None, Some(at), Some([0, yaw, 0])) else { continue };
+            if s.vm.decals.get(&d).and_then(|p| p.surfs.first()).map(|e| e.surf >= level_surfs).unwrap_or(false) {
+                placed = Some(d);
+                break 'doors;
+            }
+            let _ = s.vm.destroy(d);
+        }
+    }
+    let decal = placed.expect("a scorch mark on a door");
+    s.render_vk(&mut r, 640, 480).expect("vulkan render");
+    travel(&mut s, "02_NYC_Smug#ToSmugBackDoor");
+    assert_eq!(s.map_name, "02_NYC_Smug");
+    s.reload_vk_world(r.as_mut().unwrap()).unwrap();
+    travel(&mut s, "02_NYC_Street#FromSmugBackDoor");
+    assert_eq!(s.map_name, "02_NYC_Street");
+    s.reload_vk_world(r.as_mut().unwrap()).unwrap();
+    assert!(s.vm.decals.values().all(|p| p.surfs.iter().all(|e| e.surf < level_surfs)), "a decal kept a mover's surface");
+    for _ in 0..5 {
+        s.render_vk(&mut r, 640, 480).expect("vulkan render");
+        run(&mut s, 1);
+    }
+    r.take().unwrap().destroy();
+    eprintln!("decal {decal} on a door before; after the return, decals on level surfaces only");
+}

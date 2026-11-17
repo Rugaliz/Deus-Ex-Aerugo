@@ -719,8 +719,16 @@ impl Vm {
         }
         self.decals.clear();
         self.surf_decals.clear();
+        // a mover's surfaces exist only while the level's moving-brush tracker does: its teardown (1037b0b0, when the
+        // level is saved or left) removes the dynamic surfaces, nodes and points, and with them the decals on them; the
+        // tracker made for the restored level has fresh ones. The decal actor stays, on no surface (never drawn).
+        let level_surfs = self.surf_info.len();
         for (i, (k, c, n)) in snap.decals.iter().enumerate() {
-            let surfs = snap.decal_surfs.get(i).cloned().unwrap_or_default();
+            let saved = snap.decal_surfs.get(i).cloned().unwrap_or_default();
+            let surfs: Vec<crate::decal::DecalSurf> = saved.iter().filter(|e| e.surf < level_surfs).cloned().collect();
+            if !saved.is_empty() && surfs.is_empty() {
+                continue;
+            }
             let a = refs[*k as usize];
             for e in &surfs {
                 self.surf_decals.entry(e.surf).or_default().push(a);

@@ -370,6 +370,11 @@ impl Vm {
             return out;
         }
         for e in &place.surfs {
+            // `DrawFrame` draws a surface's decals at the nodes it draws: a listed node counts while it is still one of
+            // that surface's (a mover's nodes are re-made in other slots when it moves; the tracker leaves the lists)
+            if e.surf >= m.surfs.len() {
+                continue;
+            }
             let n = surf_normal(m, e.surf);
             let lift = mul(safe_normal(n), 0.75);
             let ua = safe_normal(sub(e.verts[1], e.verts[0]));
@@ -377,7 +382,7 @@ impl Vm {
             let nodes: Vec<usize> = if e.nodes.is_empty() {
                 (0..m.nodes.len()).filter(|&i| m.nodes[i].i_surf == e.surf as i32 && m.nodes[i].num_vertices != 0).collect()
             } else {
-                e.nodes.clone()
+                e.nodes.iter().copied().filter(|&i| m.nodes.get(i).map(|nd| nd.i_surf == e.surf as i32 && nd.num_vertices != 0).unwrap_or(false)).collect()
             };
             for node in nodes {
                 let poly = clip_to_node(m, node, n, e.verts.to_vec());
