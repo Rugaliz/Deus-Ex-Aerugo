@@ -1095,8 +1095,26 @@ impl World {
         self.mirror_planes.iter().position(|q| *q == p).map(|i| self.opaque_mirrors.iter().any(|(k, _)| *k == i)).unwrap_or(false)
     }
 
-    /// A child frame's opening faces seen through `vp` from `eye` (the stencil state is the caller's).
-    pub fn opening_faces(&self, cx: &Context, cb: vk::CommandBuffer, vp: [f32; 16], eye: [f32; 3], which: Opening, how: FaceUse) {
+    /// The fragments of this mover's world (as listed this frame) on mirror plane `p` (same facing, within half a unit)
+    /// whose surface is a mirror: a mirror on a mover (a door, a cabinet) opens its child frame through them, as the
+    /// walk opens it through the mover's dynamic BSP nodes.
+    pub fn mirror_fragments(&self, p: [f32; 4]) -> Vec<usize> {
+        let Some(f) = &self.fragments else { return Vec::new() };
+        f.input
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.verts.len() >= 3 && self.surf_draws.get(g.surf).copied().flatten().map(|d| d.poly_flags & PF_MIRRORED != 0).unwrap_or(false))
+            .filter(|(_, g)| {
+                let n = g.normal;
+                let v = g.verts[0];
+                n[0] * p[0] + n[1] * p[1] + n[2] * p[2] > 0.999 && (n[0] * v[0] + n[1] * v[1] + n[2] * v[2] - p[3]).abs() < 0.5
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The pipeline and view-projection drawing opening faces does `how` with.
+    fn face_pipeline(&self, vp: [f32; 16], how: FaceUse) -> (vk::Pipeline, [f32; 16]) {
         let mut vp = vp;
         let pipeline = match how {
             FaceUse::Mask => self.mask,
@@ -1111,6 +1129,38 @@ impl World {
                 self.depth_far
             }
         };
+        (pipeline, vp)
+    }
+
+    /// Fragments `idxs` as a child frame's opening faces (a mirror on a mover), seen through `vp` from `eye`.
+    pub fn fragment_faces(&self, cx: &Context, cb: vk::CommandBuffer, vp: [f32; 16], eye: [f32; 3], idxs: &[usize], how: FaceUse) {
+        let Some(f) = &self.fragments else { return };
+        let Some((vb, ib)) = f.buffers.as_ref() else { return };
+        if self.sets.is_empty() {
+            return;
+        }
+        let (pipeline, vp) = self.face_pipeline(vp, how);
+        let push = Push { view_proj: vp, cam_pos: [eye[0], eye[1], eye[2], self.light_scale], misc: [0, self.light_mode(), self.time.to_bits(), self.fog_on as u32], clip: [0.0; 4], vis: [0; 4] };
+        unsafe {
+            cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            cx.device.cmd_bind_vertex_buffers(cb, 0, &[vb.buffer], &[0]);
+            cx.device.cmd_bind_index_buffer(cb, ib.buffer, 0, vk::IndexType::UINT32);
+            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 0, &[self.sets[0]], &[]);
+            if let Some((_, set, _)) = &self.lightmap {
+                cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 1, &[*set], &[]);
+            }
+            cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.layout, 2, &[self.fog_bind.get()], &[]);
+            let bytes = std::slice::from_raw_parts(&push as *const Push as *const u8, std::mem::size_of::<Push>());
+            cx.device.cmd_push_constants(cb, self.layout, vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT, 0, bytes);
+            for d in idxs.iter().filter_map(|&i| f.draws.get(i)).filter(|d| d.count > 0) {
+                cx.device.cmd_draw_indexed(cb, d.count, 1, d.first, 0, 0);
+            }
+        }
+    }
+
+    /// A child frame's opening faces seen through `vp` from `eye` (the stencil state is the caller's).
+    pub fn opening_faces(&self, cx: &Context, cb: vk::CommandBuffer, vp: [f32; 16], eye: [f32; 3], which: Opening, how: FaceUse) {
+        let (pipeline, vp) = self.face_pipeline(vp, how);
         match which {
             Opening::Mirror(p) => self.record_mirror_faces(cx, cb, vp, eye, p, pipeline),
             Opening::Backdrop => {

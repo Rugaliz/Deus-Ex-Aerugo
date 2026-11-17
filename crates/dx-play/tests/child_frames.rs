@@ -234,6 +234,41 @@ fn movers_seen_in_a_mirror_are_drawn_from_its_frame() {
     eprintln!("{} mover fragments only in the mirror", mirror.dynamic.len());
 }
 
+/// A mirror on a mover: the smugglers' bedroom mirror (`04_NYC_Smug`) is the front of the `DeusExMover` hiding the
+/// stash, a translucent mirror 2 units in front of the wall. The walk opens its frame through the mover's dynamic
+/// nodes; the renderer only knew the level's own mirror planes, so nothing showed but the clear colour (the tester's
+/// "flat pale-blue rectangle"), and with the reflection drawn the wall behind hid all of it but the stash's opening.
+/// The original (probe shot at the same place) shows the room reflected over the whole glass.
+#[test]
+fn a_mirror_on_a_mover_shows_the_room() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "04_NYC_Smug").unwrap();
+    s.teleport([-720.0, 1400.0, 240.0], 90.0);
+    for _ in 0..20 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let mut r = None;
+    let img = s.render_vk(&mut r, 640, 480).expect("vulkan render");
+    r.take().unwrap().destroy();
+    let cam = s.render_camera();
+    assert!(s.child_views(&cam).unwrap().iter().any(|v| v.mirror.is_some()), "the mirror opens its frame");
+    // the glass, inside its frame (left of the bed), top and bottom strips included
+    let stats = |x0: u32, y0: u32, x1: u32, y1: u32| {
+        let lum: Vec<f64> = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y, x))).map(|(y, x)| {
+            let i = ((y * img.width + x) * 4) as usize;
+            (img.rgba[i] as f64 * 0.3 + img.rgba[i + 1] as f64 * 0.59 + img.rgba[i + 2] as f64 * 0.11)
+        }).collect();
+        let mean = lum.iter().sum::<f64>() / lum.len() as f64;
+        (lum.iter().map(|l| (l - mean) * (l - mean)).sum::<f64>() / lum.len() as f64).sqrt()
+    };
+    for (name, rect) in [("whole", (30, 165, 150, 295)), ("top strip", (30, 135, 150, 150)), ("bottom strip", (30, 310, 150, 330))] {
+        // flat clear colour: 0.2; the glass over the wall behind it (the reflection hidden by its depth): 2 to 7
+        let sd = stats(rect.0, rect.1, rect.2, rect.3);
+        eprintln!("{name}: deviation {sd:.1}");
+        assert!(sd > 10.0, "the {name} of the mirror is flat (deviation {sd:.1}): no reflection");
+    }
+}
+
 /// A sprite reflected in a mirror faces the screen unflipped, as a mirror frame draws it (screen-aligned at its
 /// projected centre): a crowbar icon on an effect in front of a hotel mirror, seen directly and in the mirror.
 /// `cargo test --release -p dx-play --test child_frames shot_of_a_sprite_in_a_mirror -- --ignored`
