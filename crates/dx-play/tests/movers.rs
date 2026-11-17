@@ -278,3 +278,55 @@ fn movers_are_drawn_from_the_fragments_the_walk_drew() {
     let listed = s.listed_movers().unwrap();
     assert!(!listed.fragments.contains_key(&export), "a mover out of the level still drawn");
 }
+
+/// The frob window's box around a mover (`FrobDisplayWindow` asks `GetBoundingBox` at the mover's current key): the
+/// tester's locked vent cover showed its box and "Locked" text far to the right of the vent. The native took the
+/// brush's own point bounds less `PrePivot`, rotated, without `MainScale`/`PostScale`; the original (Engine
+/// 10301140, `UModel::GetRenderBoundingBox` 103f1190) puts the model's stored box through `ABrush::ToWorld`, where the
+/// moving-brush tracker puts the polygons drawn. Every mover's drawn polygons lie in its box.
+#[test]
+fn a_movers_frob_box_holds_its_drawn_polygons() {
+    let Some(game) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut checked = 0;
+    let mut wrong = Vec::new();
+    for map in ["02_NYC_Street", "02_NYC_Underground", "04_NYC_Smug", "05_NYC_UNATCOMJ12lab", "06_HongKong_WanChai_Market"] {
+        let mut s = dx_play::Session::open(&game, map).unwrap();
+        for _ in 0..3 {
+            s.step_bound(1.0 / 30.0);
+        }
+        let cam = s.camera();
+        s.compute_visibility(&cam, 800, 600);
+        let mover = s.vm.reg.class_by_name("DeusExMover").unwrap();
+        let movers: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a).map(|c| s.vm.is_a(c, mover)).unwrap_or(false)).collect();
+        for m in movers {
+            let key = s.vm.get_prop(m, "KeyNum", 0).ok().and_then(|v| v.as_i32()).unwrap_or(0) as u32;
+            let vec = |s: &dx_play::Session, n: &str, i: u32| match s.vm.get_prop(m, n, i) { Ok(Value::Vector(v)) => v, _ => [0.0; 3] };
+            let rot = |s: &dx_play::Session, n: &str, i: u32| match s.vm.get_prop(m, n, i) { Ok(Value::Rotator(r)) => r, _ => [0; 3] };
+            let loc = [0, 1, 2].map(|k| vec(&s, "KeyPos", key)[k] + vec(&s, "BasePos", 0)[k]);
+            let r = [0, 1, 2].map(|k| rot(&s, "KeyRot", key)[k] + rot(&s, "BaseRot", 0)[k]);
+            // only movers resting at their key (where they are drawn)
+            let here = s.vm.location(m);
+            if (0..3).any(|k| (here[k] - loc[k]).abs() > 0.5) || rot(&s, "Rotation", 0) != r {
+                continue;
+            }
+            let mut args = vec![Value::Vector([0.0; 3]), Value::Vector([0.0; 3]), Value::Bool(false), Value::Vector(loc), Value::Rotator(r)];
+            s.vm.call_by_name_out(m, "GetBoundingBox", &mut args).unwrap();
+            let (Value::Vector(lo), Value::Vector(hi)) = (args[0].clone(), args[1].clone()) else { panic!("no box") };
+            let Some((model, nodes, _)) = s.tracked_model(m) else { continue };
+            if nodes.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let outside = nodes.iter().flat_map(|&n| {
+                let nd = &model.nodes[n];
+                (0..nd.num_vertices as usize).map(move |k| model.points[model.verts[nd.i_vert_pool as usize + k].p_vertex as usize])
+            }).find(|p| (0..3).any(|k| p[k] < lo[k] - 1.0 || p[k] > hi[k] + 1.0));
+            if let Some(p) = outside {
+                wrong.push(format!("{map} mover {m} tag {:?}: point {p:?} outside {lo:?}..{hi:?}", s.vm.get_prop(m, "Tag", 0)));
+            }
+        }
+    }
+    eprintln!("{checked} movers checked");
+    assert!(checked > 50);
+    assert!(wrong.is_empty(), "{} of {checked} boxes miss their polygons:\n{}", wrong.len(), wrong.iter().take(20).cloned().collect::<Vec<_>>().join("\n"));
+}

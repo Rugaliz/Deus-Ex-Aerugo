@@ -1252,8 +1252,12 @@ pub fn call(vm: &mut Vm, this: u32, name: &str, a: &mut Vec<Value>) -> Res<Value
             a[3] = Vector(c.z);
             Void
         }
-        // axis-aligned box of the actor (its brush for movers, else its collision cylinder) as if it stood at the given
-        // location and rotation (defaults: where it is); `bExact` is ignored
+        // `AActor::execGetBoundingBox` (Engine 10301140): the actor moved to the given location and rotation (defaults:
+        // where it is), its primitive's `GetRenderBoundingBox` (not exact: `UModel` 103f1190 takes the 8 corners of the
+        // model's stored `BoundingBox` through the owner's `ToWorld`, for a brush `ABrush::ToWorld` with `PrePivot`,
+        // `MainScale` and `PostScale`), the actor put back; returns whether the box is valid. Every caller is a
+        // `DeusExMover` (the frob window's box, the mover's own checks). Meshes (`UMesh::GetRenderBoundingBox`) are
+        // approximated by the collision cylinder: no script asks.
         "GetBoundingBox" => {
             let loc = match a.get(3) {
                 Some(Vector(v)) => *v,
@@ -1263,19 +1267,12 @@ pub fn call(vm: &mut Vm, this: u32, name: &str, a: &mut Vec<Value>) -> Res<Value
                 Some(Rotator(r)) => *r,
                 _ => vm.rot_of(this),
             };
-            let pivot = match vm.get_prop(this, "PrePivot", 0) {
-                Ok(Vector(v)) => v,
-                _ => [0.0; 3],
-            };
             let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-            let corners: Vec<[f32; 3]> = match vm.brush_local_bounds(this) {
-                Some((bl, bh)) => (0..8)
-                    .map(|i| {
-                        let c = [if i & 1 == 0 { bl[0] } else { bh[0] }, if i & 2 == 0 { bl[1] } else { bh[1] }, if i & 4 == 0 { bl[2] } else { bh[2] }];
-                        let r = rotate_vector([c[0] - pivot[0], c[1] - pivot[1], c[2] - pivot[2]], rot, false);
-                        [loc[0] + r[0], loc[1] + r[1], loc[2] + r[2]]
-                    })
-                    .collect(),
+            let corners: Vec<[f32; 3]> = match vm.brush_model_box(this) {
+                Some((bl, bh)) => {
+                    let c = vm.brush_to_world(this, loc, rot);
+                    (0..8).map(|i| c.transform_point([if i & 4 == 0 { bl[0] } else { bh[0] }, if i & 2 == 0 { bl[1] } else { bh[1] }, if i & 1 == 0 { bl[2] } else { bh[2] }])).collect()
+                }
                 None => {
                     let (r, h) = vm.cylinder(this);
                     (0..8).map(|i| [loc[0] + if i & 1 == 0 { -r } else { r }, loc[1] + if i & 2 == 0 { -r } else { r }, loc[2] + if i & 4 == 0 { -h } else { h }]).collect()
