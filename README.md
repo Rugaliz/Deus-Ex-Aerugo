@@ -50,7 +50,8 @@ Then:
 
 Your settings and saves are kept in `%APPDATA%\deus-ex-aerugo` (Windows) or `~/.config/deus-ex-aerugo` (Linux). To
 uninstall, delete the file you copied, and that folder if you want your saves gone too. On Windows that folder also
-holds `deusex.log` (your graphics card, driver and any errors): please attach it to bug reports.
+holds `deusex.log` (your graphics card, driver, the levels visited and any errors) and `deusex.previous.log` (the run
+before): please attach them to bug reports. After a crash, attach `deusex.previous.log` if you started the game again.
 
 Extras, from a command prompt in the game folder: `deusex --windowed` plays in a window, `deusex --size 1920x1080`
 sets its size, and `deusex --import-save "Save/Save0001/<map>.dxs"` continues a game saved by the original.

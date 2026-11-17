@@ -513,10 +513,13 @@ impl Session {
             self.vm.url_map = if revisited { format!("..\\Save\\Current\\{}.dxs", m.trim().trim_end_matches(".dx").trim_end_matches(".DX")) } else { m.trim().to_string() };
             self.vm.url_portal = portal.to_string();
             self.map_changed = true;
+            // where a run was when it ended (the Windows log of a game started without a console)
+            eprintln!("level {} ({}{})", self.map_name, req.url.trim(), if revisited { ", kept" } else { "" });
         self.vm.ui_after_browse(self.player);
             Ok(())
         })();
         if let Err(e) = result {
+            eprintln!("travel failed: {e}");
             self.issues.push(LoadIssue { actor: self.player, class: "travel".into(), event: "Travel".into(), error: e });
             return;
         }

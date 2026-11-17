@@ -47,6 +47,8 @@ fn attach_parent_console() {
     }
     let Some(dir) = dx_play::config_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
+    // the run before this one stays readable (a crash is often reported after starting the game again)
+    let _ = std::fs::rename(dir.join("deusex.log"), dir.join("deusex.previous.log"));
     let Ok(file) = std::fs::File::create(dir.join("deusex.log")) else { return };
     let handle = file.into_raw_handle();
     // STD_OUTPUT_HANDLE, STD_ERROR_HANDLE (the standard library looks the handle up on every write; the file stays
@@ -55,6 +57,68 @@ fn attach_parent_console() {
     unsafe {
         SetStdHandle(-11i32 as u32, handle);
         SetStdHandle(-12i32 as u32, handle);
+    }
+    crash_report::install();
+}
+
+/// A native crash (an access violation in the program or in the graphics driver) ends the process without a word;
+/// this writes its code, address and module to the log first.
+#[cfg(windows)]
+mod crash_report {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct ExceptionRecord {
+        code: u32,
+        flags: u32,
+        next: *const ExceptionRecord,
+        address: *const c_void,
+        params: u32,
+        info: [usize; 15],
+    }
+
+    #[repr(C)]
+    struct ExceptionPointers {
+        record: *const ExceptionRecord,
+        context: *const c_void,
+    }
+
+    type Filter = unsafe extern "system" fn(*const ExceptionPointers) -> i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetUnhandledExceptionFilter(filter: Option<Filter>) -> Option<Filter>;
+        fn GetModuleHandleExW(flags: u32, address: *const c_void, module: *mut *mut c_void) -> i32;
+        fn GetModuleFileNameW(module: *mut c_void, name: *mut u16, size: u32) -> u32;
+    }
+
+    unsafe extern "system" fn report(p: *const ExceptionPointers) -> i32 {
+        // SAFETY: the system passes valid exception pointers to the filter
+        let r = unsafe { &*(*p).record };
+        let mut module: *mut c_void = std::ptr::null_mut();
+        let mut name = [0u16; 260];
+        // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | UNCHANGED_REFCOUNT
+        // SAFETY: plain Win32 calls with buffers of the sizes given
+        let len = unsafe {
+            if GetModuleHandleExW(0x4 | 0x2, r.address, &mut module) != 0 {
+                GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32)
+            } else {
+                0
+            }
+        };
+        let module_name = String::from_utf16_lossy(&name[..len as usize]);
+        let offset = (r.address as usize).wrapping_sub(module as usize);
+        let access = if r.code == 0xC000_0005 && r.params >= 2 { format!(" ({} {:#x})", if r.info[0] == 1 { "writing" } else if r.info[0] == 8 { "executing" } else { "reading" }, r.info[1]) } else { String::new() };
+        eprintln!("crash: exception {:#010x}{access} at {:p} in {module_name} +{offset:#x}", r.code, r.address);
+        // EXCEPTION_CONTINUE_SEARCH: the process ends as it would have
+        0
+    }
+
+    pub fn install() {
+        // SAFETY: installs a filter that only reads the record and writes the log
+        unsafe {
+            SetUnhandledExceptionFilter(Some(report));
+        }
     }
 }
 
