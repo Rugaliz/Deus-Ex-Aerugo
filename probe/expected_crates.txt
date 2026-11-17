@@ -1,0 +1,29 @@
+CRATE|0|spawned|True True
+CRATE|0|carried|True
+CRATE|0|dropped|True
+CRATE|0|gap|70
+CRATE|0|inside|True
+CRATE|0|on top|False
+CRATE|0|apart10|0
+CRATE|1|spawned|True True
+CRATE|1|carried|True
+CRATE|1|dropped|True
+CRATE|1|gap|100
+CRATE|1|inside|True
+CRATE|1|on top|False
+CRATE|1|apart10|3
+CRATE|2|spawned|True True
+CRATE|2|carried|True
+CRATE|2|dropped|True
+CRATE|2|gap|140
+CRATE|2|inside|True
+CRATE|2|on top|False
+CRATE|2|apart10|7
+CRATE|3|spawned|True True
+CRATE|3|carried|True
+CRATE|3|dropped|True
+CRATE|3|gap|200
+CRATE|3|inside|False
+CRATE|3|on top|False
+CRATE|3|apart10|9
+CRATE|END
