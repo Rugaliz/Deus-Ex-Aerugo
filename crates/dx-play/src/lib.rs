@@ -701,7 +701,7 @@ impl Session {
             rt_shadows: get("RTShadows", 1) != 0,
             rt_ao: get("RTAO", 1) != 0,
         };
-        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000) }
+        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000), loudness: get("Loudness", 1) }
     }
 
     /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
@@ -748,6 +748,7 @@ impl Session {
         self.max_decals = settings.max_decals.max(0) as usize;
         if let Some(mut a) = self.audio.take() {
             a.read_settings(&mut self.vm);
+            a.mixer.lock().unwrap().loudness = settings.loudness != 0;
             self.audio = Some(a);
         }
     }
@@ -2483,5 +2484,7 @@ pub struct AerugoSettings {
     pub quality: dx_vk::Quality,
     /// The newest decals kept out of sight (0: as the original).
     pub max_decals: i32,
+    /// The loudness control on the sound effects (`dx_audio::Mixer::loudness`): 1 on, 0 the original's mix.
+    pub loudness: i32,
 }
 

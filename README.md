@@ -20,8 +20,9 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   be set back to the original look.
 - **Precise mouse aiming.** Tell the game your mouse's DPI, and the sensitivity slider shows how far you move the
   mouse for a full turn, so aiming feels the same on any mouse.
-- **Better sound.** 128 sound channels instead of 16, so sounds no longer cut each other off, at your system's own
-  audio quality. The original's sound and music engine is recreated faithfully.
+- **Better sound.** More sound channels than the original's 16, so sounds no longer cut each other off, at your
+  system's own audio quality, and a loudness control (*Sound* settings) that keeps rooms full of machines from getting
+  too loud; *Original* mixes as the original game. The original's sound and music engine is recreated faithfully.
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no

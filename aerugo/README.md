@@ -20,9 +20,10 @@ copy the new `System/Aerugo.u` here.
 | `FrameLimit` | frames per second; 0 none, -1 the display's refresh rate minus 3 | 0 |
 | `OutputRate` | sound output in Hz; 0 the system's (48000 when unknown, never below 44100) | 0 |
 | `MouseDPI` | the mouse's counts per inch; movement is scaled to the 400 DPI the game was tuned for | 800 |
+| `Loudness` | 1 even: a compressor on the sound effects keeps many sounds at once (a room full of machines) from getting too loud; quiet scenes are as the original mixes them; 0 the original's mix | 1 |
 | `MaxDecals` | how many of the newest decals (blood, bullet holes, scorch marks) stay out of sight; older ones go as in the original (unseen for a second, some 20 s after they appeared); 0 as the original | 1000 |
 
-Menu choices (`MenuChoice_Aerugo*`): vertical sync, frame rate limit, mouse DPI, output rate, a mouse sensitivity
+Menu choices (`MenuChoice_Aerugo*`): vertical sync, frame rate limit, mouse DPI, output rate, loudness, a mouse sensitivity
 slider in half steps from 0.5 to 10 labelled with the mouse travel of a full turn (54.8 cm / sensitivity once the
 DPI is right), and an empty row.
 

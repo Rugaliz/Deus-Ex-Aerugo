@@ -147,9 +147,15 @@ fn the_port_menus_set_what_the_host_reads() {
     assert_eq!(s.vm.default_value_of("JCDentonMale", "DefaultFOV", 0), Some(Value::Float(90.0)));
     s.exec("ShowMainMenu");
     let sound = choices(&mut s, "MenuScreenSound");
-    assert_eq!(names(&sound), ["MusicVolume", "SoundVolume", "SpeechVolume", "AerugoSpacer", "AerugoOutputRate", "ReverseStereo", "SurroundSound"]);
+    assert_eq!(names(&sound), ["MusicVolume", "SoundVolume", "SpeechVolume", "AerugoLoudness", "AerugoOutputRate", "ReverseStereo", "SurroundSound"]);
     set(&mut s, sound[4].1, 2);
     assert_eq!(s.aerugo_settings().output_rate, 48000);
+    // the loudness control: on by default, the original's mix one choice away
+    assert_eq!(s.aerugo_settings().loudness, 1);
+    set(&mut s, sound[3].1, 0);
+    assert_eq!(s.aerugo_settings().loudness, 0);
+    set(&mut s, sound[3].1, 1);
+    assert_eq!(s.aerugo_settings().loudness, 1);
     s.exec("ShowMainMenu");
     let controls = choices(&mut s, "MenuScreenControls");
     let (_, speed) = controls.iter().find(|(n, _)| n == "MenuChoice_AerugoMouseSpeed").expect("the sensitivity slider").clone();

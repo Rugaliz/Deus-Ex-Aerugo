@@ -50,6 +50,45 @@ pub struct Mixer {
     pub speech_volume: u8,
     /// Sounds started since creation (tests and statistics).
     pub started: u64,
+    /// The port's loudness control on the effects (not the original's: off, the mix is Galaxy's as it was).
+    pub loudness: bool,
+    evener: Evener,
+}
+
+/// The port's loudness control (`AerugoSettings.Loudness`): a compressor on the effects bus. Where many sounds play
+/// at once (a room full of machines, a fire fight) their sum gets loud and its peaks crunch against the 16-bit limit;
+/// the compressor follows the level of the effects (attack 30 ms, release 600 ms) and turns them down above
+/// `THRESHOLD` at 3:1, and a soft limit rounds off what still reaches `KNEE`. Quiet scenes stay as the original mixes
+/// them. The music is not touched.
+#[derive(Debug, Clone, Copy)]
+struct Evener {
+    env: f32,
+}
+
+impl Evener {
+    /// The level (the envelope of the louder channel, 0..1) from which the effects are turned down.
+    const THRESHOLD: f32 = 0.16;
+    const RATIO: f32 = 2.5;
+    /// Where the soft limit starts (0..1 of full scale).
+    const KNEE: f32 = 0.8;
+
+    fn process(&mut self, fx: &mut [i16], rate: u32) {
+        let coef = |seconds: f32| (-1.0 / (seconds * rate.max(1) as f32)).exp();
+        let (attack, release) = (coef(0.030), coef(0.600));
+        let exponent = 1.0 - 1.0 / Self::RATIO;
+        for frame in fx.chunks_mut(2) {
+            let level = frame.iter().fold(0.0f32, |m, &x| m.max((x as f32 / 32768.0).abs()));
+            let k = if level > self.env { attack } else { release };
+            self.env = k * self.env + (1.0 - k) * level;
+            let gain = if self.env > Self::THRESHOLD { (Self::THRESHOLD / self.env).powf(exponent) } else { 1.0 };
+            for x in frame.iter_mut() {
+                let y = *x as f32 / 32768.0 * gain;
+                let a = y.abs();
+                let y = if a > Self::KNEE { y.signum() * (Self::KNEE + (1.0 - Self::KNEE) * ((a - Self::KNEE) / (1.0 - Self::KNEE)).tanh()) } else { y };
+                *x = (y * 32767.0).round().clamp(-32768.0, 32767.0) as i16;
+            }
+        }
+    }
 }
 
 impl Mixer {
@@ -72,6 +111,8 @@ impl Mixer {
             sound_volume: 204,
             speech_volume: 255,
             started: 0,
+            loudness: false,
+            evener: Evener { env: 0.0 },
         }
     }
 
@@ -221,6 +262,9 @@ impl Mixer {
         while self.fx_out.len() < frames * 2 {
             let (mut mu, mut fx) = (Vec::new(), Vec::new());
             self.galaxy.render(self.timer_frames, &mut mu, &mut fx);
+            if self.loudness {
+                self.evener.process(&mut fx, self.rate);
+            }
             self.music_out.extend(mu);
             self.fx_out.extend(fx);
         }
@@ -241,6 +285,32 @@ mod tests {
         let mut d = vec![v; frames];
         d.resize(frames + 16, 0);
         Arc::new(Sample { flags: F_MONO | F_16BIT, pan: 0x4000, volume: 0x7fff, length: frames as u32, loop_start: 0, loop_end: 0, rate: 44100, data: Some(Arc::new(Pcm::S16(d))), stream: None })
+    }
+
+    /// The loudness control: a loud effect is turned down (and its peaks stay below full scale), a quiet one passes
+    /// as Galaxy mixed it; off, the output is Galaxy's.
+    #[test]
+    fn the_loudness_control_turns_loud_effects_down_and_leaves_quiet_ones() {
+        let level = |loudness: bool, v: i16| {
+            let mut m = Mixer::new(44100);
+            m.sound_volume = 255;
+            m.music_volume = 0.0;
+            m.loudness = loudness;
+            let s = constant(44100, v);
+            assert!(m.start_voice(15, &s, 44100, 0x7fff, 0x4000));
+            let mut out = vec![0f32; 44100];
+            m.mix(&mut out);
+            // the second half (the envelope has settled)
+            let tail = &out[22050..];
+            (tail.iter().map(|x| x.abs()).sum::<f32>() / tail.len() as f32, tail.iter().fold(0f32, |a, x| a.max(x.abs())))
+        };
+        let (loud_off, _) = level(false, 30000);
+        let (loud_on, peak_on) = level(true, 30000);
+        assert!(loud_on < loud_off * 0.75, "a loud effect is turned down: {loud_off} -> {loud_on}");
+        assert!(peak_on < 0.99, "its peaks stay below full scale: {peak_on}");
+        let (quiet_off, _) = level(false, 1500);
+        let (quiet_on, _) = level(true, 1500);
+        assert!((quiet_on - quiet_off).abs() < quiet_off * 0.02, "a quiet effect passes: {quiet_off} -> {quiet_on}");
     }
 
     #[test]

@@ -26,6 +26,8 @@ var config int RTAO;
 // how many of the newest decals (blood, bullet holes, scorch marks) stay however long they are out of sight; older
 // ones go as in the original (a decal not seen for a second goes some 20 s after it appeared); 0 as the original
 var config int MaxDecals;
+// the loudness control on the sound effects: 1 even (many sounds at once do not get too loud), 0 the original's mix
+var config int Loudness;
 
 defaultproperties
 {
@@ -41,4 +43,5 @@ defaultproperties
 	RTShadows=1
 	RTAO=1
 	MaxDecals=1000
+	Loudness=1
 }
