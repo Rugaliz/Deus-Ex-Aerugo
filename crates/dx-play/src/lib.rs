@@ -1427,7 +1427,7 @@ impl Session {
                                 c.frame = usize::MAX;
                             }
                             let (details, details_blended) = s.frame_details(0);
-                            (actors, dx_vk::renderer::ViewLists { children, blended, mirrors, dynamic, details, details_blended })
+                            (actors, dx_vk::renderer::ViewLists { solid: s.main_solid_nodes(), solid_mirror: s.solid_mirror_order(), children, blended, mirrors, dynamic, details, details_blended })
                         });
                         (out.0, Some(out.1))
                     }

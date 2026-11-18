@@ -91,6 +91,10 @@ pub struct SubView {
 /// (those of the solid surfaces, and by node those drawn with their surface).
 #[derive(Clone, Default)]
 pub struct ViewLists {
+    /// The level nodes its master frame drew solid (`main_solid` of its own pass), and its first list's solid mirror
+    /// faces in order (`solid_mirror_order`): a view draws its own walls, not the main view's.
+    pub solid: Option<Vec<u32>>,
+    pub solid_mirror: Option<Vec<u32>>,
     pub children: Vec<ChildView>,
     pub blended: Vec<u32>,
     pub mirrors: Vec<u32>,
@@ -144,7 +148,7 @@ fn record_subview(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut 
     let none = HashMap::new();
     let lists = match &v.lists {
         Some(l) => l.lists(),
-        None => Lists { children: None, blended: None, mirrors: None, dynamic: &[], details: &[], details_blended: &none, whole_movers: true },
+        None => Lists { solid: None, solid_mirror: None, children: None, blended: None, mirrors: None, dynamic: &[], details: &[], details_blended: &none, whole_movers: true },
     };
     record_view(cx, world, movers, actors_gpu, sky, cb, target, &v.cam, world_actors, aspect, &lists, Some(scissor));
     use_fog(world, movers, 0);
@@ -215,11 +219,12 @@ fn record_view(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Act
                 }
                 use_fog(world, movers, 0);
             }
-            match world.main_solid.as_deref().filter(|_| std::env::var_os("DX_MAIN_ALL").is_none()) {
+            // the frame's own solid nodes (a viewport window's from its own pass, not the main view's)
+            match lists.solid.filter(|_| std::env::var_os("DX_MAIN_ALL").is_none()) {
                 Some(nodes) => world.draw_main_solid(cx, cb, cam, aspect, nodes),
                 None => world.draw_pass(cx, cb, cam, aspect, None, crate::world::Pass::Solid),
             }
-            if let Some(nodes) = world.solid_mirror_order.as_deref().filter(|n| !n.is_empty()) {
+            if let Some(nodes) = lists.solid_mirror.filter(|n| !n.is_empty()) {
                 world.draw_nodes_opaque(cx, cb, cam, aspect, nodes);
             }
             // the movers' listed fragments are part of the frame's own lists: `DrawFrame` draws them over whatever its
@@ -308,6 +313,10 @@ fn record_view(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Act
 
 /// What a view draws from its walk (see `ViewLists`), borrowed.
 struct Lists<'a> {
+    /// The frame's solid level nodes and solid mirror faces (the main view: the world's `main_solid` and
+    /// `solid_mirror_order`; `None`: every solid surface).
+    solid: Option<&'a [u32]>,
+    solid_mirror: Option<&'a [u32]>,
     children: Option<&'a [ChildView]>,
     blended: Option<&'a [u32]>,
     mirrors: Option<&'a [u32]>,
@@ -320,7 +329,7 @@ struct Lists<'a> {
 
 impl ViewLists {
     fn lists(&self) -> Lists<'_> {
-        Lists { children: Some(&self.children), blended: Some(&self.blended), mirrors: Some(&self.mirrors), dynamic: &self.dynamic, details: &self.details, details_blended: &self.details_blended, whole_movers: false }
+        Lists { solid: self.solid.as_deref(), solid_mirror: self.solid_mirror.as_deref(), children: Some(&self.children), blended: Some(&self.blended), mirrors: Some(&self.mirrors), dynamic: &self.dynamic, details: &self.details, details_blended: &self.details_blended, whole_movers: false }
     }
 }
 
@@ -331,7 +340,7 @@ fn record_world(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Ac
     let (overlay, world_actors): (Vec<ActorDraw>, Vec<ActorDraw>) = actors.iter().cloned().partition(|a| a.overlay);
     let details = std::mem::take(&mut actors_gpu.details);
     let details_blended = std::mem::take(&mut actors_gpu.details_blended);
-    let lists = Lists { children, blended: world.blended_order.as_deref(), mirrors: world.mirror_order.as_deref(), dynamic: movers.3, details: &details, details_blended: &details_blended, whole_movers: false };
+    let lists = Lists { solid: world.main_solid.as_deref(), solid_mirror: world.solid_mirror_order.as_deref(), children, blended: world.blended_order.as_deref(), mirrors: world.mirror_order.as_deref(), dynamic: movers.3, details: &details, details_blended: &details_blended, whole_movers: false };
     // with the ray-traced passes, the objects' own pixels are marked for them
     actors_gpu.object_stencil = rt.as_ref().map(|_| crate::rt_post::OBJECT_STENCIL);
     record_view(cx, world, movers, actors_gpu, sky, cb, target, cam, world_actors, aspect, &lists, None);

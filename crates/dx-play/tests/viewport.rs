@@ -321,3 +321,61 @@ fn windows_project_world_points_through_their_master_frames() {
     assert!(ok);
     assert_eq!((cx, cy), (rx2 - 30.0, ry2 - 40.0));
 }
+
+/// The tester's camera feeds: rooms black, only their objects drawn. A viewport window drew the level nodes of the
+/// main view's pass (the world's `main_solid`), so a camera looking into a room the player is not in showed none of
+/// its walls, floor or ceiling; its own pass's nodes are drawn now. The Helibase security computer's first camera
+/// (the rec room) against the main view from the camera's place and direction: about as bright.
+#[test]
+fn a_camera_view_draws_the_room_it_looks_into() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "03_NYC_AirfieldHeliBase").unwrap();
+    run(&mut s, 5);
+    open_security_screen(&mut s).expect("the security computer");
+    run(&mut s, 5);
+    let mut r = None;
+    for _ in 0..4 {
+        s.render_vk(&mut r, 1280, 720).expect("vulkan render");
+        run(&mut s, 1);
+    }
+    let img = s.render_vk(&mut r, 1280, 720).expect("vulkan render");
+    r.take().unwrap().destroy();
+    let views = s.ui_subviews();
+    assert_eq!(views.len(), 3, "three cameras");
+    let (rect, cam) = (views[0].rect, views[0].cam.clone());
+    let lum = |rgba: &[u8], w: u32, x0: u32, y0: u32, x1: u32, y1: u32| {
+        let mut sum = 0.0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * w + x) * 4) as usize;
+                sum += rgba[i] as f64 * 0.3 + rgba[i + 1] as f64 * 0.59 + rgba[i + 2] as f64 * 0.11;
+            }
+        }
+        sum / ((x1 - x0) * (y1 - y0)) as f64
+    };
+    let (x0, y0) = (rect[0].ceil() as u32, rect[1].ceil() as u32);
+    let camera = lum(&img.rgba, img.width, x0, y0, x0 + rect[2] as u32 - 1, y0 + rect[3] as u32 - 1);
+    // the main view of another game whose player looks from the camera
+    let mut m = Session::open(&g, "03_NYC_AirfieldHeliBase").unwrap();
+    run(&mut m, 5);
+    let eye = m.vm.get_prop(m.player, "BaseEyeHeight", 0).ok().and_then(|x| x.as_f32()).unwrap_or(0.0);
+    let at = [cam.pos[0], cam.pos[1], cam.pos[2] - eye];
+    let p = m.player;
+    let signed = |u: i32| { let u = u & 0xffff; if u > 32768 { u - 65536 } else { u } };
+    let mut r = None;
+    for _ in 0..4 {
+        let _ = m.vm.far_move_actor(p, at, false, true);
+        let _ = m.vm.set_physics(p, 0, 0);
+        m.set_yaw((cam.yaw & 0xffff) as f32 / 65536.0 * 360.0);
+        m.set_pitch(signed(cam.pitch) as f32 / 65536.0 * 360.0);
+        m.render_vk(&mut r, 800, 600).expect("vulkan render");
+        run(&mut m, 1);
+    }
+    let _ = m.vm.far_move_actor(p, at, false, true);
+    m.show_ui = false;
+    let main = m.render_vk(&mut r, 800, 600).expect("vulkan render");
+    r.take().unwrap().destroy();
+    let reference = lum(&main.rgba, main.width, 0, 0, main.width, main.height);
+    eprintln!("camera view {camera:.1}, main view from there {reference:.1}");
+    assert!(camera > reference * 0.6, "the camera view is dark ({camera:.1} against {reference:.1}): the room is not drawn");
+}

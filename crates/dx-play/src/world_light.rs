@@ -69,7 +69,10 @@ impl Session {
             self.world_light = Some(WorldLight { pkg: self.map_pkg, lighting, maps, cache: HashMap::new(), lists: HashMap::new(), changed: HashSet::new(), pending: Vec::new(), fogged: HashMap::new(), fog_pending: Vec::new(), child_fog_pending: Vec::new(), movers: Default::default() });
         }
         // the surfaces drawn by any frame of the visibility pass, and the dynamic lights the walk filed onto them
-        // (the walk runs on the level model with the movers filtered in: the tracker's surfaces go to the movers)
+        // (the walk runs on the level model with the movers filtered in: the tracker's surfaces go to the movers).
+        // Viewport windows' passes too (the security computer's cameras): the light manager lights every surface any
+        // frame draws, so a room seen only through a camera gets its lights (they ran after this last frame: theirs
+        // are a frame old)
         let mut surfs: Vec<usize> = Vec::new();
         let mut mover_surfs: Vec<(usize, u8)> = Vec::new();
         let mut dyn_lights: HashMap<usize, Vec<u32>> = HashMap::new();
@@ -77,7 +80,7 @@ impl Session {
         if let Some((_, frames)) = &self.vis_cache {
             let model = self.vm.world_model.as_deref().unwrap_or(&self.view.model);
             let mut seen = HashSet::new();
-            for fv in frames {
+            for fv in frames.iter().chain(self.subview_frames.iter().flatten().flatten()) {
                 for &(node, _, z) in &fv.vis.surfaces {
                     let s = model.nodes.get(node as usize).map(|n| n.i_surf).unwrap_or(-1);
                     if s >= 0 && seen.insert(s as usize) {
