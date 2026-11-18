@@ -168,7 +168,10 @@ fn record_subview(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut 
 /// World (with the sky pass) and actors into `target`, inside an open command buffer.
 #[allow(clippy::too_many_arguments)]
 fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, ui: (&mut UiRenderer, &[UiQuad], &[SubView], &[UiActors]), sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], rect: Option<[u32; 4]>, coronas: &[UiQuad], children: Option<&[ChildView]>, rt: RtPass) {
-    target.begin(cx, cb, [24.0 / 255.0, 28.0 / 255.0, 40.0 / 255.0, 1.0]);
+    // `UGameEngine::Draw` (1038f110) locks the viewport with `LOCKR_ClearScreen` (`or al, 1`) and a screen clear of
+    // `FPlane(0,0,0,0)`: every frame starts black, and black is what shows where nothing is drawn (behind a masked
+    // grate over solid space). `DX_CLEAR_MAGENTA` makes such holes stand out.
+    target.begin(cx, cb, if std::env::var_os("DX_CLEAR_MAGENTA").is_some() { [1.0, 0.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] });
     // the scene frame (`XRootWindow::PreRender`): the whole target, a render viewport, or nothing at all
     let r = rect.unwrap_or([0, 0, target.width, target.height]);
     let r = [r[0].min(target.width), r[1].min(target.height), r[2].min(target.width.saturating_sub(r[0])), r[3].min(target.height.saturating_sub(r[1]))];
