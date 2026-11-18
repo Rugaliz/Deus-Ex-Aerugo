@@ -122,3 +122,33 @@ fn masked_textures_make_their_surfaces_masked() {
     assert!(!listed.is_empty(), "the grate is not in view");
     assert!(listed.iter().all(|f| f & 2 != 0), "the walk lists the grate unmasked: {listed:x?}");
 }
+
+/// A grate that is a mover (here the sewer walkway of `04_NYC_Underground`; vent covers and cell doors alike) is
+/// masked through its texture for the walk too: Render.dll's walk ORs the texture's flags into every surface's,
+/// whoever owns it (10b181b2). The movers' flags still came from a lookup of a property that does not exist, so the
+/// walk took the walkway for solid and drew nothing below it while the renderer drew its holes (the tester's black,
+/// earlier pale blue, behind grates). From the tester's save at the walkway: the channel's brick wall below shows
+/// through it, as in the original (probe shot).
+#[test]
+fn a_mover_grate_lets_the_walk_see_what_is_behind_it() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "04_NYC_Underground").unwrap();
+    run(&mut s, 3);
+    let cam = dx_soft::Camera { pos: [-50.6, -735.4, -296.2], pitch: 0, yaw: 16492, fov: 90.0, roll: 0 };
+    let (_, frames) = s.compute_visibility(&cam, 800, 600);
+    let pkg = ue_package::Package::open(g.join("Maps").join("04_NYC_Underground.dx")).unwrap();
+    let model = s.vm.world_model.clone().unwrap();
+    let texture = |n: u32| {
+        let nd = &model.nodes[n as usize];
+        (nd.i_surf >= 0).then(|| pkg.object_path(ue_package::ObjectRef::from_index(model.surfs[nd.i_surf as usize].texture)).unwrap_or_default()).unwrap_or_default()
+    };
+    let first_dynamic = s.vm.surf_info.len() as i32;
+    let listed = &frames[0].vis.surfaces;
+    // the walkway: mover surfaces with a masked texture, listed masked
+    let grates: Vec<u32> = listed.iter().filter(|(n, _, _)| model.nodes[*n as usize].i_surf >= first_dynamic && s.view.texture_poly_flags(model.surfs[model.nodes[*n as usize].i_surf as usize].texture) & 2 != 0).map(|&(_, f, _)| f).collect();
+    assert!(!grates.is_empty(), "the walkway grate is in view");
+    assert!(grates.iter().all(|f| f & 2 != 0), "the walk takes the mover grate for solid: {grates:x?}");
+    // the channel below: its brick walls are drawn through it
+    let bricks = listed.iter().filter(|(n, _, _)| texture(*n).ends_with("NYC_Sewer_C")).count();
+    assert!(bricks > 0, "nothing of the channel below the walkway is drawn");
+}

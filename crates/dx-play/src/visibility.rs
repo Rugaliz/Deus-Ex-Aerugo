@@ -214,26 +214,14 @@ impl Session {
         false
     }
 
-    /// Poly flags of `surfs` with their textures' `PolyFlags` merged in.
+    /// The walk's flags of the movers' surfaces (the tracker's, after the level's): each surface's own with its
+    /// texture's `PolyFlags` merged in, as for the level's surfaces (`vis_surf_flags`; Render.dll's walk ORs
+    /// `Surf.Texture+0x80` into every surface's flags, 10b181b2, whoever owns it). This used to look up a `PolyFlags`
+    /// property, which does not exist (0): a grate, vent cover or cell door that is a mover was drawn with holes
+    /// but hid what lay behind it, so the holes showed nothing.
     fn texture_merged_flags(&mut self, surfs: &[ue_assets::model::BspSurf]) -> Vec<u32> {
         let mut cache: std::collections::HashMap<i32, u32> = Default::default();
-        surfs
-            .iter()
-            .map(|s| {
-                let tf = *cache.entry(s.texture).or_insert_with(|| {
-                    (|| {
-                        let path = self.vm.reg.ref_path(self.map_pkg, s.texture)?;
-                        let (pi, ei) = self.vm.reg.export_by_path(&path)?;
-                        let class = self.vm.reg.class_of_export(pi, ei)?;
-                        let off = self.vm.reg.find_prop(class, "PolyFlags")?.offset as usize;
-                        let (inst, _) = self.vm.reg.instantiate_object(class, pi, ei).ok()?;
-                        Some(u32::from_le_bytes(inst.data.get(off..off + 4)?.try_into().ok()?))
-                    })()
-                    .unwrap_or(0)
-                });
-                s.poly_flags | tf
-            })
-            .collect()
+        surfs.iter().map(|s| s.poly_flags | *cache.entry(s.texture).or_insert_with(|| self.view.texture_poly_flags(s.texture))).collect()
     }
 
     /// The poly flags of every world surface with its texture's `PolyFlags` merged in (the walk ORs them before
