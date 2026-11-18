@@ -67,3 +67,30 @@ fn the_zone_reverb_follows_the_players_zone() {
     s.step(&Input::default(), 1.0 / 30.0);
     assert!(!mixer.lock().unwrap().has_reverb(), "leaving the reverb zone removes it");
 }
+
+/// The port's 128 effect channels are all usable: the session keeps one channel record per mixer voice (the original's
+/// subsystem stops at 32), and 40 sounds started at once all hold a channel.
+#[test]
+fn all_128_effect_channels_take_sounds() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "00_Training").unwrap();
+    let mixer = Arc::new(Mutex::new(Mixer::new(44100)));
+    s.attach_audio(mixer.clone());
+    assert_eq!(mixer.lock().unwrap().effects(), dx_play::EFFECTS_CHANNELS);
+    assert_eq!(s.audio.as_ref().unwrap().channels.len(), dx_play::EFFECTS_CHANNELS);
+    s.step(&Input::default(), 1.0 / 30.0);
+    let files = GameFiles::new(&g);
+    let pkg = files.package("Ambient").unwrap();
+    let export = (0..pkg.pkg.exports.len()).find(|&i| pkg.pkg.export_class_name(i) == "Sound").unwrap();
+    let path = pkg.pkg.object_path(ObjectRef::Export(export)).unwrap();
+    let sound = s.vm.reg.obj_id(&format!("Ambient.{path}"));
+    let held = |s: &Session| s.audio.as_ref().unwrap().channels.iter().filter(|c| c.id != 0).count();
+    let before = held(&s);
+    // SLOT_None: every request gets an id of its own
+    for _ in 0..40 {
+        s.vm.call_by_name(s.player, "PlaySound", vec![Value::Obj(sound.0), Value::Byte(0), Value::Float(1.0), Value::Bool(false), Value::Float(0.0), Value::Float(1.0)]).unwrap();
+    }
+    s.step(&Input::default(), 1.0 / 30.0);
+    let now = held(&s);
+    assert!(now >= before + 40, "40 sounds at once: channels held {before} -> {now}");
+}

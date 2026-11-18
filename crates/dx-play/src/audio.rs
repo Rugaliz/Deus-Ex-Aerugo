@@ -100,7 +100,9 @@ fn ftol(x: f64) -> i32 {
 
 impl Audio {
     pub fn new(game: &Path, mixer: Arc<Mutex<Mixer>>) -> Audio {
-        let n = mixer.lock().unwrap().effects().min(32);
+        // one channel record per effect voice of the mixer (the original's subsystem keeps at most 32; the port's
+        // mixer has `EFFECTS_CHANNELS`, 128)
+        let n = mixer.lock().unwrap().effects();
         Audio {
             files: GameFiles::new(game),
             sounds: HashMap::new(),
