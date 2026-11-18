@@ -1118,6 +1118,12 @@ impl World {
             .collect()
     }
 
+    /// Are fragments `idxs` all opaque (a mirror drawn invisible over its reflection)?
+    pub fn fragments_opaque(&self, idxs: &[usize]) -> bool {
+        let Some(f) = &self.fragments else { return false };
+        idxs.iter().all(|&i| f.draws.get(i).map(|d| d.blend == 0).unwrap_or(false))
+    }
+
     /// The pipeline and view-projection drawing opening faces does `how` with.
     fn face_pipeline(&self, vp: [f32; 16], how: FaceUse) -> (vk::Pipeline, [f32; 16]) {
         let mut vp = vp;

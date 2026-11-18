@@ -223,10 +223,11 @@ fn record_view(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Act
             // child frames drew, so they are in depth before the mirrors mark their areas (a door in front of a
             // mirror floor hides the reflection behind it)
             draw_movers_solid(cx, movers, cb, crate::world::view_proj(cam, aspect, 1.0, 65536.0), cam.pos, lists.dynamic);
-            let mut reflected = Vec::new();
+            let (mut reflected, mut glass_depth) = (Vec::new(), Vec::new());
             for k in (0..ch.len()).filter(|&k| ch[k].parent.is_none() && ch[k].mirror.is_some() && std::env::var_os("DX_NO_MIRRORS").is_none()) {
-                if let Some(p) = draw_child(&fc, actors_gpu, k, &id, cam.pos, 0) {
-                    reflected.push(p);
+                if let Some(d) = draw_child(&fc, actors_gpu, k, &id, cam.pos, 0) {
+                    reflected.extend(d.plane);
+                    glass_depth.extend(d.depth_after_glass);
                 }
             }
             crate::set_stencil(cx, cb, crate::Stencil::Off);
@@ -236,6 +237,9 @@ fn record_view(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Act
             // detail layers (opaque ones are drawn invisible: depth only, done with their child frame)
             if let Some(order) = lists.mirrors {
                 draw_list2(cx, world, movers, actors_gpu, lists.details_blended, cb, crate::world::view_proj(cam, aspect, 1.0, 65536.0), cam.pos, order);
+            }
+            for j in glass_depth {
+                opening_depth(&fc, j, &id);
             }
         }
         None => {
@@ -423,12 +427,18 @@ fn draw_frame(fc: &FrameCtx, actors_gpu: &mut ActorRenderer, k: usize, pre: &[f3
     world.draw_solid_nodes_vp(cx, cb, vp, eye, clip, &c.solid, &skip);
     draw_movers_solid(cx, fc.movers, cb, vp, eye, &c.dynamic);
     actors_gpu.draw_details(cx, cb, &vp, &c.details);
+    let mut glass_depth = Vec::new();
     for j in kids {
-        draw_child(fc, actors_gpu, j, pre, eye, level);
+        if let Some(d) = draw_child(fc, actors_gpu, j, pre, eye, level) {
+            glass_depth.extend(d.depth_after_glass);
+        }
     }
     crate::set_stencil(cx, cb, stencil);
     use_fog(world, fc.movers, c.frame);
     draw_list2(cx, world, fc.movers, actors_gpu, &c.details_blended, cb, vp, eye, &c.mirrors);
+    for j in glass_depth {
+        opening_depth(fc, j, pre);
+    }
     let (decals, others, translucent) = frame_phases(&c.actors, fc.cam);
     // meshes only beyond the frame's mirror plane: `DrawLodMesh`'s polygons are clipped at the frame's `NearClip`
     // (Render 10b0bab0, after the side planes); sprites are not
@@ -443,24 +453,21 @@ fn draw_frame(fc: &FrameCtx, actors_gpu: &mut ActorRenderer, k: usize, pre: &[f3
     actors_gpu.clip = [0.0; 4];
 }
 
-/// Child frame `j` of a frame seen through `parent_pre` (eye `parent_eye`) at stencil level `level`: its opening faces
-/// (the mirror's, or the backdrops for the sky) raise the stencil to `level + 1` where they show; under them the depth
-/// is forgotten, the child drawn, the opening's depth written back, and the area given back. `DrawFrame` (10b1a2d0)
-/// draws its child frames before its own lists and then clears the depth, so nothing of the parent hides a child; and
-/// the opening is in depth over it: an opaque mirror drawn invisible, a translucent one because the walk tags every
-/// mirror it opened with 0x80000000, which D3DDrv's `SetBlending` (10008270) turns into depth writes (render state 14
-/// from bit 31; it adds the bit to faces without 0x44 and never clears it). Returns the mirror plane drawn, if any.
-fn draw_child(fc: &FrameCtx, actors_gpu: &mut ActorRenderer, j: usize, parent_pre: &[f32; 16], parent_eye: [f32; 3], level: u32) -> Option<[f32; 4]> {
-    use crate::world::{FaceUse, Opening};
-    let (cx, cb, world) = (fc.cx, fc.cb, fc.world);
-    let c = &fc.children[j];
-    if level >= 254 {
-        return None;
-    }
-    let a = child_map(c, world, parent_eye)?;
+/// The faces through which child frame `j` was opened: the level's mirror plane or backdrops, or for a mirror the level
+/// does not have, the faces of the mover it is on (the walk opened it through the mover's dynamic nodes, as the
+/// smugglers' mirror over the hidden stash: the mover's fragments on that plane). With whether the opening is opaque
+/// (drawn invisible over what it shows: an opaque mirror, the sky's backdrops) and the level's plane.
+struct OpeningFaces<'a> {
+    opening: crate::world::Opening,
+    on_movers: Vec<(&'a World, Vec<usize>)>,
+    opaque: bool,
+    plane: Option<[f32; 4]>,
+}
+
+fn opening_faces_of<'a>(fc: &FrameCtx<'a>, c: &ChildView) -> Option<OpeningFaces<'a>> {
+    use crate::world::Opening;
+    let world = fc.world;
     let plane = c.mirror.and_then(|p| world.mirror_plane_near(p));
-    // a mirror the level does not have is on a mover (the walk opened it through the mover's dynamic nodes, as the
-    // smugglers' mirror over the hidden stash): its opening faces are the mover's fragments on that plane
     let on_movers: Vec<(&World, Vec<usize>)> = match (c.mirror, plane) {
         (Some(p), None) => fc.movers.0.values().map(|w| (w, w.mirror_fragments(p))).filter(|(_, f)| !f.is_empty()).collect(),
         _ => Vec::new(),
@@ -468,29 +475,73 @@ fn draw_child(fc: &FrameCtx, actors_gpu: &mut ActorRenderer, j: usize, parent_pr
     if c.mirror.is_some() && plane.is_none() && on_movers.is_empty() {
         return None;
     }
-    let opening = plane.map(Opening::Mirror).unwrap_or(Opening::Backdrop);
-    let (vp, eye) = crate::world::frame_view(fc.cam, fc.aspect, parent_pre);
-    let faces = |how: FaceUse| {
-        if on_movers.is_empty() {
-            world.opening_faces(cx, cb, vp, eye, opening, how);
+    let opaque = match plane {
+        Some(q) => world.is_opaque_mirror(q),
+        None if c.mirror.is_some() => on_movers.iter().all(|(w, f)| w.fragments_opaque(f)),
+        None => true,
+    };
+    Some(OpeningFaces { opening: plane.map(Opening::Mirror).unwrap_or(Opening::Backdrop), on_movers, opaque, plane })
+}
+
+impl OpeningFaces<'_> {
+    fn draw(&self, fc: &FrameCtx, vp: [f32; 16], eye: [f32; 3], how: crate::world::FaceUse) {
+        if self.on_movers.is_empty() {
+            fc.world.opening_faces(fc.cx, fc.cb, vp, eye, self.opening, how);
         } else {
-            for (w, f) in &on_movers {
-                w.fragment_faces(cx, cb, vp, eye, f, how);
+            for (w, f) in &self.on_movers {
+                w.fragment_faces(fc.cx, fc.cb, vp, eye, f, how);
             }
         }
-    };
+    }
+}
+
+/// A child frame drawn by `draw_child`: the mirror plane it reflects in (if any), and a translucent mirror whose depth
+/// is still to be written once its glass is drawn (`opening_depth`).
+struct Drawn {
+    plane: Option<[f32; 4]>,
+    depth_after_glass: Option<usize>,
+}
+
+/// Child frame `j` of a frame seen through `parent_pre` (eye `parent_eye`) at stencil level `level`: its opening faces
+/// (the mirror's, or the backdrops for the sky) raise the stencil to `level + 1` where they show; under them the depth
+/// is forgotten and the child drawn, and the area given back. `DrawFrame` (10b1a2d0) draws its child frames before its
+/// own lists and then clears the depth, so nothing of the parent hides a child. Then the opening is put in depth: an
+/// opaque mirror (or backdrop) here, drawn invisible; a translucent mirror when its glass is drawn in the frame's first
+/// list (the walk tags every mirror it opened with 0x80000000, which D3DDrv's `SetBlending` 10008270 turns into depth
+/// writes: render state 14 from bit 31, added to faces without 0x44, never cleared), so the caller writes its depth
+/// right after that list (`opening_depth`): written before, the glass would lie at the same depth and fail the test.
+fn draw_child(fc: &FrameCtx, actors_gpu: &mut ActorRenderer, j: usize, parent_pre: &[f32; 16], parent_eye: [f32; 3], level: u32) -> Option<Drawn> {
+    use crate::world::FaceUse;
+    let (cx, cb, world) = (fc.cx, fc.cb, fc.world);
+    let c = &fc.children[j];
+    if level >= 254 {
+        return None;
+    }
+    let a = child_map(c, world, parent_eye)?;
+    let faces = opening_faces_of(fc, c)?;
+    let (vp, eye) = crate::world::frame_view(fc.cam, fc.aspect, parent_pre);
     crate::set_stencil(cx, cb, crate::Stencil::Incr(level));
-    faces(FaceUse::Mask);
+    faces.draw(fc, vp, eye, FaceUse::Mask);
     crate::set_stencil(cx, cb, crate::Stencil::Inside(level + 1));
-    faces(FaceUse::ResetDepth);
+    faces.draw(fc, vp, eye, FaceUse::ResetDepth);
     let pre = crate::actors::mat_mul(parent_pre, &a);
     draw_frame(fc, actors_gpu, j, &pre, level + 1);
     crate::set_stencil(cx, cb, crate::Stencil::Inside(level + 1));
-    faces(FaceUse::Depth);
+    if faces.opaque {
+        faces.draw(fc, vp, eye, FaceUse::Depth);
+    }
     crate::set_stencil(cx, cb, crate::Stencil::Decr(level + 1));
-    faces(FaceUse::Unmask);
+    faces.draw(fc, vp, eye, FaceUse::Unmask);
     crate::set_stencil(cx, cb, if level == 0 { crate::Stencil::Off } else { crate::Stencil::Inside(level) });
-    plane.or(c.mirror)
+    Some(Drawn { plane: faces.plane.or(c.mirror), depth_after_glass: (!faces.opaque).then_some(j) })
+}
+
+/// A translucent mirror's depth, written after its glass (see `draw_child`), seen through `parent_pre`.
+fn opening_depth(fc: &FrameCtx, j: usize, parent_pre: &[f32; 16]) {
+    if let Some(faces) = opening_faces_of(fc, &fc.children[j]) {
+        let (vp, eye) = crate::world::frame_view(fc.cam, fc.aspect, parent_pre);
+        faces.draw(fc, vp, eye, crate::world::FaceUse::Depth);
+    }
 }
 
 /// `DrawFrame`'s third list: the level's blended nodes and the listed movers' fragments in the walk's order.
