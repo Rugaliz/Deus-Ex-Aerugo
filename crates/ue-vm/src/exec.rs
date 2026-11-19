@@ -293,6 +293,19 @@ impl Vm {
         Self::write_to(&mut self.objects[obj].mem, def, off, v)
     }
 
+    /// The zero of the type of the variable at `p` (what a read gives when the place is inside a null object).
+    fn zero_of_place(&self, p: &Place) -> Res<Value> {
+        let def = match p {
+            Place::Local(d) | Place::Instance(d) | Place::Default(d) | Place::Member(_, d) => d,
+            Place::Elem(base, _) | Place::Ctx(_, base) => return self.zero_of_place(base),
+        };
+        let size = match (def.kind, &def.target) {
+            (PropertyKind::Struct, Target::Struct(sid)) => self.reg.struct_def(*sid).size as usize,
+            _ => def.elem_size as usize,
+        };
+        self.read_from(&Mem { data: vec![0; size.max(4)], strings: Vec::new() }, def, 0)
+    }
+
     // ---- places --------------------------------------------------------------------------------------------
 
     /// Runs `body` with `Self` set to `o` (a context expression's target); operands go back to the writer's object.
@@ -409,7 +422,7 @@ impl Vm {
             Expr::ObjConst(id) => Value::Obj(id.0),
             Expr::Load(p) => match self.place(f, p)? {
                 Some(l) => self.read_loc(f, &l)?,
-                None => Value::Void,
+                None => self.zero_of_place(p)?,
             },
             Expr::Let(p, src) => {
                 let v = self.eval(f, src)?;
@@ -460,7 +473,12 @@ impl Vm {
                     let cls = self.accessed_none_place(f.this);
                     if trace_enabled() { eprintln!("!! Accessed None in {cls}"); }
                     self.log.push(format!("Accessed None in {cls}"));
-                    return Ok(Value::Void);
+                    // `UObject::execContext` (Core 10102964) skips the expression and zeroes the result (its size is
+                    // stored after the skip): a variable read through None is its type's zero (a name reads None)
+                    return match &**inner {
+                        Expr::Load(p) => self.zero_of_place(p),
+                        _ => Ok(Value::Void),
+                    };
                 }
                 self.in_context(f, o, |s, f| s.eval(f, inner))?
             }

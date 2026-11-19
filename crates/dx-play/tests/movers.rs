@@ -330,3 +330,34 @@ fn a_movers_frob_box_holds_its_drawn_polygons() {
     assert!(checked > 50);
     assert!(wrong.is_empty(), "{} of {checked} boxes miss their polygons:\n{}", wrong.len(), wrong.iter().take(20).cloned().collect::<Vec<_>>().join("\n"));
 }
+
+/// Maggie Chow's sword case (`06_HongKong_WanChai_Street`): the MJ12 terminal's special option triggers its event
+/// with no instigating actor (`ComputerScreenSpecialOptions.ActivateSpecialOption`: `A.Trigger(None, player)`), and
+/// the `LogicTrigger` behind it compares `Other.Group` with its input groups (both None). A variable read through None
+/// is its type's zero (`UObject::execContext`, Core 10102964), so both inputs turn on, the AND gate fires its
+/// dispatcher and the arms, piston and cover open the case. The port read it as no value: the gate stayed shut.
+#[test]
+fn the_terminal_opens_the_sword_case_through_its_logic_gate() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = dx_play::Session::open(&g, "06_HongKong_WanChai_Street").unwrap();
+    for _ in 0..3 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let tagged = |s: &mut dx_play::Session, tag: &str| {
+        let t = s.vm.reg.names.intern(tag);
+        s.vm.live_actors().into_iter().filter(|&a| s.vm.get_prop(a, "Tag", 0).ok() == Some(Value::Name(t))).collect::<Vec<u32>>()
+    };
+    let gate = tagged(&mut s, "Get_The_Sword");
+    assert_eq!(gate.len(), 1, "the terminal's event reaches one gate");
+    let cover = tagged(&mut s, "Sword_Cover");
+    assert_eq!(cover.len(), 1);
+    assert_eq!(s.vm.get_prop(cover[0], "KeyNum", 0).ok(), Some(Value::Byte(0)));
+    let player = s.player;
+    s.vm.call_by_name(gate[0], "Trigger", vec![Value::Obj(0), Value::Obj(player)]).unwrap();
+    assert_eq!(s.vm.get_prop(gate[0], "outhit", 0).ok(), Some(Value::Bool(true)), "the gate fired");
+    // the dispatcher's delays add up to 16 seconds
+    for _ in 0..20 * 30 {
+        s.step_bound(1.0 / 30.0);
+    }
+    assert_eq!(s.vm.get_prop(cover[0], "KeyNum", 0).ok(), Some(Value::Byte(1)), "the case's cover opened");
+}
