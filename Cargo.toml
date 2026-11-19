@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ue-package", "crates/ue-registry", "crates/ue-assets", "crates/dx-soft", "crates/ue-bsp", "crates/ue-vm", "crates/dx-play", "crates/dx-vk", "crates/dx-light", "crates/dx-audio", "crates/dx-input", "crates/ue-config", "crates/dx-fractal", "crates/dx-vis"]
 
 [workspace.package]
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 license = "MIT"
 
