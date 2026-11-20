@@ -5,6 +5,7 @@
 //! moves the brush planes into the world and keeps the query box world-aligned.
 
 mod coords;
+pub mod fill;
 pub mod scene;
 mod trace;
 

@@ -77,7 +77,9 @@ impl Vm {
             let l = ue_assets::level::Level::load(pkg, export).map_err(|e| rt(e.to_string()))?;
             let level_path = format!("{}.{}", self.reg.packages[pi].name, pkg.object_path(ObjectRef::Export(export)).unwrap_or_default());
             let ObjectRef::Export(me) = ObjectRef::from_index(l.model) else { return Err(rt("level model is not an export".into())) };
-            let model = ue_assets::model::Model::load(pkg, me).map_err(|e| rt(e.to_string()))?;
+            let mut model = ue_assets::model::Model::load(pkg, me).map_err(|e| rt(e.to_string()))?;
+            // Aerugo repair: walls the shipped map left without a face get one (`ue_bsp::fill`; as the renderer's copy)
+            let _ = ue_bsp::fill::fill_level(&mut model, pkg);
             let surfs: Vec<(Option<String>, u32)> = model.surfs.iter().map(|s| (self.reg.ref_path(pi, s.texture), s.poly_flags)).collect();
             let zone_refs: Vec<i32> = model.zones.iter().map(|z| z.zone_actor).collect();
             let bsp = ue_bsp::Bsp::from_model(&model);

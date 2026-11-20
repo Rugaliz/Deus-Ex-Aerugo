@@ -205,6 +205,7 @@ impl Session {
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
         let mut s = Session { current_levels: Default::default(), vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, render_bounds: None, static_subtree_bounds: None, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
+        s.shade_filled_faces();
         s.install_key_commands();
         s.apply_yaw();
         s.vm.ui_after_browse(s.player);
@@ -296,6 +297,18 @@ impl Session {
     }
 
     /// Moves the player (a hard teleport) and turns it to `yaw_deg`.
+    /// The shadows of the faces `ue_bsp::fill` added to the map's model (an Aerugo repair), made once the map's light
+    /// actors can be read.
+    pub(crate) fn shade_filled_faces(&mut self) {
+        let range = self.view.filled_light_maps.clone();
+        if range.is_empty() {
+            return;
+        }
+        let lighting = dx_light::collect(&mut self.vm.reg, self.map_pkg, &self.view.model);
+        let at = |k: usize| lighting.lights.get(k).copied().flatten().map(|l| (l.pos, l.radius()));
+        ue_bsp::fill::shade_filled_faces(&mut self.view.model, range, &at);
+    }
+
     pub fn teleport(&mut self, loc: [f32; 3], yaw_deg: f32) {
         let _ = self.vm.call_by_name(self.player, "SetLocation", vec![Value::Vector(loc)]);
         self.yaw = (yaw_deg / 360.0 * 65536.0) as i32 & 0xFFFF;
@@ -506,6 +519,7 @@ impl Session {
             .map_err(|e| e.to_string())?;
             self.view = view;
             self.map_pkg = pi;
+            self.shade_filled_faces();
             self.forget_level();
             self.player = pawn;
             self.pitch = 0;

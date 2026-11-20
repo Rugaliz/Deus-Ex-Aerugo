@@ -24,7 +24,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   system's own audio quality, and a loudness control (*Sound* settings) that keeps rooms full of machines from getting
   too loud; *Original* mixes as the original game. The original's sound and music engine is recreated faithfully.
 - **No holes in the levels.** Some maps shipped with broken culling data that made the original skip whole rooms and
-  doors from most angles (the Hong Kong Helibase's corridor door and stairs room); Aerugo draws them.
+  doors from most angles (the Hong Kong Helibase's corridor door and stairs room), and some underwater walls without a
+  surface, so you saw through the rock to the far end of the canal (Hong Kong's Wan Chai canal); Aerugo draws them.
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no

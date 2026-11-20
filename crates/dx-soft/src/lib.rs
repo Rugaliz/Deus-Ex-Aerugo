@@ -159,6 +159,8 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// A map opened for rendering.
 pub struct MapView {
+    /// The lightmaps `ue_bsp::fill` made for the faces it added to `model` (shadowed once the lights are known).
+    pub filled_light_maps: std::ops::Range<usize>,
     pub(crate) files: GameFiles,
     map: Rc<Loaded>,
     pub model: Model,
@@ -186,8 +188,11 @@ impl MapView {
             ObjectRef::Export(i) => i,
             _ => return Err("level model is not an export".into()),
         };
-        let model = Model::load(&map.pkg, model_export).map_err(|e| e.to_string())?;
-        Ok(MapView { files, map, model, level, textures: HashMap::new(), texture_paths: HashMap::new(), meshes: HashMap::new(), procedurals: HashMap::new(), fractal: dx_fractal::Shared::new(), runtime: HashMap::new() })
+        let mut model = Model::load(&map.pkg, model_export).map_err(|e| e.to_string())?;
+        // Aerugo repair: walls the shipped map left without a face get one (as the VM's copy of the level, so both
+        // number the nodes and surfaces alike)
+        let (_, filled_light_maps) = ue_bsp::fill::fill_level(&mut model, &map.pkg);
+        Ok(MapView { filled_light_maps, files, map, model, level, textures: HashMap::new(), texture_paths: HashMap::new(), meshes: HashMap::new(), procedurals: HashMap::new(), fractal: dx_fractal::Shared::new(), runtime: HashMap::new() })
     }
 
     /// Location and rotation of the first actor of class `class` (for example `PlayerStart`).

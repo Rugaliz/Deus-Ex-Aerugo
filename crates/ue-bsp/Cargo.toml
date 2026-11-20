@@ -7,6 +7,4 @@ license.workspace = true
 
 [dependencies]
 ue-assets = { path = "../ue-assets" }
-
-[dev-dependencies]
 ue-package = { path = "../ue-package" }
