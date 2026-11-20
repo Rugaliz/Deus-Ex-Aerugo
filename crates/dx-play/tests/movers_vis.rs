@@ -131,3 +131,37 @@ fn level_traces_see_closed_doors() {
     println!("{blocked} doors block level traces");
     assert!(blocked > 0);
 }
+
+/// The Helibase's stored render bounds miss parts of their subtrees (node 3159's box ends at y 200 while its subtree's
+/// walls reach y 480), so the original skips the stairs room and the corridor's end door (a mover filtered into that
+/// part of the tree) from most views. Aerugo tests boxes grown to what each subtree holds: from the corridor 350
+/// units back the door's fragments are listed, and from the stairs the room's walls are.
+#[test]
+fn the_helibase_corridor_door_and_stairs_room_are_drawn_from_afar() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "06_HongKong_Helibase").unwrap();
+    for _ in 0..3 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let corridor = dx_soft::Camera { pos: [350.0, 336.1, 343.4], pitch: 0, yaw: 32675, fov: 75.0, roll: 0 };
+    let (_, frames) = s.compute_visibility(&corridor, 1024, 768);
+    let m = s.vm.world_model.clone().unwrap();
+    let first_dynamic = s.vm.surf_info.len();
+    let door = frames[0]
+        .vis
+        .surfaces
+        .iter()
+        .filter(|&&(n, _, _)| {
+            let nd = &m.nodes[n as usize];
+            nd.i_surf >= 0 && nd.i_surf as usize >= first_dynamic && {
+                let p = m.points[m.verts[nd.i_vert_pool as usize].p_vertex as usize];
+                (-120.0..-90.0).contains(&p[0])
+            }
+        })
+        .count();
+    assert!(door > 0, "the corridor's end door is not listed");
+    let stairs = dx_soft::Camera { pos: [-235.6, 218.9, 311.4], pitch: 0, yaw: 11813, fov: 75.0, roll: 0 };
+    let (_, frames) = s.compute_visibility(&stairs, 1024, 768);
+    let listed: Vec<u32> = frames[0].vis.surfaces.iter().map(|x| x.0).collect();
+    assert!([3164, 3165, 3181].iter().all(|n| listed.contains(n)), "the stairs room's walls are not listed: {listed:?}");
+}

@@ -57,6 +57,8 @@ pub struct World<'a> {
     /// The moving-brush tracker's `SurfIsDynamic` threshold (`usize::MAX` without movers): a node of such a surface
     /// is a mover's and uses `iRenderBound` as a list link, so the walk skips its bound test (10b17ae5).
     pub first_dynamic_surf: usize,
+    /// Repaired render bounds per node (`bound::repaired_render_bounds`), used instead of the stored ones when given.
+    pub render_bounds: Option<&'a [Option<(Vec3, Vec3)>]>,
 }
 /// An actor's sprite as `FDynamicSprite::Setup` leaves it: screen box (rows `y1..y2`, columns `x1..x2`) and depth.
 #[derive(Debug, Clone, Copy)]
@@ -463,9 +465,16 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
         // ---- first visit of `node`
         let nd = &model.nodes[node];
         let mut skip = zones && nd.zone_mask & seen_mask == 0;
-        if !skip && nd.i_render_bound >= 0 && !(nd.i_surf >= 0 && nd.i_surf as usize >= world.first_dynamic_surf) {
-            let b = &model.bounds[nd.i_render_bound as usize];
-            match bound_visible(f, b.min, b.max, if zones { None } else { Some(&span[0]) }) {
+        let bound = match world.render_bounds {
+            Some(rb) => rb.get(node).copied().flatten(),
+            None if nd.i_render_bound >= 0 && !(nd.i_surf >= 0 && nd.i_surf as usize >= world.first_dynamic_surf) => {
+                let b = &model.bounds[nd.i_render_bound as usize];
+                Some((b.min, b.max))
+            }
+            None => None,
+        };
+        if let Some((bmin, bmax)) = bound.filter(|_| !skip) {
+            match bound_visible(f, bmin, bmax, if zones { None } else { Some(&span[0]) }) {
                 None => skip = true,
                 Some(sb) if zones => {
                     let (x1, y1, x2, y2) = (sb.min_x as i32, sb.min_y as i32, sb.max_x as i32, sb.max_y as i32);

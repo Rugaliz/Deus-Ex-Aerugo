@@ -23,6 +23,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Better sound.** More sound channels than the original's 16, so sounds no longer cut each other off, at your
   system's own audio quality, and a loudness control (*Sound* settings) that keeps rooms full of machines from getting
   too loud; *Original* mixes as the original game. The original's sound and music engine is recreated faithfully.
+- **No holes in the levels.** Some maps shipped with broken culling data that made the original skip whole rooms and
+  doors from most angles (the Hong Kong Helibase's corridor door and stairs room); Aerugo draws them.
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no

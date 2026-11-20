@@ -315,6 +315,23 @@ impl Session {
             None => usize::MAX,
         };
         let model = if tracked.is_none() { Some(std::mem::take(&mut self.view.model)) } else { None };
+        // the stored render bounds of the shipped maps miss parts of some subtrees (rooms and doors skipped from most
+        // views, in the original too): the walk tests repaired ones, made again when the movers change the model
+        let bounds_key = (tracked.is_some(), self.vm.world_model_gen, self.map_pkg);
+        let mut render_bounds = self.render_bounds.take().filter(|(k, _)| *k == bounds_key);
+        if render_bounds.is_none() {
+            if self.static_subtree_bounds.as_ref().map(|(pkg, _)| *pkg) != Some(self.map_pkg) {
+                let stored = model.as_ref().unwrap_or(&self.view.model);
+                self.static_subtree_bounds = Some((self.map_pkg, dx_vis::bound::static_subtree_bounds(stored)));
+            }
+            let m: &ue_assets::model::Model = match (&model, &tracked) {
+                (Some(m), _) => m,
+                (None, Some((m, _, _))) => m,
+                _ => unreachable!(),
+            };
+            let static_sub = self.static_subtree_bounds.as_ref().map(|(_, b)| b.as_slice()).unwrap_or(&[]);
+            render_bounds = Some((bounds_key, dx_vis::bound::repaired_render_bounds(m, first_dynamic_surf, static_sub)));
+        }
         lap("    setup", &mut t);
         let frames = {
             let model_ref: &ue_assets::model::Model = match (&model, &tracked) {
@@ -333,12 +350,14 @@ impl Session {
                 shiny_surfaces,
                 volumetrics,
                 vol_light: &|i| vol_lights.get(i).copied().flatten(),
+                render_bounds: render_bounds.as_ref().map(|(_, b)| b.as_slice()),
             };
             occlude(&world, f, &mut |fr| self.vis_sprites(fr))
         };
         if let Some(m) = model {
             self.view.model = m;
         }
+        self.render_bounds = render_bounds;
         drop(tracked);
         let mut drawn = Vec::new();
         for fv in &frames {

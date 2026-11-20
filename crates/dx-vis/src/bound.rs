@@ -137,3 +137,121 @@ mod tests {
         assert!(bound_visible(&f, [50.0, 40.0, -10.0], [100.0, 200.0, 10.0], Some(&zone)).is_none(), "hidden");
     }
 }
+
+/// Render bounds that hold what each subtree holds (an Aerugo repair, not the original's behaviour). The editor's
+/// `bspBuildBounds` leaves some nodes of the shipped maps with a box that misses part of their subtree (the Helibase
+/// stairs: node 3159's box ends at y 200 while its subtree's walls reach y 480; others are empty and flagged invalid),
+/// and `BoundVisible` then skips whole rooms and the doors filtered into them from most views, in the original too.
+///
+/// `static_subtree_bounds` is made once per map; `repaired_render_bounds` per change of the movers' fragments.
+
+fn grow(b: &mut Option<(Vec3, Vec3)>, lo: Vec3, hi: Vec3) {
+    match b {
+        None => *b = Some((lo, hi)),
+        Some((a, z)) => {
+            for k in 0..3 {
+                a[k] = a[k].min(lo[k]);
+                z[k] = z[k].max(hi[k]);
+            }
+        }
+    }
+}
+
+fn polygon_box(model: &ue_assets::model::Model, i: usize) -> Option<(Vec3, Vec3)> {
+    let nd = &model.nodes[i];
+    let mut b = None;
+    for k in 0..nd.num_vertices.max(0) as i32 {
+        if let Some(p) = model.verts.get((nd.i_vert_pool + k) as usize).and_then(|v| model.points.get(v.p_vertex as usize)) {
+            grow(&mut b, *p, *p);
+        }
+    }
+    b
+}
+
+/// The box of every polygon in each node's subtree (its own, its coplanar nodes', its front and back) in the level's
+/// model as stored (no movers).
+pub fn static_subtree_bounds(model: &ue_assets::model::Model) -> Vec<Option<(Vec3, Vec3)>> {
+    let n = model.nodes.len();
+    let mut sub: Vec<Option<(Vec3, Vec3)>> = vec![None; n];
+    let mut done = vec![false; n];
+    let children = |i: usize| {
+        let nd = &model.nodes[i];
+        [nd.i_front, nd.i_back, nd.i_plane].into_iter().filter(|&c| c >= 0 && (c as usize) < n).map(|c| c as usize)
+    };
+    // children before parents, with an explicit stack (the trees are deep)
+    let mut stack = Vec::new();
+    for root in 0..n {
+        if done[root] {
+            continue;
+        }
+        stack.push((root, false));
+        while let Some((i, expanded)) = stack.pop() {
+            if done[i] {
+                continue;
+            }
+            if !expanded {
+                stack.push((i, true));
+                stack.extend(children(i).filter(|&c| !done[c]).map(|c| (c, false)));
+                continue;
+            }
+            let mut b = polygon_box(model, i);
+            for c in children(i) {
+                if let Some((lo, hi)) = sub[c] {
+                    grow(&mut b, lo, hi);
+                }
+            }
+            sub[i] = b;
+            done[i] = true;
+        }
+    }
+    sub
+}
+
+/// The box the walk tests for each node of `model` (the level's model, with the movers' fragments filtered in when
+/// `first_dynamic_surf` is not `usize::MAX`): the stored box (when valid) grown to its subtree's polygons
+/// (`static_sub`, from `static_subtree_bounds` of the stored model) and to the movers' fragments under it. `None`:
+/// no box to test (the node has none, a mover's node uses the field as a list link, or an invalid box with nothing
+/// under it).
+pub fn repaired_render_bounds(model: &ue_assets::model::Model, first_dynamic_surf: usize, static_sub: &[Option<(Vec3, Vec3)>]) -> Vec<Option<(Vec3, Vec3)>> {
+    let n = model.nodes.len();
+    let dynamic = |i: usize| model.nodes[i].i_surf >= 0 && model.nodes[i].i_surf as usize >= first_dynamic_surf;
+    let mut out: Vec<Option<(Vec3, Vec3)>> = (0..n)
+        .map(|i| {
+            let nd = &model.nodes[i];
+            if nd.i_render_bound < 0 || dynamic(i) {
+                return None;
+            }
+            let stored = model.bounds.get(nd.i_render_bound as usize)?;
+            let mut b = stored.is_valid.then_some((stored.min, stored.max));
+            if let Some((lo, hi)) = static_sub.get(i).copied().flatten() {
+                grow(&mut b, lo, hi);
+            }
+            b
+        })
+        .collect();
+    if first_dynamic_surf == usize::MAX {
+        return out;
+    }
+    // the movers' fragments: each grows the boxes of the nodes above it
+    let mut parent = vec![usize::MAX; n];
+    for (i, nd) in model.nodes.iter().enumerate() {
+        for c in [nd.i_front, nd.i_back, nd.i_plane] {
+            if c >= 0 && (c as usize) < n {
+                parent[c as usize] = i;
+            }
+        }
+    }
+    for i in (0..n).filter(|&i| dynamic(i)) {
+        let Some((lo, hi)) = polygon_box(model, i) else { continue };
+        let mut a = parent[i];
+        let mut steps = 0;
+        while a != usize::MAX && steps < n {
+            if out[a].is_some() || (model.nodes[a].i_render_bound >= 0 && !dynamic(a)) {
+                grow(&mut out[a], lo, hi);
+            }
+            a = parent[a];
+            steps += 1;
+        }
+    }
+    out
+}
