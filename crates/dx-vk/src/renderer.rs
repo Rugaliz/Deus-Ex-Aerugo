@@ -1245,14 +1245,32 @@ fn light_share(at: [f32; 3], light: &([f32; 3], [f32; 3], f32)) -> f32 {
 
 /// The most casters the screen passes take (the nearest objects first).
 const MAX_CASTERS: usize = 256;
-/// Up to how many lights of an object give it a shadow.
-const LIGHTS_PER_CASTER: usize = 4;
+/// From how much of the strongest lamp's share the second strongest starts to cast too (see `shadow_lamps`).
+const SECOND_LAMP_FROM: f32 = 0.6;
 /// The radius of a light's disc (the softness of the shadows' edges).
 const LIGHT_SIZE: f32 = 12.0;
 /// How dark a shadow is for a light's share of the object's light (OpenJK-Shin's `r_shadowStrength`: lights of about
 /// equal share each leave a weak shadow otherwise), and the darkest one shadow gets.
 const SHADOW_STRENGTH: f32 = 2.0;
 const SHADOW_MAX: f32 = 0.9;
+
+/// The lamps that give an object a shadow, and how strongly (1: fully), from its usable lamps `(share, index)`
+/// strongest first: the strongest, and the second while it gives more than `SECOND_LAMP_FROM` of the strongest's
+/// light, fading in up to full when the two are equal. (One shadow per object, as most games cast it, at a fraction
+/// of the cost of one per lamp; the second fades in and out, so a character walking from one lamp's light into the
+/// next one's sees its shadow hand over without a jump.)
+fn shadow_lamps(usable: &[(f32, usize)]) -> Vec<(usize, f32)> {
+    let mut out = Vec::new();
+    let Some(&(s1, i1)) = usable.first() else { return out };
+    out.push((i1, 1.0));
+    if let Some(&(s2, i2)) = usable.get(1) {
+        let w = ((s2 / s1.max(1e-6) - SECOND_LAMP_FROM) / (1.0 - SECOND_LAMP_FROM)).clamp(0.0, 1.0);
+        if w > 0.0 {
+            out.push((i2, w));
+        }
+    }
+    out
+}
 
 /// This frame's ray tracing (before the scene's rendering starts): the meshes drawn as light blockers, the movers where
 /// they stand and the world into the structures; the casters for the screen passes. Returns whether there is
@@ -1303,16 +1321,20 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
         let total: f32 = shares.iter().map(|s| s.0).sum::<f32>() + 0.299 * l.ambient[0] + 0.587 * l.ambient[1] + 0.114 * l.ambient[2];
         shares.sort_by(|a, b| b.0.total_cmp(&a.0));
         let dist = ((centre[0] - eye[0]).powi(2) + (centre[1] - eye[1]).powi(2) + (centre[2] - eye[2]).powi(2)).sqrt();
-        for &(share, i) in shares.iter().take(LIGHTS_PER_CASTER) {
+        // the lamps that can give a shadow: enough of the object's light, not so close that the object hides them
+        let distance = |i: usize| {
+            let p = l.lights[i].0;
+            ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt()
+        };
+        let usable: Vec<(f32, usize)> = shares.iter().copied().filter(|&(share, i)| share / total.max(1e-4) >= 0.05 && distance(i) >= radius * 1.1 + LIGHT_SIZE).collect();
+        for (i, weight) in shadow_lamps(&usable) {
+            let share = usable.iter().find(|u| u.1 == i).map(|u| u.0).unwrap_or(0.0);
             let dark = share / total.max(1e-4);
             let (p, _, lr) = l.lights[i];
-            let lc = ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt();
-            if dark < 0.05 || lc < radius * 1.1 + LIGHT_SIZE {
-                continue;
-            }
+            let lc = distance(i);
             casters.push((
                 dist,
-                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [(dark * SHADOW_STRENGTH).min(SHADOW_MAX), (lr - lc).max(radius * 2.0), 0.0, 0.0] },
+                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [(dark * SHADOW_STRENGTH).min(SHADOW_MAX) * weight, (lr - lc).max(radius * 2.0), 0.0, 0.0] },
             ));
         }
     }
@@ -1391,5 +1413,36 @@ fn record_rt_post(cx: &Context, world: &World, cb: vk::CommandBuffer, target: &O
             post.apply(cx, cb, &push);
         }
         Err(e) => eprintln!("ray tracing: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An object walking from lamp 0's light into lamp 1's: one shadow while one lamp clearly dominates, both near the
+    /// crossing, and each lamp's shadow strength changes smoothly all the way (no jump when the strongest changes).
+    #[test]
+    fn the_shadow_hands_over_between_two_lamps_without_a_jump() {
+        let weight = |usable: &[(f32, usize)], lamp: usize| shadow_lamps(usable).into_iter().find(|w| w.0 == lamp).map(|w| w.1).unwrap_or(0.0);
+        let mut last = [1.0f32, 0.0];
+        let steps = 1000;
+        for k in 0..=steps {
+            let t = k as f32 / steps as f32;
+            let mut usable = vec![(1.0 - t + 1e-3, 0usize), (t + 1e-3, 1usize)];
+            usable.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let w = [weight(&usable, 0), weight(&usable, 1)];
+            for lamp in 0..2 {
+                assert!((w[lamp] - last[lamp]).abs() < 0.01, "lamp {lamp} jumps from {} to {} at {t}", last[lamp], w[lamp]);
+            }
+            let (strong, weak) = if t < 0.5 { (w[0], w[1]) } else { (w[1], w[0]) };
+            assert_eq!(strong, 1.0, "the strongest lamp casts fully at {t}");
+            if (t - 0.5).abs() > 0.15 {
+                assert_eq!(weak, 0.0, "one shadow while one lamp dominates ({t})");
+            }
+            last = w;
+        }
+        assert_eq!(shadow_lamps(&[]), vec![]);
+        assert_eq!(shadow_lamps(&[(0.8, 3)]), vec![(3, 1.0)]);
     }
 }
