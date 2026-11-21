@@ -10,8 +10,9 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   else to install: one small file.
 - **Any screen.** Your monitor's own resolution, including widescreen and ultrawide (16:9, 21:9, 32:9), with a wider
   view on wider screens instead of a stretched picture.
-- **Smooth and fast.** Hundreds of frames per second on a modern PC, ready for high refresh rate monitors. Choose how
-  vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a frame rate limit.
+- **Smooth and fast.** Hundreds of frames per second on a modern PC (well over a thousand on a recent one), ready for
+  high refresh rate monitors. Choose how vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a
+  frame rate limit.
 - **A sharper, smoother picture.** Every texture and effect at full quality, plus modern options in *Display →
   Advanced Graphics*: anisotropic texture filtering, anti-aliasing (MSAA, with smooth grates and fences), 16-bit colour
   (no banding in fog and dark areas), smooth lightmap shadows and per-pixel lighting on characters and objects; on
@@ -32,9 +33,9 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
   overwritten game files.
 
-> **Status: the engine is complete, but the game has not been played through yet.** The intro, the training mission
-> and Liberty Island have been played; the later missions and the endings load and run but have not been played from
-> start to finish, so expect bugs there. Bug reports are welcome in the
+> **Status: the engine is complete, but the game has not been played through yet.** The intro, the training mission,
+> Liberty Island, Hell's Kitchen and the start of Hong Kong have been played; the later missions and the endings load
+> and run but have not been played from start to finish, so expect bugs there. Bug reports are welcome in the
 > [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
 
 ## How to install
