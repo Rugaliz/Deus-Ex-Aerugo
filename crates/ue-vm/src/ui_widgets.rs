@@ -49,8 +49,13 @@ fn iv(a: &[Value], i: usize) -> i32 {
 impl Vm {
     /// The native widget classes `w` derives from, base first.
     pub(crate) fn ui_kinds(&self, w: u32) -> Vec<Kind> {
+        let Some(class) = self.class_of(w) else { return Vec::new() };
+        // a class's ancestry never changes: worked out once per class
+        if let Some(k) = self.ui.kinds_cache.borrow().get(&class) {
+            return k.clone();
+        }
         let mut out = Vec::new();
-        let mut cur = self.class_of(w);
+        let mut cur = Some(class);
         while let Some(c) = cur {
             let kind = match self.reg.names.str(self.reg.class(c).name) {
                 "TabGroupWindow" => Some(Kind::TabGroup),
@@ -80,6 +85,7 @@ impl Vm {
             }
             cur = self.reg.class(c).super_id;
         }
+        self.ui.kinds_cache.borrow_mut().insert(class, out.clone());
         out
     }
 

@@ -69,6 +69,8 @@ pub struct UiState {
     pub next_timer: i32,
     /// Texture sizes by resource id.
     pub tex_sizes: ue_registry::FxHashMap<u32, (f32, f32)>,
+    /// `ui_kinds` per window class.
+    pub(crate) kinds_cache: std::cell::RefCell<ue_registry::FxHashMap<ue_registry::ClassId, Vec<crate::ui_widgets::Kind>>>,
     /// Nesting depth of `ConfigureChild` calls (clipping is recomputed only at the outermost level).
     configure_depth: u32,
 }
@@ -987,10 +989,13 @@ impl Vm {
         [self.wf(w, "x"), self.wf(w, "y"), self.wf(w, "width"), self.wf(w, "height")]
     }
 
-    /// `XRootWindow::InitializeWindows` / `InvokeWindowReady`: every visible window that has not yet been told gets
-    /// `WindowReady`, children before their parents.
+    /// `XRootWindow::InitializeWindows` (1003bc80) / `InvokeWindowReady`: every visible window that has not yet been
+    /// told gets `WindowReady`, children before their parents. Only while the root counts such windows (`initCount`,
+    /// raised and lowered by `RecomputeInitTree` when a subtree's visibility changes).
     pub fn ui_initialize_windows(&mut self, root: u32) {
-        self.ui_invoke_window_ready(root);
+        if self.wi(root, "initCount") > 0 {
+            self.ui_invoke_window_ready(root);
+        }
     }
 
     fn ui_invoke_window_ready(&mut self, w: u32) {
