@@ -16,6 +16,27 @@ pub struct SpanBuffer {
     open: Vec<u64>,
 }
 
+/// Replaces the run `row[first..last]` of spans that `[a, b)` overlaps by their parts outside it.
+#[inline]
+fn close_run(row: &mut Vec<Span>, first: usize, last: usize, a: i32, b: i32) {
+    let (s0, e1) = (row[first].0, row[last - 1].1);
+    let left = (s0 < a).then_some((s0, a));
+    let right = (e1 > b).then_some((b, e1));
+    let keep = left.is_some() as usize + right.is_some() as usize;
+    let mut k = first;
+    for p in left.into_iter().chain(right) {
+        if k < last {
+            row[k] = p;
+        } else {
+            row.insert(k, p);
+        }
+        k += 1;
+    }
+    if first + keep < last {
+        row.drain(first + keep..last);
+    }
+}
+
 impl SpanBuffer {
     /// `AllocIndex(Y1, Y2)`: rows `y1..y2`, all closed.
     pub fn alloc(y1: i32, y2: i32) -> SpanBuffer {
@@ -102,17 +123,22 @@ impl SpanBuffer {
             if rs >= re {
                 continue;
             }
+            // the source's spans are sorted and apart: the ones `[rs, re)` overlaps are a run, copied clipped to it and
+            // then replaced by their parts outside it (`close`)
+            let si = (y - source.start_y) as usize;
+            let row = &mut source.rows[si];
+            let first = row.iter().position(|&(_, e)| e > rs).unwrap_or(row.len());
+            let last = row[first..].iter().position(|&(s, _)| s >= re).map(|k| first + k).unwrap_or(row.len());
+            if first >= last {
+                continue;
+            }
             let i = (y - self.start_y) as usize;
             let out = &mut self.rows[i];
-            for &(s, e) in source.row(y) {
-                let (a, b) = (s.max(rs), e.min(re));
-                if a < b {
-                    out.push((a, b));
-                    any = true;
-                }
-            }
-            self.sync(i);
-            source.close(y, rs, re);
+            out.extend(row[first..last].iter().map(|&(s, e)| (s.max(rs), e.min(re))));
+            any = true;
+            self.open[i / 64] |= 1u64 << (i % 64);
+            close_run(row, first, last, rs, re);
+            source.sync(si);
         }
         any
     }
@@ -154,10 +180,7 @@ impl SpanBuffer {
         if first >= last {
             return;
         }
-        let (s0, e1) = (row[first].0, row[last - 1].1);
-        let left = (s0 < a).then_some((s0, a));
-        let right = (e1 > b).then_some((b, e1));
-        row.splice(first..last, left.into_iter().chain(right));
+        close_run(row, first, last, a, b);
         self.sync(i);
     }
 

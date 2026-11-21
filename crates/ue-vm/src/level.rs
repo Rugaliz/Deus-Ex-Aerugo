@@ -44,6 +44,7 @@ impl Vm {
         self.surf_info.clear();
         self.drop_collision_hash();
         self.decals.clear();
+        self.decal_pieces_cache.clear();
         self.surf_decals.clear();
         self.pending_deleted.clear();
         self.pending_deleted_set.clear();

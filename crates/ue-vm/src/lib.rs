@@ -282,6 +282,9 @@ pub struct Vm {
     pub ai: ai::AiState,
     /// Attached decals by actor (see `decal.rs`).
     pub decals: ue_registry::FxHashMap<u32, decal::DecalPlace>,
+    /// `decal_pieces` per decal, with the model generation and `DrawScale` bits they were clipped for (dropped with
+    /// the decal's entry whenever `decals` changes).
+    pub decal_pieces_cache: ue_registry::FxHashMap<u32, (u64, u32, Vec<Vec<(ue_assets::model::Vec3, [f32; 2])>>)>,
     /// Per BSP surface: its decals in drawing order (`FBspSurf::Decals`).
     pub surf_decals: std::collections::HashMap<usize, Vec<u32>>,
     /// The level's BSP model (decals need its nodes, polygons and surfaces).
@@ -465,6 +468,7 @@ impl Vm {
             depth: 0,
             pending_latent: None,
             decals: Default::default(),
+            decal_pieces_cache: Default::default(),
             surf_decals: std::collections::HashMap::new(),
             world_model: None,
             world_model_gen: 0,

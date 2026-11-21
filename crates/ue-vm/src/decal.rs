@@ -344,11 +344,13 @@ impl Vm {
             }
         }
         self.decals.insert(a, DecalPlace { center: hit, normal: n, surfs: entries });
+        self.decal_pieces_cache.remove(&a);
         true
     }
 
     /// `DetachDecal`: off every surface.
     pub fn detach_decal(&mut self, a: u32) {
+        self.decal_pieces_cache.remove(&a);
         if self.decals.remove(&a).is_some() {
             for list in self.surf_decals.values_mut() {
                 list.retain(|&d| d != a);
@@ -361,11 +363,23 @@ impl Vm {
     /// texel coordinates from the square's first corner: `U = (P - V0) . unit(V1 - V0) / DrawScale`, `V` the same along
     /// `V3 - V0`. (The engine clips to the node's on-screen polygon each frame; the depth test does the rest here.)
     pub fn decal_pieces(&mut self, a: u32) -> Vec<Vec<(Vec3, [f32; 2])>> {
-        let mut out = Vec::new();
-        let Some(place) = self.decals.get(&a).cloned() else { return out };
-        let Some(model) = self.world_model.clone() else { return out };
-        let m: &Model = &model;
         let scale = self.fp(a, "DrawScale");
+        let gen = self.world_model_gen;
+        if let Some((g, s, pieces)) = self.decal_pieces_cache.get(&a) {
+            if *g == gen && *s == scale.to_bits() {
+                return pieces.clone();
+            }
+        }
+        let out = self.clip_decal_pieces(a, scale);
+        self.decal_pieces_cache.insert(a, (gen, scale.to_bits(), out.clone()));
+        out
+    }
+
+    fn clip_decal_pieces(&self, a: u32, scale: f32) -> Vec<Vec<(Vec3, [f32; 2])>> {
+        let mut out = Vec::new();
+        let Some(place) = self.decals.get(&a) else { return out };
+        let Some(model) = self.world_model.as_ref() else { return out };
+        let m: &Model = model;
         if scale == 0.0 {
             return out;
         }

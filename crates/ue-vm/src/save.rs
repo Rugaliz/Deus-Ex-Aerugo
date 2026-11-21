@@ -718,6 +718,7 @@ impl Vm {
             self.zone_render_times = snap.zone_times.clone();
         }
         self.decals.clear();
+        self.decal_pieces_cache.clear();
         self.surf_decals.clear();
         // a mover's surfaces exist only while the level's moving-brush tracker does: its teardown (1037b0b0, when the
         // level is saved or left) removes the dynamic surfaces, nodes and points, and with them the decals on them; the

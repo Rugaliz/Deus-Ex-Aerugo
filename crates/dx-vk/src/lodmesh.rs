@@ -192,7 +192,7 @@ pub fn build(lod: &LodMesh, pose: &[[f32; 3]], view: &MeshView, actor: &MeshActo
     let mut normals = vec![[0.0f32; 3]; count];
     let mut used = vec![false; count];
     let mut wedge_cache: Vec<Option<(usize, [u8; 2])>> = vec![None; lod.wedges.len()];
-    let mut faces: Vec<(usize, [(usize, [u8; 2]); 3])> = Vec::new();
+    let mut faces: Vec<(usize, [(usize, [u8; 2]); 3])> = Vec::with_capacity(lod.faces.len());
     for (fi, face) in lod.faces.iter().enumerate() {
         if !full && lod.face_level.get(fi).copied().unwrap_or(0) as usize > count {
             continue;
