@@ -1245,10 +1245,8 @@ fn light_share(at: [f32; 3], light: &([f32; 3], [f32; 3], f32)) -> f32 {
 
 /// The most casters the screen passes take (the nearest objects first).
 const MAX_CASTERS: usize = 256;
-/// Up to how many lights of an object give it a shadow; of a corpse (bodies on the floor under low lamps throw long
-/// shadows over much of the screen: the costly case).
+/// Up to how many lights of an object give it a shadow.
 const LIGHTS_PER_CASTER: usize = 4;
-const LIGHTS_PER_CARCASS: usize = 2;
 /// The radius of a light's disc (the softness of the shadows' edges).
 const LIGHT_SIZE: f32 = 12.0;
 /// How dark a shadow is for a light's share of the object's light (OpenJK-Shin's `r_shadowStrength`: lights of about
@@ -1283,6 +1281,11 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
         parts.push([first as u32, opaque as u32, masked_first as u32, (masked.len() * 3) as u32]);
         mesh_first.push(faces.len() as u32);
         faces.extend(masked.iter().map(|m| crate::rt_post::MaskedFace { uv01: [m.uv[0][0], m.uv[0][1], m.uv[1][0], m.uv[1][1]], uv2: m.uv[2], mask: m.mask, _pad: 0 }));
+        // corpses cast no shadows (the original gives them no `Shadow` either; bodies on the floor under low lamps
+        // threw long shadows over much of the screen, the costliest case); their faces still block the other rays
+        if d.carcass {
+            continue;
+        }
         let Some(l) = d.lighting.as_ref().or(d.shadow_lighting.as_ref()) else { continue };
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for v in &tris[first..] {
@@ -1300,7 +1303,7 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
         let total: f32 = shares.iter().map(|s| s.0).sum::<f32>() + 0.299 * l.ambient[0] + 0.587 * l.ambient[1] + 0.114 * l.ambient[2];
         shares.sort_by(|a, b| b.0.total_cmp(&a.0));
         let dist = ((centre[0] - eye[0]).powi(2) + (centre[1] - eye[1]).powi(2) + (centre[2] - eye[2]).powi(2)).sqrt();
-        for &(share, i) in shares.iter().take(if d.carcass { LIGHTS_PER_CARCASS } else { LIGHTS_PER_CASTER }) {
+        for &(share, i) in shares.iter().take(LIGHTS_PER_CASTER) {
             let dark = share / total.max(1e-4);
             let (p, _, lr) = l.lights[i];
             let lc = ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt();
@@ -1309,7 +1312,7 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
             }
             casters.push((
                 dist,
-                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [(dark * SHADOW_STRENGTH).min(SHADOW_MAX), (lr - lc).max(radius * 2.0), d.carcass as u32 as f32, 0.0] },
+                crate::rt_post::Caster { light: [p[0], p[1], p[2], LIGHT_SIZE], centre: [centre[0], centre[1], centre[2], radius], params: [(dark * SHADOW_STRENGTH).min(SHADOW_MAX), (lr - lc).max(radius * 2.0), 0.0, 0.0] },
             ));
         }
     }
