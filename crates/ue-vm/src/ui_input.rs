@@ -693,6 +693,9 @@ impl Vm {
     fn ui_handle_virtual_key(&mut self, root: u32, key: i32, action: i32, repeat: bool) -> bool {
         let focus = self.wo_pub(root, "focusWindow");
         let mut win = if focus != 0 { focus } else { self.ui_current_modal(root) };
+        if action == 1 && !repeat && self.ui_dialogue_key(win, key) {
+            return true;
+        }
         while win != 0 {
             if !repeat {
                 let (r, _) = self.ui_event(win, "RawKeyPressed", vec![Value::Byte(key as u8), Value::Byte(action as u8), Value::Bool(false)]);
@@ -709,6 +712,48 @@ impl Vm {
             win = self.wo_pub(win, "winParent");
         }
         false
+    }
+
+    /// Aerugo: in a conversation showing choices (`ConWindowActive` in the key's window chain, its choices up, input
+    /// not held back, the letterbox not moving), `1`..`9` and `0` (top row or keypad) press that choice's button as the
+    /// keyboard presses a focused button (`PressButton`: its look, its click, `ButtonActivated`). The original's
+    /// `ConWindowActive.VirtualKeyPressed` swallows these keys there, so nothing it did is lost.
+    /// `AerugoSettings.DialogueKeys` 0 turns it off.
+    fn ui_dialogue_key(&mut self, mut win: u32, key: i32) -> bool {
+        let n = match key {
+            0x31..=0x39 => key - 0x31,
+            0x30 => 9,
+            0x61..=0x69 => key - 0x61,
+            0x60 => 9,
+            _ => return false,
+        } as u32;
+        if self.default_value_of("AerugoSettings", "DialogueKeys", 0).and_then(|v| v.as_i32()) == Some(0) {
+            return false;
+        }
+        let Some(class) = self.reg.class_by_name("ConWindowActive") else { return false };
+        while win != 0 && !self.class_of(win).is_some_and(|c| self.is_a(c, class)) {
+            win = self.wo_pub(win, "winParent");
+        }
+        if win == 0 || self.wb_pub(win, "bRestrictInput") {
+            return false;
+        }
+        // `moveMode` MM_None (2): not entering or leaving
+        if !matches!(self.get_prop(win, "moveMode", 0), Ok(Value::Byte(2))) {
+            return false;
+        }
+        if n as i32 >= self.wi_pub(win, "numChoices") {
+            return false;
+        }
+        let button = match self.get_prop(win, "conChoices", n) {
+            Ok(Value::Obj(b)) if b != 0 => b,
+            _ => return false,
+        };
+        if !self.ui_sensitive_pub(button) {
+            return false;
+        }
+        let mut args = vec![Value::Byte(1)];
+        let _ = self.native_widgets(button, "PressButton", &mut args);
+        true
     }
 
     /// `HandleKeyboard`: a typed character goes to the focused window and its ancestors as `KeyPressed`.

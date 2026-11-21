@@ -18,6 +18,7 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   graphics cards with ray tracing, ray-traced shadows of characters, objects, trees and doors and ray-traced ambient
   occlusion. A field-of-view setting, and how many blood stains, bullet holes and scorch marks stay. Each option can
   be set back to the original look.
+- **Quicker conversations.** Pick a dialogue choice with the number keys `1` to `9`, as well as with the mouse.
 - **Precise mouse aiming.** Tell the game your mouse's DPI, and the sensitivity slider shows how far you move the
   mouse for a full turn, so aiming feels the same on any mouse.
 - **Better sound.** More sound channels than the original's 16, so sounds no longer cut each other off, at your

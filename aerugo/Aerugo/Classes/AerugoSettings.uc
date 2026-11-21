@@ -28,6 +28,9 @@ var config int RTAO;
 var config int MaxDecals;
 // the loudness control on the sound effects: 1 even (many sounds at once do not get too loud), 0 the original's mix
 var config int Loudness;
+// in a conversation showing choices, the number keys 1..9 and 0 pick that choice: 1 on, 0 as the original (mouse,
+// arrow keys and Enter only)
+var config int DialogueKeys;
 
 defaultproperties
 {
@@ -44,4 +47,5 @@ defaultproperties
 	RTAO=1
 	MaxDecals=1000
 	Loudness=1
+	DialogueKeys=1
 }

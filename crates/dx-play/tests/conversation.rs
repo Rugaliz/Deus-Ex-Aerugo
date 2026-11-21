@@ -740,3 +740,76 @@ fn sounds_behind_walls_are_occluded() {
     assert!((hidden_level - 0.33).abs() < 1e-4, "the floor is 0.33: {hidden_level}");
     assert_eq!(back, 1.0);
 }
+
+/// The conversation window showing choices, if any (`ConWindowActive` with `numChoices` > 0).
+fn choice_window(s: &mut Session) -> Option<(u32, i32)> {
+    let c = s.vm.reg.class_by_name("ConWindowActive")?;
+    (0..s.vm.objects.len()).map(|i| 0x8000_0000u32 | (i as u32 + 1)).find_map(|r| {
+        let k = s.vm.class_of(r)?;
+        if !s.vm.is_a(k, c) {
+            return None;
+        }
+        let n = s.vm.get_prop(r, "numChoices", 0).ok()?.as_i32()?;
+        (n > 0).then_some((r, n))
+    })
+}
+
+/// Aerugo: in Paul's weapon choice, the `2` key picks the second choice as a click on it would: the choice window
+/// closes and the conversation goes on to that choice's branch (the GEP gun). With `AerugoSettings.DialogueKeys` 0 the
+/// key does nothing, as in the original. Slow (about a minute of game time).
+#[test]
+#[ignore]
+fn a_number_key_picks_a_conversation_choice() {
+    let Some(mut s) = new_game() else { return };
+    let paul = frob_paul(&mut s);
+    let mut picked = None;
+    for sec in 0..150 {
+        for _ in 0..30 {
+            s.step_bound(DT);
+        }
+        if picked.is_none() {
+            if let Some((win, n)) = choice_window(&mut s) {
+                let texts: Vec<String> = (0..n as u32)
+                    .map(|i| {
+                        let b = match s.vm.get_prop(win, "conChoices", i) { Ok(Value::Obj(b)) => b, _ => 0 };
+                        let c = match s.vm.get_prop(b, "userObject", 0) { Ok(Value::Obj(c)) => c, _ => 0 };
+                        text(s.vm.get_prop(c, "choiceText", 0))
+                    })
+                    .collect();
+                eprintln!("{sec}s: choices {texts:?}");
+                // wait for the letterbox to settle, as a player would
+                for _ in 0..30 {
+                    s.step_bound(DT);
+                }
+                let two = dx_input::key_code("2").unwrap();
+                let mut press = |s: &mut Session| {
+                    s.ui_key(two, true);
+                    s.step_bound(DT);
+                    s.ui_key(two, false);
+                    s.step_bound(DT);
+                };
+                // turned off (`AerugoSettings.DialogueKeys` 0): the key does nothing, as in the original
+                s.exec("set AerugoSettings DialogueKeys 0");
+                press(&mut s);
+                assert!(choice_window(&mut s).is_some(), "the key picked a choice although the option is off");
+                s.exec("set AerugoSettings DialogueKeys 1");
+                press(&mut s);
+                assert!(choice_window(&mut s).is_none(), "the choice window is still up after the key");
+                picked = Some(texts);
+            }
+        }
+        if picked.is_some() && s.vm.state_name(s.player) != Some("Conversation") && s.vm.state_name(paul) != Some("Conversation") {
+            let mut inv = Vec::new();
+            let mut i = match s.vm.get_prop(s.player, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+            while i != 0 {
+                inv.push(s.vm.class_of(i).map(|k| s.vm.reg.names.str(s.vm.reg.class(k).name).to_string()).unwrap_or_default());
+                i = match s.vm.get_prop(i, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+            }
+            eprintln!("over after {sec}s; inventory {inv:?}");
+            assert!(inv.iter().any(|c| c == "WeaponGEPGun"), "the second choice's weapon (the GEP gun) was not given: {inv:?}; choices {picked:?}");
+            return;
+        }
+    }
+    panic!("no choice came up, or the conversation never ended (picked: {picked:?})");
+}
+
