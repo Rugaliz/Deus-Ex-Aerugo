@@ -475,3 +475,32 @@ fn the_item_in_hand_is_drawn_after_poison_in_a_game_saved_at_another_field_of_vi
     eprintln!("after loading: instance DefaultFOV {:?} DesiredFOV {:?}, class default DesiredFOV {:?}", s.vm.get_prop(p, "DefaultFOV", 0).ok(), s.vm.get_prop(p, "DesiredFOV", 0).ok(), s.vm.default_value_of("JCDentonMale", "DesiredFOV", 0));
     poison_and_check(s);
 }
+
+/// User report: when the camera goes behind the player (death, third-person conversations) the arm and the weapon
+/// stayed in view for about a second. `URender::DrawWorld` runs `RenderOverlays` only while the viewer is not in
+/// `bBehindView` (then on its `ViewTarget`, with `SHOW_Actors`): from the frame the camera is behind, nothing in hand
+/// is drawn.
+#[test]
+fn nothing_in_hand_is_drawn_once_the_camera_is_behind_the_player() {
+    let Some(mut s) = new_game() else { return };
+    let p = s.player;
+    let w = give(&mut s, "WeaponPistol");
+    s.vm.call_by_name(p, "PutInHand", vec![Value::Obj(w)]).unwrap();
+    run(&mut s, 45);
+    s.advance(1.0 / 60.0);
+    assert!(!s.hand_overlay_poses().is_empty(), "the pistol is drawn in first person");
+    assert!(s.exec("Suicide"));
+    let (mut behind, mut drawn_behind) = (0, 0);
+    for _ in 0..120 {
+        s.advance(1.0 / 60.0);
+        if s.vm.bp(p, "bBehindView") {
+            behind += 1;
+            if !s.hand_overlay_poses().is_empty() {
+                drawn_behind += 1;
+            }
+        }
+    }
+    eprintln!("{behind} frames behind the player, {drawn_behind} with the item in hand drawn");
+    assert!(behind > 60, "the camera goes behind the dying player");
+    assert_eq!(drawn_behind, 0, "the item in hand is drawn with the camera behind the player");
+}

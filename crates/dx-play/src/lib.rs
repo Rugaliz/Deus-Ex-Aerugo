@@ -1777,8 +1777,23 @@ impl Session {
     /// `URender::DrawWorld` ends with the viewing pawn's `RenderOverlays(Canvas)` (after the depth clear): the scripts
     /// place the weapon and the item in hand at the eye (`SetLocation`/`SetRotation`), hide them when zoomed or
     /// `bHideWeapon`, and draw them with `Canvas.DrawActor` (recorded in `Vm::canvas_draws`).
+    ///
+    /// `URender::DrawWorld` (10b1ce37 on): none while the viewer is in `bBehindView` (dying, third-person
+    /// conversations, behind view); otherwise the event goes to the viewer's `ViewTarget` (the viewer itself without
+    /// one), and only while its `ShowFlags` has `SHOW_Actors` (8).
     fn render_overlays(&mut self, c: u32) {
-        self.draw_event(self.player, "RenderOverlays", vec![Value::Obj(c)]);
+        let viewer = self.player;
+        if self.vm.bp(viewer, "bBehindView") {
+            return;
+        }
+        let target = match self.vm.op(viewer, "ViewTarget") {
+            0 => viewer,
+            t => t,
+        };
+        if self.vm.ip(viewer, "ShowFlags") & 8 == 0 {
+            return;
+        }
+        self.draw_event(target, "RenderOverlays", vec![Value::Obj(c)]);
     }
 
     /// What `RenderOverlays` drew with `Canvas.DrawActor` in the last engine frame (the weapon, the item in hand), each
