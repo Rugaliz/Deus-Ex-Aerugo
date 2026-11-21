@@ -35,6 +35,8 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     unsafe { std::env::set_var("DX_STEP_PROFILE", "quiet") };
     let mut renderer = session.make_vk_renderer(&[])?;
     println!("Vulkan device: {}; {}x{}; {seconds} s, turning {turn_deg_per_s} deg/s", renderer.cx.device_name, size.0, size.1);
+    let at = session.player_location();
+    println!("player at {:.1},{:.1},{:.1}", at[0], at[1], at[2]);
     let mut prep = Vec::new();
     // warm up: textures, meshes and caches of the first views
     let mut last = Instant::now();
@@ -50,7 +52,8 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     let mut frames: Vec<Frame> = Vec::new();
     let mut prep_sum: BTreeMap<&'static str, f64> = BTreeMap::new();
     let mut render_sum: BTreeMap<&'static str, f64> = BTreeMap::new();
-    let mut yaw = 0.0f32;
+    // `DX_BENCH_YAW`: the view's yaw at the start in degrees (0 otherwise)
+    let mut yaw = std::env::var("DX_BENCH_YAW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
     let profiler = start_profile(profile.is_some())?;
     let start = Instant::now();
     last = Instant::now();
@@ -138,6 +141,15 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         }
         std::fs::write(&path, out).map_err(|e| e.to_string())?;
         println!("per frame: {path}");
+    }
+    // `DX_BENCH_SHOT=file.png`: a picture of the last view, as the bench drew it
+    if let Ok(path) = std::env::var("DX_BENCH_SHOT") {
+        let mut r = Some(renderer);
+        let img = session.render_vk(&mut r, size.0, size.1)?;
+        std::fs::write(&path, dx_soft::png(img.width, img.height, &img.rgba)).map_err(|e| e.to_string())?;
+        println!("picture: {path}");
+        r.unwrap().destroy();
+        return Ok(());
     }
     renderer.destroy();
     Ok(())
