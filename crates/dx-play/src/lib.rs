@@ -130,6 +130,8 @@ pub struct Session {
     /// The walk's repaired render bounds (`dx_vis::bound::repaired_render_bounds`) and the model they were made for
     /// (movers filtered in, the VM model's generation, the map package).
     render_bounds: Option<((bool, u64, usize), Vec<Option<([f32; 3], [f32; 3])>>)>,
+    /// `brush_export`'s answers by brush object id (registry ids stay for the session).
+    brush_exports: ue_registry::FxHashMap<u32, Option<(usize, usize)>>,
     /// The stored level model's subtree polygon boxes (`dx_vis::bound::static_subtree_bounds`) and its map package.
     static_subtree_bounds: Option<(usize, Vec<Option<([f32; 3], [f32; 3])>>)>,
     /// Filter the movers into the BSP the visibility walk sees (default on; off for comparisons).
@@ -204,7 +206,7 @@ impl Session {
         let rot = view.find_actor("PlayerStart").map(|(_, r)| r).unwrap_or([0.0; 3]);
         let player = vm.login_player("JCDentonMale").map_err(|e| e.to_string())?;
         vm.save_dir = Session::default_save_dir();
-        let mut s = Session { current_levels: Default::default(), vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, render_bounds: None, static_subtree_bounds: None, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
+        let mut s = Session { current_levels: Default::default(), vm, view, player, pitch: 0, yaw: rot[1] as i32, issues: load.issues, frames: 0, fov: 90.0, show_markers: false, draw_meshes: true, draw_sprites: true, show_ui: true, quit: false, meshes_drawn: 0, map_pkg: pi, lightmaps: true, brightness: 0.6, world_lighting: None, prev_use: false, input: dx_input::InputProcessor::new(load_bindings()), game: game.to_path_buf(), audio: None, map_name: map.to_string(), map_changed: false, shared_bindings: Default::default(), display: Default::default(), view_rect: None, clock: Default::default(), calc_view: None, vis_flags: None, brush_tracker: None, brush_polys: Default::default(), vis_movers: true, brush_tracker_synced: 0, render_bounds: None, brush_exports: Default::default(), static_subtree_bounds: None, vis_cache: None, vis_size: (800, 600), world_light: None, wants_world_light: false, fog_skip: false, light_frame: 0, light_time: 0.0, light_step: 0, canvas: 0, third_person: Vec::new(), anim_surfs: None, anim_frames: Default::default(), coronas: [(0, 0.0); corona::MAX_CORONAS], corona_time: None, subview_vis: Vec::new(), subview_coronas: Vec::new(), subview_frames: Vec::new(), surface_details: Default::default(), draw_this_step: true, ui_mouse_last: None, console_time: None, mouse_turns_view: true, runtime_published: Default::default(), prep_ms: Vec::new(), vis_boxes: Default::default(), vis_cands: None, mouse_scale: 0.5, brightness_fixed: false, settings_quality: false, max_decals: 0, decal_order: Vec::new() };
         s.shade_filled_faces();
         s.install_key_commands();
         s.apply_yaw();
@@ -1831,11 +1833,22 @@ impl Session {
 
     /// Makes sure the renderer has the brush models of all movers and tells it where they stand now, and which movers
     /// the main view draws through its lists (the fragments the walk drew; then even a hidden mover's).
+    /// The package and export of a brush model (registry object id), looked up by its path once.
+    pub(crate) fn brush_export(&mut self, brush: u32) -> Option<(usize, usize)> {
+        if let Some(&hit) = self.brush_exports.get(&brush) {
+            return hit;
+        }
+        let path = self.vm.reg.obj_path(ue_registry::ObjId(brush)).to_string();
+        let hit = self.vm.reg.export_by_path(&path);
+        self.brush_exports.insert(brush, hit);
+        hit
+    }
+
     fn sync_movers(&mut self, renderer: &mut dx_vk::renderer::Renderer) {
         let mut list = Vec::new();
         for a in self.vm.live_actors() {
             let Some(d) = self.vm.mover_draw(a) else { continue };
-            let Some((pi, export)) = self.vm.reg.export_by_path(&d.brush) else { continue };
+            let Some((pi, export)) = self.brush_export(d.brush) else { continue };
             if pi != self.map_pkg || !self.ensure_mover_world(renderer, a, export, d.location, d.rotation) {
                 continue;
             }

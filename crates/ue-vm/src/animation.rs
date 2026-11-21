@@ -666,8 +666,8 @@ fn pose_mix(out: &mut Vec<(usize, f32)>, src: &[(usize, f32)], k: f32) {
 /// What the renderer needs to draw a mover (a brush actor): its brush model and where it stands.
 #[derive(Debug, Clone)]
 pub struct MoverDraw {
-    /// Object path of the brush `Model`.
-    pub brush: String,
+    /// The brush `Model` (registry object id; `Registry::obj_path` gives its path).
+    pub brush: u32,
     pub location: [f32; 3],
     pub rotation: [i32; 3],
     /// Point of the brush model that sits at `location` (the model's vertices are taken relative to it).
@@ -677,21 +677,20 @@ pub struct MoverDraw {
 impl Vm {
     /// The drawing description of a mover (an actor of class `Mover` with a brush), or `None`.
     pub fn mover_draw(&mut self, a: u32) -> Option<MoverDraw> {
-        let mover = self.reg.class_by_name("Mover")?;
+        let o = self.offsets();
         let class = self.class_of(a)?;
-        if !self.is_a(class, mover) || self.bp(a, "bHidden") {
+        if !self.is_a(class, o.class_mover) || self.bp(a, "bHidden") {
             return None;
         }
-        let brush = self.op(a, "Brush");
+        let brush = self.u32_at(a, o.brush);
         if brush == 0 {
             return None;
         }
-        let o = self.offsets();
-        let pre_pivot = match self.get_prop(a, "PrePivot", 0) {
+        let pre_pivot = match self.get_prop_static(a, "PrePivot", 0) {
             Ok(crate::Value::Vector(v)) => v,
             _ => [0.0; 3],
         };
-        Some(MoverDraw { brush: self.reg.obj_path(ue_registry::ObjId(brush)).to_string(), location: self.vec_at(a, o.location), rotation: self.rot_of(a), pre_pivot })
+        Some(MoverDraw { brush, location: self.vec_at(a, o.location), rotation: self.rot_of(a), pre_pivot })
     }
 
     /// The mesh drawing description of an actor, or `None` if it is not drawn as a mesh (no mesh, hidden, other draw type).

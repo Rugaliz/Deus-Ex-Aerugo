@@ -628,7 +628,7 @@ impl Vm {
                         return None;
                     }
                     let (w_spec, h_spec) = (bl(args, 0, false), bl(args, 2, false));
-                    let g = |vm: &Vm, n: &str| vm.wf_pub(w, n);
+                    let g = |vm: &Vm, n: &'static str| vm.wf_pub(w, n);
                     let (cl, cr, ct, cb) = (g(self, "childLeftMargin"), g(self, "childRightMargin"), g(self, "childTopMargin"), g(self, "childBottomMargin"));
                     let (ml, mr, mt, mb) = (g(self, "leftMargin"), g(self, "rightMargin"), g(self, "topMargin"), g(self, "bottomMargin"));
                     let from_border = self.wb_pub(w, "bMarginsFromBorder");
@@ -653,7 +653,7 @@ impl Vm {
                 (Kind::Border, "ConfigurationChanged") => {
                     let top = self.visible_child(w, true);
                     if top != 0 {
-                        let g = |vm: &Vm, n: &str| vm.wf_pub(w, n);
+                        let g = |vm: &Vm, n: &'static str| vm.wf_pub(w, n);
                         let (mut x, mut y) = (g(self, "childLeftMargin"), g(self, "childTopMargin"));
                         let mut cw = g(self, "width") - (g(self, "childRightMargin") + g(self, "childLeftMargin"));
                         let mut ch = g(self, "height") - (g(self, "childBottomMargin") + g(self, "childTopMargin"));
@@ -689,7 +689,7 @@ impl Vm {
     pub(crate) fn border_compute_margins(&mut self, w: u32) {
         let (mut l, mut t, mut r, mut b) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         if self.wi_pub(w, "borderStyle") != 0 {
-            let size = |vm: &mut Vm, n: &str| {
+            let size = |vm: &mut Vm, n: &'static str| {
                 let tex = vm.wo_ref(w, n);
                 vm.texture_size(tex)
             };

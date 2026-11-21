@@ -753,20 +753,20 @@ impl Vm {
     }
 
     fn tick_timer(&mut self, obj: u32, dt: f32) -> Result<(), VmError> {
-        let rate = self.get_prop(obj, "TimerRate", 0)?.as_f32().unwrap_or(0.0);
+        let rate = self.get_prop_static(obj, "TimerRate", 0)?.as_f32().unwrap_or(0.0);
         if rate <= 0.0 {
             return Ok(());
         }
-        let counter = self.get_prop(obj, "TimerCounter", 0)?.as_f32().unwrap_or(0.0) + dt;
+        let counter = self.get_prop_static(obj, "TimerCounter", 0)?.as_f32().unwrap_or(0.0) + dt;
         if counter < rate {
-            self.set_prop(obj, "TimerCounter", 0, Value::Float(counter))?;
+            self.set_prop_static(obj, "TimerCounter", 0, Value::Float(counter))?;
             return Ok(());
         }
         // Whole periods elapsed are subtracted; a one-shot timer clears its rate; `Timer` runs once.
         let periods = (counter / rate).floor();
-        self.set_prop(obj, "TimerCounter", 0, Value::Float(counter - periods * rate))?;
-        if periods != 0.0 && self.get_prop(obj, "bTimerLoop", 0)? != Value::Bool(true) {
-            self.set_prop(obj, "TimerRate", 0, Value::Float(0.0))?;
+        self.set_prop_static(obj, "TimerCounter", 0, Value::Float(counter - periods * rate))?;
+        if periods != 0.0 && self.get_prop_static(obj, "bTimerLoop", 0)? != Value::Bool(true) {
+            self.set_prop_static(obj, "TimerRate", 0, Value::Float(0.0))?;
         }
         self.send_event(obj, "Timer", vec![])?;
         Ok(())

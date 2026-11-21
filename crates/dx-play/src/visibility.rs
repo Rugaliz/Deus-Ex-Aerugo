@@ -33,8 +33,7 @@ impl Session {
     /// What the tracker needs of mover `a` now: placement, `ABrush::BuildCoords`' point frame and its brush polygons.
     fn tracker_input(&mut self, a: u32) -> Option<(dx_vis::dynbsp::Mover, Vec<dx_vis::dynbsp::Poly>)> {
         let brush = self.vm.op(a, "Brush");
-        let path = self.vm.reg.obj_path(ue_registry::ObjId(brush)).to_string();
-        let (pi, export) = self.vm.reg.export_by_path(&path)?;
+        let (pi, export) = self.brush_export(brush)?;
         if pi != self.map_pkg {
             return None;
         }

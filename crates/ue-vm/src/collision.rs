@@ -624,8 +624,8 @@ impl Vm {
     }
 
     /// A `Scale` struct property (`Scale`, `SheerRate`, `SheerAxis`); unit and unsheered when missing.
-    fn scale_prop(&mut self, a: u32, name: &str) -> (Vec3, f32, u8) {
-        match self.get_prop(a, name, 0) {
+    fn scale_prop(&mut self, a: u32, name: &'static str) -> (Vec3, f32, u8) {
+        match self.get_prop_static(a, name, 0) {
             Ok(crate::Value::Struct(_, b)) if b.len() >= 17 => {
                 let f = |i: usize| f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
                 ([f(0), f(4), f(8)], f(12), b[16])

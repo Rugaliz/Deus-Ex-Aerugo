@@ -76,33 +76,33 @@ pub struct UiState {
 impl Vm {
     // ---- property access ----------------------------------------------------------------------------------
 
-    fn wf(&self, o: u32, n: &str) -> f32 {
-        self.get_prop(o, n, 0).ok().and_then(|v| v.as_f32()).unwrap_or(0.0)
+    fn wf(&self, o: u32, n: &'static str) -> f32 {
+        self.get_prop_static(o, n, 0).ok().and_then(|v| v.as_f32()).unwrap_or(0.0)
     }
-    fn wi(&self, o: u32, n: &str) -> i32 {
-        self.get_prop(o, n, 0).ok().and_then(|v| v.as_i32()).unwrap_or(0)
+    fn wi(&self, o: u32, n: &'static str) -> i32 {
+        self.get_prop_static(o, n, 0).ok().and_then(|v| v.as_i32()).unwrap_or(0)
     }
-    fn wb(&self, o: u32, n: &str) -> bool {
-        self.get_prop(o, n, 0).ok().and_then(|v| v.as_bool()).unwrap_or(false)
+    fn wb(&self, o: u32, n: &'static str) -> bool {
+        self.get_prop_static(o, n, 0).ok().and_then(|v| v.as_bool()).unwrap_or(false)
     }
     /// An object reference property; destroyed objects read as none.
-    fn wo(&self, o: u32, n: &str) -> u32 {
-        match self.get_prop(o, n, 0) {
+    fn wo(&self, o: u32, n: &'static str) -> u32 {
+        match self.get_prop_static(o, n, 0) {
             Ok(Value::Obj(r)) if self.is_live(r) => r,
             _ => 0,
         }
     }
-    fn set_f(&mut self, o: u32, n: &str, v: f32) {
-        let _ = self.set_prop(o, n, 0, Value::Float(v));
+    fn set_f(&mut self, o: u32, n: &'static str, v: f32) {
+        let _ = self.set_prop_static(o, n, 0, Value::Float(v));
     }
-    fn set_b(&mut self, o: u32, n: &str, v: bool) {
-        let _ = self.set_prop(o, n, 0, Value::Bool(v));
+    fn set_b(&mut self, o: u32, n: &'static str, v: bool) {
+        let _ = self.set_prop_static(o, n, 0, Value::Bool(v));
     }
-    fn set_i(&mut self, o: u32, n: &str, v: i32) {
-        let _ = self.set_prop(o, n, 0, Value::Int(v));
+    fn set_i(&mut self, o: u32, n: &'static str, v: i32) {
+        let _ = self.set_prop_static(o, n, 0, Value::Int(v));
     }
-    fn set_o(&mut self, o: u32, n: &str, v: u32) {
-        let _ = self.set_prop(o, n, 0, Value::Obj(v));
+    fn set_o(&mut self, o: u32, n: &'static str, v: u32) {
+        let _ = self.set_prop_static(o, n, 0, Value::Obj(v));
     }
 
     /// Delivers a script event to a window; errors in the event are logged and swallowed, as the engine keeps running.
@@ -134,22 +134,22 @@ impl Vm {
     // crate-visible accessors for the natives (same module family)
     pub(crate) fn ui_lock_pub(&mut self, w: u32) { self.ui_lock(w) }
     pub(crate) fn ui_unlock_pub(&mut self, w: u32) { self.ui_unlock(w) }
-    pub(crate) fn wo_ref_pub(&self, o: u32, n: &str) -> u32 { self.wo_ref(o, n) }
-    pub(crate) fn wf_pub(&self, o: u32, n: &str) -> f32 { self.wf(o, n) }
-    pub(crate) fn wi_pub(&self, o: u32, n: &str) -> i32 { self.wi(o, n) }
-    pub(crate) fn wb_pub(&self, o: u32, n: &str) -> bool { self.wb(o, n) }
-    pub(crate) fn wo_pub(&self, o: u32, n: &str) -> u32 { self.wo(o, n) }
-    pub(crate) fn set_f_pub(&mut self, o: u32, n: &str, v: f32) { self.set_f(o, n, v) }
-    pub(crate) fn set_b_pub(&mut self, o: u32, n: &str, v: bool) { self.set_b(o, n, v) }
-    pub(crate) fn set_i_pub(&mut self, o: u32, n: &str, v: i32) { self.set_i(o, n, v) }
-    pub(crate) fn set_o_pub(&mut self, o: u32, n: &str, v: u32) { self.set_o(o, n, v) }
+    pub(crate) fn wo_ref_pub(&self, o: u32, n: &'static str) -> u32 { self.wo_ref(o, n) }
+    pub(crate) fn wf_pub(&self, o: u32, n: &'static str) -> f32 { self.wf(o, n) }
+    pub(crate) fn wi_pub(&self, o: u32, n: &'static str) -> i32 { self.wi(o, n) }
+    pub(crate) fn wb_pub(&self, o: u32, n: &'static str) -> bool { self.wb(o, n) }
+    pub(crate) fn wo_pub(&self, o: u32, n: &'static str) -> u32 { self.wo(o, n) }
+    pub(crate) fn set_f_pub(&mut self, o: u32, n: &'static str, v: f32) { self.set_f(o, n, v) }
+    pub(crate) fn set_b_pub(&mut self, o: u32, n: &'static str, v: bool) { self.set_b(o, n, v) }
+    pub(crate) fn set_i_pub(&mut self, o: u32, n: &'static str, v: i32) { self.set_i(o, n, v) }
+    pub(crate) fn set_o_pub(&mut self, o: u32, n: &'static str, v: u32) { self.set_o(o, n, v) }
     pub(crate) fn ui_add_child_pub(&mut self, p: u32, c: u32, top: bool) { self.ui_add_child(p, c, top) }
     pub(crate) fn ui_set_sensitivity_pub(&mut self, w: u32, s: bool) { self.ui_set_sensitivity(w, s) }
     pub(crate) fn ui_sensitive_recursive_pub(&self, w: u32) -> bool { self.ui_sensitive_recursive(w) }
     pub(crate) fn ui_root_of_pub(&self, w: u32) -> u32 { self.ui_root_of(w) }
     /// An object reference property as stored (also resources such as textures, which are path ids, not instances).
-    pub(crate) fn wo_ref(&self, o: u32, n: &str) -> u32 {
-        match self.get_prop(o, n, 0) {
+    pub(crate) fn wo_ref(&self, o: u32, n: &'static str) -> u32 {
+        match self.get_prop_static(o, n, 0) {
             Ok(Value::Obj(r)) => r,
             _ => 0,
         }
@@ -288,8 +288,8 @@ impl Vm {
 
     /// `XWindow::Init`: the state a window starts with, then linking it under `parent`.
     fn ui_init(&mut self, w: u32, parent: u32) {
-        let fl = |vm: &mut Vm, n: &str, v: f32| vm.set_f(w, n, v);
-        let bl = |vm: &mut Vm, n: &str, v: bool| vm.set_b(w, n, v);
+        let fl = |vm: &mut Vm, n: &'static str, v: f32| vm.set_f(w, n, v);
+        let bl = |vm: &mut Vm, n: &'static str, v: bool| vm.set_b(w, n, v);
         self.set_i(w, "windowType", 0);
         self.set_o(w, "parentOwner", parent);
         for (n, v) in [("bIsVisible", false), ("bBeingDestroyed", false), ("bIsSelectable", false), ("bIsSensitive", true), ("bDrawRawBackground", true), ("bStretchBackground", false), ("bSmoothBackground", false), ("bSpecialText", true), ("bNeedsReconfigure", true), ("bLastHeightSpecified", true), ("bLastWidthSpecified", true), ("bConfigured", false), ("bNeedsQuery", true), ("bTickEnabled", false)] {
@@ -979,7 +979,7 @@ impl Vm {
         if w == 0 {
             0.0
         } else {
-            self.wf(w, name)
+            self.get_prop(w, name, 0).ok().and_then(|v| v.as_f32()).unwrap_or(0.0)
         }
     }
 

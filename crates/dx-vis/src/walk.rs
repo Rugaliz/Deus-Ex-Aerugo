@@ -358,6 +358,9 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
     let mut scratch = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
     scratch.reset(n);
     let (mut chunks, mut finals, mut light_lists) = (std::mem::take(&mut scratch.chunks), std::mem::take(&mut scratch.finals), std::mem::take(&mut scratch.light_lists));
+    // the nodes whose lists got something (the next walk empties only those)
+    let mut touched: Vec<usize> = std::mem::take(&mut scratch.touched);
+    touched.push(0);
     let mut lit_surfs: std::collections::HashSet<u32> = Default::default();
     // per light item: (light, volumetric, linked to a leaf already)
     light_lists[0].extend((0..lights.len()).map(|li| (li, lights[li].volumetric, false)));
@@ -504,6 +507,7 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
                     }
                     if nd.i_front >= 0 {
                         light_lists[nd.i_front as usize].push((li, volumetric && dist as f64 > rv * -25.0, front_linked));
+                        touched.push(nd.i_front as usize);
                     }
                     if dist >= r {
                         continue;
@@ -531,6 +535,7 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
                     }
                     if nd.i_back >= 0 {
                         light_lists[nd.i_back as usize].push((li, volumetric && rv * 25.0 > dist as f64, back_linked));
+                        touched.push(nd.i_back as usize);
                     }
                 }
             }
@@ -540,15 +545,19 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
                 if let Some(q) = front {
                     if nd.i_front >= 0 {
                         chunks[nd.i_front as usize].push(q);
+                        touched.push(nd.i_front as usize);
                     } else if outside || csg(node) {
                         finals[node][0].push(q);
+                        touched.push(node);
                     }
                 }
                 if let Some(q) = back {
                     if nd.i_back >= 0 {
                         chunks[nd.i_back as usize].push(q);
+                        touched.push(nd.i_back as usize);
                     } else if outside && !csg(node) {
                         finals[node][1].push(q);
+                        touched.push(node);
                     }
                 }
             }
@@ -715,7 +724,7 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
     vis.surf_vol_lights = surf_vol.into_iter().collect();
     vis.surf_vol_lights.sort_unstable();
     vis.leaf_lights = leaf_links.into_iter().map(|(leaf, v)| (leaf, v.iter().rev().map(|&(id, _, _)| id).collect())).collect();
-    SCRATCH.with(|s| *s.borrow_mut() = Scratch { chunks, finals, light_lists });
+    SCRATCH.with(|s| *s.borrow_mut() = Scratch { chunks, finals, light_lists, touched });
     (vis, children)
 }
 
@@ -726,19 +735,36 @@ struct Scratch {
     chunks: Vec<Vec<Piece>>,
     finals: Vec<[Vec<Piece>; 2]>,
     light_lists: Vec<Vec<(usize, bool, bool)>>,
+    /// The nodes whose lists the last walk put something in (only those can hold leftovers).
+    touched: Vec<usize>,
 }
 
 impl Scratch {
     fn reset(&mut self, n: usize) {
+        let clear = |s: &mut Scratch, i: usize| {
+            s.chunks[i].clear();
+            s.finals[i][0].clear();
+            s.finals[i][1].clear();
+            s.light_lists[i].clear();
+        };
+        if self.chunks.len() == n && self.finals.len() == n && self.light_lists.len() == n {
+            let touched = std::mem::take(&mut self.touched);
+            for &i in &touched {
+                if i < n {
+                    clear(self, i);
+                }
+            }
+            self.touched = touched;
+            self.touched.clear();
+            return;
+        }
         self.chunks.resize_with(n, Vec::new);
         self.finals.resize_with(n, Default::default);
         self.light_lists.resize_with(n, Vec::new);
-        self.chunks.iter_mut().for_each(Vec::clear);
-        self.finals.iter_mut().for_each(|f| {
-            f[0].clear();
-            f[1].clear();
-        });
-        self.light_lists.iter_mut().for_each(Vec::clear);
+        for i in 0..n {
+            clear(self, i);
+        }
+        self.touched.clear();
     }
 }
 

@@ -70,7 +70,7 @@ impl Vm {
         self.ui.scale_enums.remove(&w);
     }
 
-    fn sf(&self, w: u32, n: &str) -> f32 {
+    fn sf(&self, w: u32, n: &'static str) -> f32 {
         self.wf_pub(w, n)
     }
 
@@ -509,9 +509,9 @@ impl Vm {
 
     pub(crate) fn scale_draw(&mut self, w: u32, g: u32) {
         let vertical = self.wi_pub(w, "orientation") == 1;
-        let obj = |vm: &Vm, n: &str| vm.wo_ref_pub(w, n);
+        let obj = |vm: &Vm, n: &'static str| vm.wo_ref_pub(w, n);
         let col = |vm: &Vm, n: &str| vm.color_bytes(w, n);
-        let st = |vm: &Vm, n: &str| vm.wi_pub(w, n) as u8;
+        let st = |vm: &Vm, n: &'static str| vm.wi_pub(w, n) as u8;
         let scale_rect = [self.sf(w, "scaleX"), self.sf(w, "scaleY"), self.sf(w, "scaleW"), self.sf(w, "scaleH")];
         let (t, rep, sty, c, b, bc) = (obj(self, "scaleTexture"), self.wb_pub(w, "bRepeatScaleTexture"), st(self, "scaleStyle"), col(self, "scaleColor"), self.sf(w, "scaleBorderSize"), col(self, "scaleBorderColor"));
         self.scale_draw_texture(w, g, t, scale_rect, rep, sty, c, b, bc, 0, 0, [0.0; 4], [0.0; 4]);

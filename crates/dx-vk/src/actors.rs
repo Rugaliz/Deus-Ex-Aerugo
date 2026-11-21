@@ -133,6 +133,9 @@ const TEX_MASKED: u8 = 1;
 const TEX_DETAIL: u8 = 2;
 
 pub struct ActorRenderer {
+    /// The triangles built for each mesh actor of the current `draw_steps` (by the draw's address): its opaque and its
+    /// blended pass draw the same triangles, built once.
+    built: HashMap<usize, std::rc::Rc<Vec<lodmesh::Tri>>>,
     meshes: HashMap<String, Option<CpuMesh>>,
     textures: HashMap<TexKey, Option<Tex>>,
     tex_set_layout: vk::DescriptorSetLayout,
@@ -542,6 +545,7 @@ impl ActorRenderer {
                 lod_end: MAX_LOD_VERTICES,
                 meshes: HashMap::new(),
                 textures: HashMap::new(),
+                built: HashMap::new(),
                 tex_set_layout,
                 tex_pool,
                 sampler,
@@ -724,6 +728,7 @@ impl ActorRenderer {
 
     /// Draws `(pass, actor)` steps: pass 0 the opaque parts, pass 1 the translucent and modulated ones, pass 2 all.
     fn draw_steps(&mut self, cx: &Context, cb: vk::CommandBuffer, cam: &Camera, aspect: f32, steps: &[(u8, &ActorDraw)], pre: Option<[f32; 16]>) {
+        self.built.clear();
         let vp = match pre {
             Some(m) => mat_mul(&crate::world::view_proj(cam, aspect, 1.0, 65536.0), &m),
             None => crate::world::view_proj(cam, aspect, 1.0, 65536.0),
@@ -864,7 +869,6 @@ impl ActorRenderer {
     fn draw_mesh(&mut self, cx: &Context, cb: vk::CommandBuffer, vp: &[f32; 16], view: &MeshView, pass: u8, d: &ActorDraw, mark: Option<u32>) -> bool {
         let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { return false };
         let lod = &mesh.data.lod;
-        let world = posed_vertices(lod, d);
         let actor = MeshActor {
             location: d.location,
             draw_scale: d.scale,
@@ -894,10 +898,19 @@ impl ActorRenderer {
         if Self::env_texture(mesh, d).is_none() {
             return false;
         }
-        let tris = if mesh.data.plain {
-            lodmesh::build_plain(&lod.mesh, &world, view, &actor, lights.as_ref())
-        } else {
-            lodmesh::build(lod, &world, view, &actor, lights.as_ref())
+        let key = d as *const ActorDraw as usize;
+        let tris = match self.built.get(&key) {
+            Some(t) => t.clone(),
+            None => {
+                let world = posed_vertices(lod, d);
+                let t = std::rc::Rc::new(if mesh.data.plain {
+                    lodmesh::build_plain(&lod.mesh, &world, view, &actor, lights.as_ref())
+                } else {
+                    lodmesh::build(lod, &world, view, &actor, lights.as_ref())
+                });
+                self.built.insert(key, t.clone());
+                t
+            }
         };
         // per-pixel lighting: the actor's light list in the slot buffer (header: ambient and scale, eye and count;
         // then position and 1/radius, colour for each light)
@@ -915,17 +928,42 @@ impl ActorRenderer {
         // each triangle's texture and blend, then runs of equal ones
         let mut runs: Vec<(vk::DescriptorSet, Kind, bool, usize, usize)> = Vec::new();
         let mut verts: Vec<LodVertex> = Vec::with_capacity(tris.len() * 3);
-        for t in &tris {
-            let Some(path) = Self::face_texture(mesh, d, t.slot as usize, t.flags) else { continue };
-            let own = match self.textures.get(&(path.to_string(), TEX_PLAIN)) {
-                Some(Some(tex)) => tex.masked,
-                _ => continue,
+        // each face's textures by its slot and whether it is an environment face, looked up once per draw
+        let mut faces: Vec<((u16, bool), Option<(&Tex, Option<&Tex>)>)> = Vec::new();
+        for t in tris.iter() {
+            let face = (t.slot, t.flags & PF_ENVIRONMENT != 0);
+            let found = match faces.iter().find(|f| f.0 == face) {
+                Some(f) => f.1,
+                None => {
+                    let found = Self::face_texture(mesh, d, t.slot as usize, t.flags).and_then(|path| {
+                        let plain = match self.textures.get(&(path.to_string(), TEX_PLAIN)) {
+                            Some(Some(tex)) => tex,
+                            _ => return None,
+                        };
+                        let masked = match self.textures.get(&(path.to_string(), TEX_MASKED)) {
+                            Some(Some(tex)) => Some(tex),
+                            _ => None,
+                        };
+                        Some((plain, masked))
+                    });
+                    faces.push((face, found));
+                    found
+                }
             };
+            let Some((plain, masked_tex)) = found else { continue };
+            let own = plain.masked;
             let (kind, masked) = Self::face_blend(t.flags, own);
             if (pass == 0 && kind != Kind::Opaque) || (pass == 1 && kind == Kind::Opaque) {
                 continue;
             }
-            let Some(Some(tex)) = self.textures.get(&(path.to_string(), if masked { TEX_MASKED } else { TEX_PLAIN })) else { continue };
+            let tex = if masked {
+                match masked_tex {
+                    Some(m) => m,
+                    None => continue,
+                }
+            } else {
+                plain
+            };
             let set = if t.flags & PF_NO_SMOOTH != 0 { tex.set_nearest } else { tex.set };
             let first = verts.len();
             for c in &t.corners {

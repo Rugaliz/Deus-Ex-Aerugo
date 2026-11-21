@@ -78,7 +78,7 @@ impl Vm {
     /// found takes both the upper- and lower-case slot. Children are visited from the bottom up (visible ones only),
     /// not into nested modal windows and not when insensitive.
     fn ui_accelerator_window(&self, modal: u32, key: u16) -> u32 {
-        fn chain(vm: &Vm, w: u32, prop: &str) -> bool {
+        fn chain(vm: &Vm, w: u32, prop: &'static str) -> bool {
             let mut c = w;
             while c != 0 {
                 if !vm.wb_pub(c, prop) {

@@ -371,6 +371,8 @@ pub struct Vm {
     pub(crate) alliance_layout: Option<ai_move::AllianceLayout>,
     /// Property offsets by class and name; keyed by the name's address (a `&'static str` literal), not its bytes.
     pub(crate) prop_cache: ue_registry::FxHashMap<(ClassId, usize, usize), Option<(usize, u32)>>,
+    /// `get_prop_static`'s lookups: (object's class, name address, name length) -> (declaring class, property index).
+    static_props: std::cell::RefCell<ue_registry::FxHashMap<(ClassId, usize, usize), Option<(ClassId, usize)>>>,
     /// A direct-mapped front of `prop_cache` (class, name address, name length, result): most lookups end here.
     pub(crate) prop_fast: Box<[(u32, usize, usize, Option<(usize, u32)>)]>,
     /// Per function, what a call needs from its definition (`call_plan`).
@@ -534,6 +536,7 @@ impl Vm {
             level_brush: 0,
             player_slot_input: None,
             prop_cache: Default::default(),
+            static_props: Default::default(),
             call_plans: Default::default(),
             frame_pool: Vec::new(),
             class_name_cache: Default::default(),
@@ -671,6 +674,56 @@ impl Vm {
             return Err(VmError::Runtime(format!("{name}[{elem}] out of range")));
         }
         self.read_prop(&o.mem, def, (def.offset + elem * def.elem_size) as usize)
+    }
+
+    /// The property `name` (a name fixed in the code) of an object's class, cached by the name's address: one small
+    /// hash instead of interning the name and looking it up (the window system reads its fields this way every frame).
+    fn static_prop_def(&self, class: ClassId, name: &'static str) -> Option<&PropDef> {
+        let key = (class, name.as_ptr() as usize, name.len());
+        let hit = self.static_props.borrow().get(&key).copied();
+        let found = match hit {
+            Some(found) => found,
+            None => {
+                let found = self.reg.find_prop(class, name).map(|d| {
+                    let mut c = Some(class);
+                    let mut at = None;
+                    while let Some(k) = c {
+                        if let Some(i) = self.reg.class(k).props.iter().position(|p| std::ptr::eq(p, d)) {
+                            at = Some((k, i));
+                            break;
+                        }
+                        c = self.reg.class(k).super_id;
+                    }
+                    at
+                });
+                let found = found.flatten();
+                self.static_props.borrow_mut().insert(key, found);
+                found
+            }
+        };
+        found.map(|(c, i)| &self.reg.class(c).props[i])
+    }
+
+    /// `get_prop` for a name fixed in the code (see `static_prop_def`).
+    pub fn get_prop_static(&self, obj: u32, name: &'static str, elem: u32) -> Result<Value, VmError> {
+        let i = ref_instance(obj).ok_or_else(|| VmError::Runtime("not an object".into()))?;
+        let o = self.objects.get(i).ok_or_else(|| VmError::Runtime("bad object".into()))?;
+        let def = self.static_prop_def(o.class, name).ok_or_else(|| VmError::Runtime(format!("no property {name}")))?;
+        if elem >= def.dim {
+            return Err(VmError::Runtime(format!("{name}[{elem}] out of range")));
+        }
+        self.read_prop(&o.mem, def, (def.offset + elem * def.elem_size) as usize)
+    }
+
+    /// `set_prop` for a name fixed in the code (see `static_prop_def`).
+    pub fn set_prop_static(&mut self, obj: u32, name: &'static str, elem: u32, v: Value) -> Result<(), VmError> {
+        let i = ref_instance(obj).ok_or_else(|| VmError::Runtime("not an object".into()))?;
+        let class = self.objects.get(i).ok_or_else(|| VmError::Runtime("bad object".into()))?.class;
+        let def = self.static_prop_def(class, name).cloned().ok_or_else(|| VmError::Runtime(format!("no property {name}")))?;
+        if elem >= def.dim {
+            return Err(VmError::Runtime(format!("{name}[{elem}] out of range")));
+        }
+        self.write_prop(i, &def, (def.offset + elem * def.elem_size) as usize, v)
     }
 
     /// Writes a property of an object by name.
