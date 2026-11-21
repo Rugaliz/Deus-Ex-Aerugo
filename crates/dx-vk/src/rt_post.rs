@@ -31,7 +31,8 @@ pub struct Caster {
     pub light: [f32; 4],
     /// The object's middle and radius.
     pub centre: [f32; 4],
-    /// x: how dark its shadow is (0..1), y: how far past the object it reaches.
+    /// x: how dark its shadow is (0..1), y: how far past the object it reaches, z: 1 for a corpse (two rays where its
+    /// shadow is faint).
     pub params: [f32; 4],
 }
 

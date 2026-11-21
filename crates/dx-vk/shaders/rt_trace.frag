@@ -13,7 +13,8 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 struct Caster {
     vec4 light;  // the light's position, its size (the disc the rays spread over)
     vec4 centre; // the object's middle and radius
-    vec4 params; // x: how dark (the light's share of the object's light), y: how far past the object its shadow reaches
+    vec4 params; // x: how dark (the light's share of the object's light), y: how far past the object its shadow reaches,
+                 // z: 1 for a corpse
 };
 layout(std430, set = 0, binding = 2) readonly buffer Casters { Caster casters[]; };
 // the alpha-tested faces of meshes (cut-out leaves): the mesh structure's geometry 2 m + 1 is mesh m's, its faces from
@@ -142,13 +143,21 @@ void main() {
         if (ndl <= 0.0) continue;
         vec3 side = normalize(abs(l.z) < 0.9 ? cross(l, vec3(0.0, 0.0, 1.0)) : cross(l, vec3(1.0, 0.0, 0.0)));
         vec3 up = cross(side, l);
-        // four rays over the light's disc; four more between them where those disagree (a shadow's edge)
+        // the most light the point can lose to this caster (see below)
+        float most = c.params.x * ndl * min(lc * lc / (lv * lv), 1.0);
         float hidden = 0.0;
-        for (int k = 0; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
-        if (hidden > 0.0 && hidden < 4.0) {
-            for (int k = 1; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
+        if (c.params.z > 0.5 && most < 0.05) {
+            // a corpse's faint shadow (at most 5% darker): two rays across the light's disc, four each
+            for (int k = 0; k < 8; k += 4) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
+            hidden *= 4.0;
         } else {
-            hidden *= 2.0;
+            // four rays over the light's disc; four more between them where those disagree (a shadow's edge)
+            for (int k = 0; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
+            if (hidden > 0.0 && hidden < 4.0) {
+                for (int k = 1; k < 8; k += 2) hidden += hides(o, L, lsize, side, up, turn, k, 8, C, r);
+            } else {
+                hidden *= 2.0;
+            }
         }
         if (hidden == 0.0) continue;
         // no shadow through a wall: the world between the point and the object
@@ -159,8 +168,7 @@ void main() {
         // the light the point loses: as much as the light gives it, which falls off with the angle it comes in at
         // (a lamp low on the horizon lights the floor little, and its long shadow is faint) and, farther from the
         // light than the object, with the distance
-        float dark = c.params.x * ndl * min(lc * lc / (lv * lv), 1.0);
-        f *= 1.0 - dark * hidden / 8.0;
+        f *= 1.0 - most * hidden / 8.0;
     }
 
     // ambient occlusion: four short rays over the hemisphere (cosine weighted), closer hits darker; near the eye only.

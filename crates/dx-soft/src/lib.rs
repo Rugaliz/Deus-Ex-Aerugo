@@ -103,6 +103,9 @@ pub struct ActorDraw {
     pub lighting: Option<MeshLighting>,
     /// The lights around an unlit mesh, for the ray-traced shadows it casts only (it is drawn unlit).
     pub shadow_lighting: Option<MeshLighting>,
+    /// A corpse (`Carcass`): the ray-traced shadows give it fewer lamps and rays (bodies on the floor under low
+    /// lamps throw long shadows over much of the screen).
+    pub carcass: bool,
     /// Blend channel poses: weighted absolute frames whose difference to frame 0 is added to the vertices.
     pub blends: Vec<(usize, f32)>,
     /// Place of the actor's sprite in the main view's sprite list (`DrawFrame` draws in this order); `u32::MAX` when

@@ -1256,6 +1256,7 @@ impl Session {
         let (decals, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|(_, _, d)| d.decal.is_some());
         let chosen: Vec<(u32, ue_vm::animation::MeshDraw)> = others.into_iter().take(1024).chain(decals).map(|(_, a, d)| (a, d)).collect();
         let mut out: Vec<dx_soft::ActorDraw> = Vec::with_capacity(chosen.len() + 1);
+        let carcass_class = self.vm.reg.class_by_name("Carcass");
         for (a, d) in chosen {
             let lit = d.sprite.is_none() && !d.unlit;
             // the pawn's third-person item on its weapon triangle, lit as the pawn (`DrawMesh(item, Owner = pawn)`)
@@ -1263,6 +1264,7 @@ impl Session {
             let placed = item.and_then(|pose| self.weapon_triangle(&d, clip).map(|frame| (pose, frame)));
             let mut draw = Self::to_actor_draw(d, false);
             draw.rank = rank_of(a, u32::MAX);
+            draw.carcass = carcass_class.is_some_and(|c| self.vm.is_instance_of(a, c));
             if lit {
                 draw.lighting = Some(self.mesh_lighting(a, true));
             } else if shadow_lights && draw.sprite.is_none() && draw.decal.is_none() && !draw.overlay {
@@ -1488,6 +1490,7 @@ impl Session {
         dx_soft::ActorDraw { mesh: d.mesh, frame_a: d.frame_a, frame_b: d.frame_b, blend: d.blend, location: d.location, rotation: d.rotation, pre_pivot: d.pre_pivot, frame: None, scale: d.scale, skins: d.skins, style: d.style, glow: d.glow, unlit: d.unlit, sprite: d.sprite, decal: d.decal, decal_polys: d.decal_polys, overlay,
             lighting: None,
             shadow_lighting: None,
+            carcass: false,
             blends: d.blends,
             rank: u32::MAX,
             fatness: d.fatness,
