@@ -316,7 +316,32 @@ pub struct MixState {
     /// Hook 2: the effect reverb (reverb.md), run on the effect dry and reverb send buses after each chunk.
     pub reverb: Option<super::reverb::Reverb>,
     buses: Buses,
+    /// Aerugo: what is left of voices stopped while they sounded (`stop_voice`), fading out.
+    tails: Vec<Tail>,
 }
+
+/// Aerugo, not the original: the last moments of a voice stopped while it still sounded, faded out over
+/// `TAIL_SECONDS`. The original cuts such a voice at once, wherever its wave is, which clicks (a dialogue line cut by
+/// the next one or skipped). The voice itself still stops at once (its channel is free for the next sound); the tail
+/// plays what it had already, at its level, pan and sends, and goes to the same buses.
+struct Tail {
+    data: Arc<Pcm>,
+    pos: i32,
+    frac: u16,
+    step: i32,
+    /// Where its data ends (the sample's end, or its loop's or ring's end): the tail stops there.
+    limit: i32,
+    gains: [i32; 6],
+    flags: u8,
+    music: bool,
+    left: u32,
+    total: u32,
+}
+
+/// How long a stopped voice fades out.
+const TAIL_SECONDS: f32 = 0.006;
+/// Frames mixed at one level while a tail fades.
+const TAIL_PIECE: usize = 2;
 
 /// `(a / b) << 16 + ((a % b) << 16) / b` in unsigned 32-bit: a 16.16 quotient.
 pub fn fixed_div(a: u32, b: u32) -> u32 {
@@ -352,6 +377,7 @@ impl MixState {
             sample_clock: 0,
             reverb: None,
             buses: Buses::new(),
+            tails: Vec::new(),
         };
         s.set_periods();
         s
@@ -425,6 +451,7 @@ impl MixState {
             for i in 0..(self.effects + self.music).min(VOICES) {
                 self.mix_voice(i, frames, done);
             }
+            self.mix_tails(frames, done);
             done += frames;
             self.sample_clock = self.sample_clock.wrapping_add(frames as u32);
         }
@@ -586,6 +613,11 @@ impl MixState {
                 break;
             }
             let next = self.voices[i].link;
+            if self.voices[i].owned {
+                if let Some(t) = self.tail_of(i) {
+                    self.tails.push(t);
+                }
+            }
             let x = &mut self.voices[i];
             if x.owned {
                 if x.stream.is_some() {
@@ -803,6 +835,76 @@ impl MixState {
             s.write = write;
             s.srcpos = srcpos;
         }
+    }
+
+    /// Aerugo: the tail of voice `i` if it is sounding (see `Tail`): its gains as `mix_voice` works them out now.
+    fn tail_of(&self, i: usize) -> Option<Tail> {
+        let v = &self.voices[i];
+        if !v.enabled || !v.playing || v.step <= 0 {
+            return None;
+        }
+        let data = v.data.clone()?;
+        let music = v.b11 & 0x80 != 0;
+        let m = (if music { self.music_master } else { self.fx_master }) as i8 as i32;
+        let p = (v.pan & 0x7fff) as i32;
+        let mut e = ((0x4000 - (p - 0x4000).abs()) * v.panenv.value as i32) >> 15;
+        e = (e * v.panenv.depth as i32) >> 15;
+        let pp = (p + e).clamp(0, 0x7fff) as usize;
+        let mut vol = v.level_sq as i32;
+        for x in [m * m * 2, v.vol18 as i32, v.vol1a as i32, v.venv.value as i32, v.venv.depth as i32, v.vol66 as i32] {
+            vol = (vol * x) >> 15;
+        }
+        if vol == 0 {
+            return None;
+        }
+        let t = pan_table();
+        let l = (t[0x7fff - pp] * vol) >> 15;
+        let r = (t[pp] * vol) >> 15;
+        let gains = [l, r, (v.reverb as i32 * l) >> 7, (v.reverb as i32 * r) >> 7, (v.chorus as i32 * l) >> 7, (v.chorus as i32 * r) >> 7];
+        let mut flags = 0u8;
+        if v.sflags & 4 != 0 {
+            flags |= 1;
+        }
+        if v.pan & 0x8000 != 0 {
+            flags |= 4;
+        }
+        let looping = v.sflags & 8 != 0 && !(v.sflags & 0x80 == 0 && v.key_off() && v.step >= 0);
+        let limit = if looping { v.loop_end } else { v.end };
+        let total = ((self.rate as f32 * TAIL_SECONDS) as u32).max(1);
+        Some(Tail { data, pos: v.pos, frac: v.frac, step: v.step, limit, gains, flags, music, left: total, total })
+    }
+
+    /// Aerugo: the fading tails' part of a segment (`frames` frames at `done`), each in pieces at one level.
+    fn mix_tails(&mut self, frames: usize, done: usize) {
+        if self.tails.is_empty() {
+            return;
+        }
+        let MixState { tails, buses, .. } = self;
+        for t in tails.iter_mut() {
+            let bases = if t.music { [MUSIC_DRY, MUSIC_REV, MUSIC_CHO] } else { [FX_DRY, FX_REV, FX_CHO] }.map(|b| (b * BUS_FRAMES) as isize);
+            let (mut off, mut rem) = (done, frames);
+            while rem > 0 && t.left > 0 {
+                // no further than the data goes (as `mix_voice` counts it)
+                let dist = t.limit.wrapping_sub(t.pos).clamp(-0x7fff, 0x7fff);
+                let most = ((dist << 16) - t.frac as i32) / t.step + 1;
+                if most <= 0 {
+                    t.left = 0;
+                    break;
+                }
+                let k = rem.min(TAIL_PIECE).min(t.left as usize).min(most as usize);
+                // the level in the middle of the piece, falling to 0
+                let g = (t.left as f32 - k as f32 * 0.5) / t.total as f32;
+                let gains = t.gains.map(|x| (x as f32 * g) as i32);
+                voice_mix(&mut buses.block, bases.map(|b| b + off as isize), k, &t.data, t.pos, t.frac, t.step, gains, t.flags);
+                let s = t.step.wrapping_mul(k as i32).wrapping_add(t.frac as i32);
+                t.frac = (s & 0xffff) as u16;
+                t.pos = t.pos.wrapping_add(s >> 16);
+                t.left -= k as u32;
+                rem -= k;
+                off += k;
+            }
+        }
+        tails.retain(|t| t.left > 0);
     }
 
     /// One voice's part of a segment (mixer.md 5.1, 5.2).

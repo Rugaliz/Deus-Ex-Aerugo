@@ -334,6 +334,33 @@ mod tests {
         assert!(!m.voice_playing(15));
     }
 
+    /// A sound stopped while it plays (a dialogue line cut by the next or skipped) fades out over a few milliseconds
+    /// instead of dropping to silence mid-wave (a click); its channel is free at once.
+    #[test]
+    fn a_voice_stopped_while_it_sounds_fades_out_without_a_click() {
+        let mut m = Mixer::new(44100);
+        m.sound_volume = 255;
+        m.music_volume = 0.0;
+        let frames = 44100;
+        // a loud 220 Hz tone, stopped near a crest
+        let mut d: Vec<i16> = (0..frames).map(|i| ((i as f32 * 220.0 * std::f32::consts::TAU / 44100.0).sin() * 30000.0) as i16).collect();
+        d.resize(frames + 16, 0);
+        let s = Arc::new(Sample { flags: F_MONO | F_16BIT, pan: 0x4000, volume: 0x7fff, length: frames as u32, loop_start: 0, loop_end: 0, rate: 44100, data: Some(Arc::new(Pcm::S16(d))), stream: None });
+        assert!(m.start_voice(15, &s, 44100, 0x7fff, 0x4000));
+        let mut before = vec![0f32; 2 * 10_000];
+        m.mix(&mut before);
+        m.stop_voice(15);
+        assert!(!m.voice_playing(15), "the channel is free at once");
+        // the frames already rendered play out first; the stop takes effect where the renderer is
+        let mut after = vec![0f32; 2 * 4000];
+        m.mix(&mut after);
+        let all: Vec<f32> = before.iter().chain(after.iter()).step_by(2).copied().collect();
+        let tone_step = (220.0 * std::f32::consts::TAU / 44100.0) * all[..10_000].iter().fold(0f32, |a, x| a.max(x.abs()));
+        let jump = all.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0f32, f32::max);
+        assert!(jump < tone_step * 1.5, "a jump of {jump} (the tone itself moves at most {tone_step} per sample)");
+        assert!(all[all.len() - 100..].iter().all(|x| x.abs() < 1e-4), "silent after the fade");
+    }
+
     #[test]
     fn pan_uses_galaxys_table() {
         let mut m = Mixer::new(44100);
