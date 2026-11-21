@@ -376,6 +376,8 @@ pub struct Vm {
     pub(crate) prop_cache: ue_registry::FxHashMap<(ClassId, usize, usize), Option<(usize, u32)>>,
     /// `get_prop_static`'s lookups: (object's class, name address, name length) -> (declaring class, property index).
     static_props: std::cell::RefCell<ue_registry::FxHashMap<(ClassId, usize, usize), Option<(ClassId, usize)>>>,
+    /// The last hits of `static_props` in a small direct-mapped table: (name address, name length, class, result).
+    static_props_recent: std::cell::RefCell<Vec<(usize, usize, Option<ClassId>, Option<(ClassId, usize)>)>>,
     /// A direct-mapped front of `prop_cache` (class, name address, name length, result): most lookups end here.
     pub(crate) prop_fast: Box<[(u32, usize, usize, Option<(usize, u32)>)]>,
     /// Per function, what a call needs from its definition (`call_plan`).
@@ -423,16 +425,16 @@ pub struct Vm {
     /// over the window system.
     pub canvas_list: Vec<ui_gc::DrawCmd>,
     /// Textures made at run time (snapshots), by object id.
-    pub runtime_textures: HashMap<u32, snapshot::RuntimeTexture>,
+    pub runtime_textures: ue_registry::FxHashMap<u32, snapshot::RuntimeTexture>,
     /// Snapshots the host is to take from the last frame drawn.
     pub snapshot_requests: Vec<snapshot::SnapshotRequest>,
     pub(crate) runtime_serial: u32,
     /// Textures' `AnimNext` by texture id (read once from their properties).
-    pub(crate) anim_next_cache: HashMap<u32, u32>,
+    pub(crate) anim_next_cache: ue_registry::FxHashMap<u32, u32>,
     /// Animation state of textures (`AnimCurrent`, `Accumulator`, `PrimeCurrent`, last update time) and their timing
     /// properties (see `texture_get`).
-    pub(crate) texture_anim: HashMap<u32, TextureAnim>,
-    pub(crate) texture_props_cache: HashMap<u32, TextureAnimProps>,
+    pub(crate) texture_anim: ue_registry::FxHashMap<u32, TextureAnim>,
+    pub(crate) texture_props_cache: ue_registry::FxHashMap<u32, TextureAnimProps>,
     pub(crate) level_brush: u32,
     /// The local player's input for its next tick slot (`player_frame`/`player_tick`).
     pub(crate) player_slot_input: Option<(u32, player::SlotInput)>,
@@ -531,16 +533,17 @@ impl Vm {
             canvas_draws: Vec::new(),
             canvas_frame: Default::default(),
             canvas_list: Vec::new(),
-            runtime_textures: HashMap::new(),
+            runtime_textures: Default::default(),
             snapshot_requests: Vec::new(),
             runtime_serial: 0,
-            anim_next_cache: HashMap::new(),
-            texture_anim: HashMap::new(),
-            texture_props_cache: HashMap::new(),
+            anim_next_cache: Default::default(),
+            texture_anim: Default::default(),
+            texture_props_cache: Default::default(),
             level_brush: 0,
             player_slot_input: None,
             prop_cache: Default::default(),
             static_props: Default::default(),
+            static_props_recent: std::cell::RefCell::new(vec![(0, 0, None, None); 1024]),
             call_plans: Default::default(),
             frame_pool: Vec::new(),
             class_name_cache: Default::default(),
@@ -684,6 +687,14 @@ impl Vm {
     /// hash instead of interning the name and looking it up (the window system reads its fields this way every frame).
     fn static_prop_def(&self, class: ClassId, name: &'static str) -> Option<&PropDef> {
         let key = (class, name.as_ptr() as usize, name.len());
+        let slot = ((key.1 >> 3) ^ (class.0 as usize).wrapping_mul(0x9e37)) & 1023;
+        {
+            let recent = self.static_props_recent.borrow();
+            let r = &recent[slot];
+            if r.0 == key.1 && r.1 == key.2 && r.2 == Some(class) {
+                return r.3.map(|(c, i)| &self.reg.class(c).props[i]);
+            }
+        }
         let hit = self.static_props.borrow().get(&key).copied();
         let found = match hit {
             Some(found) => found,
@@ -705,6 +716,7 @@ impl Vm {
                 found
             }
         };
+        self.static_props_recent.borrow_mut()[slot] = (key.1, key.2, Some(class), found);
         found.map(|(c, i)| &self.reg.class(c).props[i])
     }
 

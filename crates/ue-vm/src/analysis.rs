@@ -53,8 +53,8 @@ fn expr_kind(vm: &Vm, e: &Expr) -> Option<String> {
         Expr::NoObject | Expr::SelfObj | Expr::ObjConst(_) => "object".into(),
         Expr::Load(p) => return place_kind(vm, p),
         Expr::Context { inner, .. } => return expr_kind(vm, inner),
-        Expr::Call(Call::Final(loc), _) => return return_kind(vm, *loc),
-        Expr::Native(i, _) => return vm.reg.natives_by_index(*i).first().and_then(|l| return_kind(vm, *l)),
+        Expr::Call(Call::Final(loc), _, _) => return return_kind(vm, *loc),
+        Expr::Native(i, _, _) => return vm.reg.natives_by_index(*i).first().and_then(|l| return_kind(vm, *l)),
         Expr::Cast(op, _) => format!("cast{op:02X}"),
         Expr::Op(op, _) => op.kinds().1.into(),
         _ => return None,
@@ -80,7 +80,7 @@ fn walk(vm: &Vm, e: &Expr, expected: Option<String>, st: &mut CastStats) {
             walk(vm, x, None, st);
         }
         Expr::Let(p, src) => walk(vm, src, place_kind(vm, p), st),
-        Expr::Call(call, args) => {
+        Expr::Call(call, args, _) => {
             let pk = match call {
                 Call::Final(l) => param_kinds(vm, *l),
                 _ => Vec::new(),
@@ -89,7 +89,7 @@ fn walk(vm: &Vm, e: &Expr, expected: Option<String>, st: &mut CastStats) {
                 walk(vm, a, pk.get(i).cloned(), st);
             }
         }
-        Expr::Native(idx, args) => {
+        Expr::Native(idx, args, _) => {
             let pk = vm.reg.natives_by_index(*idx).first().map(|l| param_kinds(vm, *l)).unwrap_or_default();
             for (i, a) in args.iter().enumerate() {
                 walk(vm, a, pk.get(i).cloned(), st);
@@ -179,11 +179,11 @@ fn expr_pure(vm: &Vm, e: &Expr, memo: &mut std::collections::HashMap<ue_registry
         Expr::Load(p) => place_pure(vm, p, memo),
         Expr::Let(p, x) => place_pure(vm, p, memo) && expr_pure(vm, x, memo),
         Expr::Cast(_, x) | Expr::Skip(x) => expr_pure(vm, x, memo),
-        Expr::Native(i, args) => {
+        Expr::Native(i, args, _) => {
             let ok = vm.reg.natives_by_index(*i).first().map(|l| crate::natives::is_implemented(vm.reg.names.str(vm.reg.function(*l).name))).unwrap_or(false);
             ok && args.iter().all(|a| expr_pure(vm, a, memo))
         }
-        Expr::Call(Call::Final(l), args) => func_pure(vm, *l, memo) && args.iter().all(|a| expr_pure(vm, a, memo)),
+        Expr::Call(Call::Final(l), args, _) => func_pure(vm, *l, memo) && args.iter().all(|a| expr_pure(vm, a, memo)),
         // implemented natives
         Expr::Op(_, args) => args.iter().all(|a| expr_pure(vm, a, memo)),
         _ => false,

@@ -51,8 +51,8 @@ pub struct UiState {
     /// Each viewport window's last master frame (`XViewportWindow::viewportFrame`), made when it was last drawn.
     pub viewport_frames: std::collections::HashMap<u32, ViewInfo>,
     /// Graphics contexts by GC object, their saved states, the fonts loaded so far and the draw list of the frame.
-    pub gcs: std::collections::HashMap<u32, crate::ui_gc::GcState>,
-    pub gc_stacks: std::collections::HashMap<u32, Vec<crate::ui_gc::GcState>>,
+    pub gcs: ue_registry::FxHashMap<u32, crate::ui_gc::GcState>,
+    pub gc_stacks: ue_registry::FxHashMap<u32, Vec<crate::ui_gc::GcState>>,
     pub fonts: ue_registry::FxHashMap<u32, Option<std::rc::Rc<crate::ui_gc::FontData>>>,
     pub draw: Vec<crate::ui_gc::DrawCmd>,
     /// 3D views of the frame (`ViewportWindow`s) and whether the caller can draw them.
@@ -68,7 +68,7 @@ pub struct UiState {
     pub timers: std::collections::HashMap<u32, Vec<crate::ui_input::Timer>>,
     pub next_timer: i32,
     /// Texture sizes by resource id.
-    pub tex_sizes: std::collections::HashMap<u32, (f32, f32)>,
+    pub tex_sizes: ue_registry::FxHashMap<u32, (f32, f32)>,
     /// Nesting depth of `ConfigureChild` calls (clipping is recomputed only at the outermost level).
     configure_depth: u32,
 }

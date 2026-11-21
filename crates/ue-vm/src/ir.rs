@@ -19,6 +19,27 @@ pub enum Place {
     Ctx(Box<Expr>, Box<Place>),
 }
 
+/// What a call site resolved to last: the function and its call plan, for the receiver's class and state (a virtual
+/// call; the others always resolve alike). Compiled code belongs to one VM, so the classes are that VM's. Function
+/// lookup does not change once classes are loaded (see `Registry::find_function_in_state`), so a hit is the same
+/// function the lookup would give.
+#[derive(Clone, Default)]
+pub struct Site(pub(crate) std::cell::RefCell<Option<SiteHit>>);
+
+#[derive(Clone)]
+pub(crate) struct SiteHit {
+    pub class: ue_registry::ClassId,
+    pub state: Option<(ue_registry::ClassId, usize)>,
+    pub loc: FuncLoc,
+    pub plan: std::rc::Rc<crate::exec::CallPlan>,
+}
+
+impl std::fmt::Debug for Site {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Site")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Call {
     Virtual(u32),
@@ -45,8 +66,8 @@ pub enum Expr {
     Cast(u8, Box<Expr>),
     MetaCast(ObjId, Box<Expr>),
     DynCast(ObjId, Box<Expr>),
-    Call(Call, Vec<Expr>),
-    Native(u16, Vec<Expr>),
+    Call(Call, Vec<Expr>, Site),
+    Native(u16, Vec<Expr>, Site),
     /// Argument evaluated only if the callee asks for it (short-circuit operators).
     Skip(Box<Expr>),
     Context { obj: Box<Expr>, inner: Box<Expr> },
@@ -247,7 +268,7 @@ impl<'a> Compiler<'a> {
         let op = self.reg.natives_by_index(idx).first().copied().and_then(|loc| self.native_op(loc, args.len()));
         Ok(match op {
             Some(op) => Expr::Op(op, args),
-            None => Expr::Native(idx, args),
+            None => Expr::Native(idx, args, Site::default()),
         })
     }
 
@@ -440,11 +461,11 @@ impl<'a> Compiler<'a> {
             }
             EX_VIRTUAL_FUNCTION => {
                 let n = self.name()?;
-                Expr::Call(Call::Virtual(n), self.params()?)
+                Expr::Call(Call::Virtual(n), self.params()?, Site::default())
             }
             EX_GLOBAL_FUNCTION => {
                 let n = self.name()?;
-                Expr::Call(Call::Global(n), self.params()?)
+                Expr::Call(Call::Global(n), self.params()?, Site::default())
             }
             EX_FINAL_FUNCTION => {
                 let r = self.compact()?;
@@ -454,7 +475,7 @@ impl<'a> Compiler<'a> {
                 let args = self.params()?;
                 match self.native_op(loc, args.len()) {
                     Some(op) => Expr::Op(op, args),
-                    None => Expr::Call(Call::Final(loc), args),
+                    None => Expr::Call(Call::Final(loc), args, Site::default()),
                 }
             }
             EX_INT_CONST => Expr::Int(self.i32()?),

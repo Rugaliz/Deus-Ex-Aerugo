@@ -638,7 +638,7 @@ impl Vm {
     /// moves the actor there before asking): unit coords, `*= Location`, `*= PostScale`, `*= Rotation`, `*=
     /// MainScale` (inlined, same as Core's), `*= -PrePivot`.
     pub fn brush_to_world(&mut self, a: u32, loc: Vec3, rot: [i32; 3]) -> ue_bsp::Coords {
-        let pre = match self.get_prop(a, "PrePivot", 0) {
+        let pre = match self.get_prop_static(a, "PrePivot", 0) {
             Ok(crate::Value::Vector(v)) => v,
             _ => [0.0; 3],
         };

@@ -482,7 +482,18 @@ impl Vm {
                 }
                 self.in_context(f, o, |s, f| s.eval(f, inner))?
             }
-            Expr::Call(kind, args) => {
+            Expr::Call(kind, args, site) => {
+                // the site's last resolution, when the receiver's class and state are the same
+                // (the receiver's class as `class_of_ref` gives it: none for a dead object; its state as
+                // `resolve_function` reads it)
+                let (class, state) = match ref_instance(f.this).and_then(|i| self.objects.get(i)) {
+                    Some(o) => ((o.alive || self.pending_deleted_set.contains(&f.this)).then_some(o.class), o.state),
+                    None => (self.class_of_ref(f.this), None),
+                };
+                let hit = site.0.borrow().as_ref().filter(|h| Some(h.class) == class && (h.state == state || !matches!(kind, Call::Virtual(_)))).map(|h| (h.loc, h.plan.clone()));
+                if let Some((loc, plan)) = hit {
+                    return self.invoke_planned(f, loc, &plan, args);
+                }
                 let loc = match kind {
                     Call::Final(l) => *l,
                     Call::Virtual(n) => self.resolve_function(f.this, *n).ok_or_else(|| {
@@ -495,12 +506,26 @@ impl Vm {
                         })?
                     }
                 };
-                self.invoke(f, loc, args)?
+                let plan = self.call_plan(loc);
+                if let Some(class) = class {
+                    *site.0.borrow_mut() = Some(crate::ir::SiteHit { class, state, loc, plan: plan.clone() });
+                }
+                self.invoke_planned(f, loc, &plan, args)?
             }
-            Expr::Native(idx, args) => {
-                let locs = self.reg.natives_by_index(*idx);
-                let loc = *locs.first().ok_or_else(|| VmError::Unsupported(format!("native function index {idx}")))?;
-                self.invoke(f, loc, args)?
+            Expr::Native(idx, args, site) => {
+                let hit = site.0.borrow().as_ref().map(|h| (h.loc, h.plan.clone()));
+                let (loc, plan) = match hit {
+                    Some(h) => h,
+                    None => {
+                        let locs = self.reg.natives_by_index(*idx);
+                        let loc = *locs.first().ok_or_else(|| VmError::Unsupported(format!("native function index {idx}")))?;
+                        let plan = self.call_plan(loc);
+                        let class = loc.class;
+                        *site.0.borrow_mut() = Some(crate::ir::SiteHit { class, state: None, loc, plan: plan.clone() });
+                        (loc, plan)
+                    }
+                };
+                self.invoke_planned(f, loc, &plan, args)?
             }
             Expr::Op(op, args) => self.eval_op(f, *op, args)?,
             Expr::StructCmp { eq, a, b, .. } => {
@@ -566,8 +591,14 @@ impl Vm {
     }
 
     /// Evaluates arguments (resolving out parameters to places), calls, and copies out parameters back.
+    #[allow(dead_code)]
     fn invoke<'c>(&mut self, f: &mut Frame, loc: FuncLoc, args: &'c [Expr]) -> Res<Value> {
         let plan = self.call_plan(loc);
+        self.invoke_planned(f, loc, &plan, args)
+    }
+
+    /// `invoke` with the callee's plan in hand.
+    fn invoke_planned<'c>(&mut self, f: &mut Frame, loc: FuncLoc, plan: &CallPlan, args: &'c [Expr]) -> Res<Value> {
         let flags = plan.flags;
         // Short-circuit operators evaluate their second operand only when needed.
         if plan.short != 0 && args.len() == 2 {
@@ -852,7 +883,7 @@ impl Vm {
             },
             other => (other, f.this),
         };
-        let Expr::Native(idx, args) = e else { return Err(VmError::Unsupported("iterator source is not a native call".into())) };
+        let Expr::Native(idx, args, _) = e else { return Err(VmError::Unsupported("iterator source is not a native call".into())) };
         let loc = *self
             .reg
             .natives_by_index(*idx)

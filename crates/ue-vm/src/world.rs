@@ -739,12 +739,12 @@ impl Vm {
 
     /// `LifeSpan` counts down; at (nearly) zero the actor gets `Expired` and is destroyed.
     fn tick_life_span(&mut self, obj: u32, dt: f32) -> Result<(), VmError> {
-        let life = self.get_prop(obj, "LifeSpan", 0)?.as_f32().unwrap_or(0.0);
+        let life = self.get_prop_static(obj, "LifeSpan", 0)?.as_f32().unwrap_or(0.0);
         if life == 0.0 {
             return Ok(());
         }
         let left = life - dt;
-        self.set_prop(obj, "LifeSpan", 0, Value::Float(left))?;
+        self.set_prop_static(obj, "LifeSpan", 0, Value::Float(left))?;
         if left <= 0.0001 {
             self.send_event(obj, "Expired", vec![])?;
             self.destroy(obj)?;
