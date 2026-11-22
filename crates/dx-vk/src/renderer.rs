@@ -1254,6 +1254,29 @@ const LIGHT_SIZE: f32 = 12.0;
 const SHADOW_STRENGTH: f32 = 2.0;
 const SHADOW_MAX: f32 = 0.9;
 
+/// Lamps closer together than this are one fixture for the shadows (maps often light a lamp with two light actors a
+/// few dozen units apart: two shadows of an object that are as good as one, at twice the cost).
+const FIXTURE: f32 = 64.0;
+
+/// `usable` (share, index), strongest first, with every lamp within `FIXTURE` of a stronger one added into it (its
+/// share; the stronger one's place): the same light, one shadow of the combined darkness. Strongest first again.
+fn merge_fixtures(usable: &[(f32, usize)], place: impl Fn(usize) -> [f32; 3]) -> Vec<(f32, usize)> {
+    let mut out: Vec<(f32, usize)> = Vec::new();
+    for &(share, i) in usable {
+        let p = place(i);
+        let near = out.iter_mut().find(|(_, j)| {
+            let q = place(*j);
+            (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2) < FIXTURE * FIXTURE
+        });
+        match near {
+            Some(kept) => kept.0 += share,
+            None => out.push((share, i)),
+        }
+    }
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
+    out
+}
+
 /// The lamps that give an object a shadow, and how strongly (1: fully), from its usable lamps `(share, index)`
 /// strongest first: the strongest, and the second while it gives more than `SECOND_LAMP_FROM` of the strongest's
 /// light, fading in up to full when the two are equal. (One shadow per object, as most games cast it, at a fraction
@@ -1327,6 +1350,7 @@ fn record_rt(cx: &Context, rt: &mut Option<(Vec<crate::rt::RtFrame>, crate::rt_p
             ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt()
         };
         let usable: Vec<(f32, usize)> = shares.iter().copied().filter(|&(share, i)| share / total.max(1e-4) >= 0.05 && distance(i) >= radius * 1.1 + LIGHT_SIZE).collect();
+        let usable = merge_fixtures(&usable, |i| l.lights[i].0);
         for (i, weight) in shadow_lamps(&usable) {
             let share = usable.iter().find(|u| u.1 == i).map(|u| u.0).unwrap_or(0.0);
             let dark = share / total.max(1e-4);
@@ -1443,6 +1467,9 @@ mod tests {
             last = w;
         }
         assert_eq!(shadow_lamps(&[]), vec![]);
+        // a fixture of two light actors 40 units apart is one lamp of both shares; a lamp farther off stays apart
+        let places = [[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [500.0, 0.0, 0.0]];
+        assert_eq!(merge_fixtures(&[(0.5, 0), (0.45, 1), (0.6, 2)], |i| places[i]), vec![(0.95, 0), (0.6, 2)]);
         assert_eq!(shadow_lamps(&[(0.8, 3)]), vec![(3, 1.0)]);
     }
 }
