@@ -90,11 +90,14 @@ change the game's scripts should work too, but have not been tested yet.
 **`deusex-modkit`** (`deusex-modkit.exe` on Windows; it comes with Aerugo, put it next to `deusex`) shows, exports and
 re-imports the game's models and textures. It reads your game folder and never writes into it.
 
-- **`deusex-modkit`** opens the viewer: type to search the game's models and textures by name, Enter to open one. A
-  model plays its animations (Space, Left/Right for frames, Up/Down for the sequence) with the textures the game gives
-  it (K switches between the characters or items using it), with a free camera (drag with the mouse, W/A/S/D/Q/E,
-  wheel, R to reset). F shows a weapon in your hands as the game places it, `+`/`-` changes the field of view, M shows
-  the `Mods` folder's replacement, B and O mark back faces and open edges, X exports what you see.
+- **`deusex-modkit`** opens the viewer: type in the search box and click a model (M) or texture (T) in the list (or
+  browse with the arrow keys; what you pick opens at once), with filters for models and textures. A model plays its
+  animations; the panel on the right lists its sequences, the textures the game gives it (click a character or item
+  using it to switch skins) and its texture slots (click one to look at it). Drag with the mouse to look around,
+  right-drag to turn around the model, wheel or W/A/S/D/Q/E to move. The buttons above the picture export (glTF, the
+  current frame as OBJ, or a texture as PNG), open the export folder, play and step frames, show a weapon in your
+  hands as the game places it, show the `Mods` folder's replacement, and mark back faces and open edges; every button
+  has a key too. *Text -* / *Text +* (or Ctrl and the wheel) change the size of the text and buttons.
 - **`deusex-modkit export <model>`** writes the model as **glTF 2.0** (Blender and most 3D tools open it) with its
   textures as PNG: every animation frame is a shape key (`frame_000`, ...) and every animation a clip of its own.
   `export-obj <model> --frame N` writes one frame as OBJ instead; `export-texture <texture>` writes a texture as PNG at

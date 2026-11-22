@@ -45,8 +45,28 @@ impl Text {
         Some((ch as usize / per, g))
     }
 
-    /// Draws `s` with its top-left corner at (x, y); returns the x after it.
-    pub fn draw(&self, c: &mut Canvas, x: i32, y: i32, s: &str, col: [u8; 4]) -> i32 {
+    /// The width of `s` in pixels at `scale`.
+    pub fn width(&self, s: &str, scale: i32) -> i32 {
+        s.bytes().map(|c| self.glyph(c).map_or(0, |(_, g)| g.u_size)).sum::<i32>() * scale
+    }
+
+    /// `s` cut to `max` pixels wide at `scale`, ending in `...` when cut.
+    pub fn fit(&self, s: &str, max: i32, scale: i32) -> String {
+        if self.width(s, scale) <= max {
+            return s.to_string();
+        }
+        let mut out = String::new();
+        for ch in s.chars() {
+            if self.width(&format!("{out}{ch}..."), scale) > max {
+                break;
+            }
+            out.push(ch);
+        }
+        out + "..."
+    }
+
+    /// Draws `s` with its top-left corner at (x, y), every texel a `scale` x `scale` block; returns the x after it.
+    pub fn draw(&self, c: &mut Canvas, x: i32, y: i32, s: &str, col: [u8; 4], scale: i32) -> i32 {
         let mut cx = x;
         for ch in s.bytes() {
             let Some((pi, g)) = self.glyph(ch) else { continue };
@@ -57,13 +77,17 @@ impl Text {
                     if u >= *pw || v >= *ph || !cover[(v * pw + u) as usize] {
                         continue;
                     }
-                    let (px, py) = (cx + gx, y + gy);
-                    if px >= 0 && py >= 0 && (px as usize) < c.w && (py as usize) < c.h {
-                        c.blend(px as usize, py as usize, col);
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let (px, py) = (cx + gx * scale + sx, y + gy * scale + sy);
+                            if px >= 0 && py >= 0 && (px as usize) < c.w && (py as usize) < c.h {
+                                c.blend(px as usize, py as usize, col);
+                            }
+                        }
                     }
                 }
             }
-            cx += g.u_size;
+            cx += g.u_size * scale;
         }
         cx
     }

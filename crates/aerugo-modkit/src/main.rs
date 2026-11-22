@@ -18,7 +18,8 @@ deusex-modkit - the mod kit of Deus Ex Aerugo (reads the game folder, never writ
 
 usage: deusex-modkit [--game <Deus Ex folder>] <command> ...
 
-  view [<name>]                       the viewer window: search, models (animated) and textures
+  view [<name>] [--scale 1-4] [--out <folder>]
+                                      the viewer window: search, models (animated) and textures, export buttons
   search <words>... [--meshes|--textures]
                                       meshes and textures whose object path holds every word
   info <mesh>                         frames, sequences, texture slots, skins, open edges
@@ -356,11 +357,18 @@ fn export_obj(game: &Path, args: &mut Vec<String>) -> Result<(), String> {
     };
     let sets = cat.skins_for(&m.path).len();
     let (pics, _, _) = slot_pictures(&mut cat, &m, (sets > 0).then_some(0));
+    write_obj(&m, fa, &pos, &pics, &out)?;
+    println!("{}", out.display());
+    Ok(())
+}
+
+/// One pose of a mesh (`pos`, as `render::pose` gives it) as OBJ with its `.mtl` and slot pictures next to it.
+pub fn write_obj(m: &LoadedMesh, fa: usize, pos: &[render::V3], pics: &[Option<Rc<Picture>>], out: &Path) -> Result<(), String> {
     let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("mesh").to_string();
     let dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut obj = format!("# {} frame {fa} (deusex-modkit)\nmtllib {stem}.mtl\n", m.path);
     let mut mtl = String::new();
-    for p in &pos {
+    for p in pos {
         obj += &format!("v {} {} {}\n", p[0], p[2], p[1]);
     }
     let l = &m.lod;
@@ -385,6 +393,5 @@ fn export_obj(game: &Path, args: &mut Vec<String>) -> Result<(), String> {
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(&out, obj).map_err(|e| format!("{}: {e}", out.display()))?;
     std::fs::write(dir.join(format!("{stem}.mtl")), mtl).map_err(|e| e.to_string())?;
-    println!("{}", out.display());
     Ok(())
 }
