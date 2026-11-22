@@ -1085,6 +1085,12 @@ impl Renderer {
     /// frame is prepared (`FRAMES_IN_FLIGHT`, as in the window). For measurements of the window's frame rate (`gpu_ms`
     /// is that of the frame drawn `FRAMES_IN_FLIGHT` before, `cpu_ms` this frame's phases).
     pub fn render_queued(&mut self, view: &mut MapView, cam: &Camera, actors: &[ActorDraw], width: u32, height: u32) -> Result<()> {
+        self.begin_queued_frame(view, actors, width, height)?;
+        self.finish_queued_frame(cam, actors)
+    }
+
+    /// The first half of `render_queued` (the part that reads the map), as `begin_window_frame` for the window.
+    pub fn begin_queued_frame(&mut self, view: &mut MapView, actors: &[ActorDraw], width: u32, height: u32) -> Result<()> {
         const N: usize = crate::FRAMES_IN_FLIGHT;
         if self.queued.is_none() {
             let cbs = unsafe {
@@ -1098,7 +1104,7 @@ impl Renderer {
         }
         self.cpu_ms.clear();
         let t = std::time::Instant::now();
-        let (cbs, fences, frames) = self.queued.unwrap();
+        let (_, fences, frames) = self.queued.unwrap();
         let slot = frames % N;
         unsafe { self.cx.device.wait_for_fences(&[fences[slot]], true, u64::MAX)? };
         self.cx.set_frame_slot(slot);
@@ -1109,7 +1115,15 @@ impl Renderer {
         self.prepare_frame(view, actors)?;
         self.update_procedurals(view);
         self.cpu_ms.push(("prepare", t.elapsed().as_secs_f64() * 1000.0));
+        Ok(())
+    }
+
+    /// The second half of `render_queued`: recorded and submitted (can run on the render thread).
+    pub fn finish_queued_frame(&mut self, cam: &Camera, actors: &[ActorDraw]) -> Result<()> {
+        const N: usize = crate::FRAMES_IN_FLIGHT;
         let t = std::time::Instant::now();
+        let (cbs, fences, frames) = self.queued.unwrap();
+        let slot = frames % N;
         let cb = cbs[slot];
         unsafe {
             self.cx.device.reset_fences(&[fences[slot]])?;
@@ -1236,18 +1250,43 @@ impl Renderer {
     /// `window_size` is the current drawable size in pixels (the swapchain is rebuilt when it changed). Returns false if nothing was drawn
     /// (minimised window or swapchain rebuilt).
     pub fn render_present(&mut self, view: &mut MapView, cam: &Camera, actors: &[ActorDraw], brightness: f32, crosshair: bool, window_size: (u32, u32)) -> Result<bool> {
+        if !self.begin_window_frame(view, actors, window_size)? {
+            return Ok(false);
+        }
+        self.finish_window_frame(cam, actors, brightness, crosshair, window_size)
+    }
+
+    /// The first half of `render_present`, the part that reads the map (`MapView`, the main thread's): the next frame
+    /// slot once the GPU is done with it, then this frame's textures and meshes loaded on first use and the procedural
+    /// textures and light/fog maps written. False when there is no frame now (the swapchain is being made).
+    pub fn begin_window_frame(&mut self, view: &mut MapView, actors: &[ActorDraw], window_size: (u32, u32)) -> Result<bool> {
         let mut presenter = self.presenter.take().expect("attach_window first");
         let result = (|| {
             if window_size != (presenter.extent.width, presenter.extent.height) {
                 presenter.resize(&self.cx, window_size)?;
             }
-            let Some(frame) = presenter.begin_frame(&self.cx, window_size)? else { return Ok(false) };
+            if !presenter.begin_slot(&self.cx, window_size)? {
+                return Ok(false);
+            }
             // the frame that last used this slot is done (its fence waited for): its GPU time
             self.read_timer();
             let (w, h) = self.render_size.unwrap_or((presenter.extent.width, presenter.extent.height));
             self.ensure_target(w, h, false)?;
             self.prepare_frame(view, actors)?;
             self.update_procedurals(view);
+            Ok(true)
+        })();
+        self.presenter = Some(presenter);
+        result
+    }
+
+    /// The second half of `render_present` (after `begin_window_frame`), which needs nothing of the map: the next
+    /// swapchain image (VSync waits here), the frame recorded, submitted and presented. Can run on a thread of its own
+    /// (`render_thread`). False when the swapchain was out of date (made anew; no frame).
+    pub fn finish_window_frame(&mut self, cam: &Camera, actors: &[ActorDraw], brightness: f32, crosshair: bool, window_size: (u32, u32)) -> Result<bool> {
+        let mut presenter = self.presenter.take().expect("attach_window first");
+        let result = (|| {
+            let Some(frame) = presenter.acquire(&self.cx, window_size)? else { return Ok(false) };
             Renderer::timer_start(&self.cx, self.timer, frame.cb);
             Renderer::record_procedural_uploads(&self.cx, &mut self.world, &mut self.mover_worlds, &mut self.actors, &mut self.ui, frame.cb);
             let rt_result = record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, cam.pos, frame.cb);

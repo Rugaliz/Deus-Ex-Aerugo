@@ -428,6 +428,10 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
     // the frame rate limit: the time the next frame may start
     let mut next_frame = Instant::now();
     renderer.render_size = if fullscreen { Some(full_res) } else { None };
+    // the recording and presentation on a thread of their own (`DX_RENDER_THREAD=0`: on this one)
+    let threaded = std::env::var("DX_RENDER_THREAD").map(|v| v != "0").unwrap_or(true);
+    let mut rt = dx_vk::render_thread::RenderThread::new(renderer, threaded);
+    println!("render thread {}", if rt.threaded() { "on" } else { "off" });
     let _audio = start_audio(&sdl, session);
     let mut events = sdl.event_pump().map_err(|e| e.to_string())?;
     let mut pad = sdl_input::SdlInput::new(&sdl);
@@ -486,13 +490,13 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
                 if !d.fullscreen {
                     let _ = window.set_fullscreen(true);
                 }
-                renderer.render_size = Some((w, h));
+                rt.set_render_size(Some((w, h)))?;
             } else {
                 if d.fullscreen {
                     let _ = window.set_fullscreen(false);
                 }
                 let _ = window.set_size(w, h);
-                renderer.render_size = None;
+                rt.set_render_size(None)?;
             }
             d.fullscreen = full;
             d.resolution = (w, h);
@@ -516,9 +520,9 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
         last = now;
         session.advance(dt);
         if session.take_map_changed() {
-            session.reload_vk_world(&mut renderer)?;
+            session.reload_vk_world(&mut *rt.renderer()?)?;
         }
-        session.render_vk_window(&mut renderer, window.size_in_pixels())?;
+        session.render_vk_window_thread(&mut rt, window.size_in_pixels())?;
         frames_since += 1;
         // settings the menus change while playing (a few times a second)
         if settings_at.elapsed() > Duration::from_millis(250) {
@@ -526,9 +530,9 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
             session.follow_settings();
             let now = session.aerugo_settings();
             if now.vsync != settings.vsync {
-                renderer.set_vsync(dx_vk::present::VSync::from_setting(now.vsync)).map_err(|e| e.to_string())?;
+                rt.renderer()?.set_vsync(dx_vk::present::VSync::from_setting(now.vsync)).map_err(|e| e.to_string())?;
             }
-            session.follow_quality(&mut renderer)?;
+            session.follow_quality(&mut *rt.renderer()?)?;
             settings = now;
         }
         // the frame rate limit: Auto is 3 below the display's refresh rate (inside a FreeSync/G-Sync range)
@@ -570,11 +574,11 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
     if let (Some(_), Some(t)) = (max_frames, measure_from) {
         let n = drawn_frames - 60;
         let s = t.elapsed().as_secs_f64();
-        println!("{n} frames in {s:.2} s: {:.0} fps (GPU {:.2} ms)", n as f64 / s, renderer.gpu_ms.unwrap_or(0.0));
+        println!("{n} frames in {s:.2} s: {:.0} fps (GPU {:.2} ms)", n as f64 / s, rt.renderer()?.gpu_ms.unwrap_or(0.0));
     }
     // `XGameEngineExt::Destroy`: the windows go before the engine
     session.vm.ui_destroy_all_windows();
-    renderer.destroy();
+    rt.into_inner()?.destroy();
     Ok(())
 }
 

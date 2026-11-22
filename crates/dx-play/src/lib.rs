@@ -181,6 +181,16 @@ fn set(vm: &mut Vm, a: u32, name: &str, v: Value) {
     let _ = vm.set_prop(a, name, 0, v);
 }
 
+/// A mover whose brush the renderer must have before the frame is drawn (`sync_movers`, `finish_vk_packet`): where it
+/// stands now (its lightmaps are baked there), and whether it is in this frame's list of movers drawn whole.
+struct MoverBrush {
+    actor: u32,
+    export: usize,
+    location: [f32; 3],
+    rotation: [i32; 3],
+    drawn: bool,
+}
+
 impl Session {
     /// Loads the map into the VM (running its start-up events) and drops the player at the first `PlayerStart`.
     pub fn open(game: &Path, map: &str) -> Result<Session, String> {
@@ -1864,14 +1874,16 @@ impl Session {
 
     /// The movers for this frame into `p` (their brushes given to the renderer on first sight), and the world's per-view
     /// lists.
-    fn sync_movers(&mut self, renderer: &mut dx_vk::renderer::Renderer, p: &mut dx_vk::renderer::FramePacket) {
+    fn sync_movers(&mut self, p: &mut dx_vk::renderer::FramePacket) -> Vec<MoverBrush> {
         let mut list = Vec::new();
+        let mut brushes = Vec::new();
         for a in self.vm.live_actors() {
             let Some(d) = self.vm.mover_draw(a) else { continue };
             let Some((pi, export)) = self.brush_export(d.brush) else { continue };
-            if pi != self.map_pkg || !self.ensure_mover_world(renderer, a, export, d.location, d.rotation) {
+            if pi != self.map_pkg {
                 continue;
             }
+            brushes.push(MoverBrush { actor: a, export, location: d.location, rotation: d.rotation, drawn: true });
             // doors and lifts are drawn blended between the last two steps too
             let (dp, dr) = self.pose_offset(a);
             let location = [d.location[0] + dp[0], d.location[1] + dp[1], d.location[2] + dp[2]];
@@ -1883,8 +1895,8 @@ impl Session {
             Some(listed) => {
                 for &(a, export) in &listed.owners {
                     if self.vm.is_live(a) {
-                        let (loc, rot) = (self.vm.location(a), self.vm.rotation(a));
-                        self.ensure_mover_world(renderer, a, export, loc, rot);
+                        let (location, rotation) = (self.vm.location(a), self.vm.rotation(a));
+                        brushes.push(MoverBrush { actor: a, export, location, rotation, drawn: false });
                     }
                 }
                 Some((listed.fragments, listed.nodes, listed.main))
@@ -1895,6 +1907,27 @@ impl Session {
         p.mirror_order = self.mirror_order();
         p.solid_mirror_order = self.solid_mirror_order();
         p.main_solid = self.main_solid_nodes();
+        brushes
+    }
+
+    /// The renderer's part of a frame packet, once it is built: the movers' brushes it has not had yet (a mover whose
+    /// brush cannot be made is not drawn this frame), then the packet applied.
+    fn finish_vk_packet(&mut self, renderer: &mut dx_vk::renderer::Renderer, mut p: dx_vk::renderer::FramePacket, brushes: Vec<MoverBrush>) {
+        for b in brushes {
+            if !self.ensure_mover_world(renderer, b.actor, b.export, b.location, b.rotation) && b.drawn {
+                p.movers.retain(|m| m.0 != b.export);
+            }
+        }
+        renderer.apply(p);
+    }
+
+    /// A save game's picture asked for by the scripts: the last frame read back (needs the renderer; rare).
+    fn read_snapshots(&mut self, renderer: &mut dx_vk::renderer::Renderer) {
+        if !self.vm.snapshot_requests.is_empty() {
+            if let Ok(Some((w, h, rgba))) = renderer.read_last_frame() {
+                self.vm.fill_snapshots(w, h, &rgba, self.brightness);
+            }
+        }
     }
 
     /// The clock and the screen flash for this frame's packet.
@@ -2192,11 +2225,12 @@ impl Session {
     /// Takes the snapshots the scripts asked for (`GenerateSnapshot`) from the last frame drawn, before the next one is,
     /// then hands the renderer every run-time texture whose pixels changed (snapshots, saved games' pictures).
     fn take_snapshots(&mut self, renderer: &mut dx_vk::renderer::Renderer) {
-        if !self.vm.snapshot_requests.is_empty() {
-            if let Ok(Some((w, h, rgba))) = renderer.read_last_frame() {
-                self.vm.fill_snapshots(w, h, &rgba, self.brightness);
-            }
-        }
+        self.read_snapshots(renderer);
+        self.publish_runtime_textures();
+    }
+
+    /// Textures the scripts draw into (computer screens...) handed to the map view when they changed.
+    fn publish_runtime_textures(&mut self) {
         let changed: Vec<(u32, u64)> = self.vm.runtime_textures.iter().filter(|(id, t)| self.runtime_published.get(*id) != Some(&t.version)).map(|(id, t)| (*id, t.version)).collect();
         for (tex, version) in changed {
             let Some(t) = self.vm.runtime_textures.get(&tex) else { continue };
@@ -2216,9 +2250,61 @@ impl Session {
         Ok(drawn)
     }
 
+    /// One frame of the window with the renderer behind `rt` (`dx_vk::render_thread`): this thread builds it and does
+    /// the part that reads the map, then hands the rest (recording, presentation) over and returns. False when there is
+    /// no frame now (the swapchain is being made).
+    pub fn render_vk_window_thread(&mut self, rt: &mut dx_vk::render_thread::RenderThread, window_size: (u32, u32)) -> Result<bool, String> {
+        // the frame is built while the frame before is recorded; the renderer is taken only for its part (and before, for
+        // a save game picture: rare)
+        if !self.vm.snapshot_requests.is_empty() {
+            self.read_snapshots(&mut *rt.renderer()?);
+        }
+        let (w, h) = rt.render_size().unwrap_or(window_size);
+        let (cam, actors, p, brushes) = self.build_vk_packet((w, h), window_size);
+        let job = {
+            let mut r = rt.renderer()?;
+            self.finish_vk_packet(&mut r, p, brushes);
+            // (the frame before's count: this one is drawn on the other thread)
+            self.meshes_drawn = r.actors.drawn;
+            if !r.begin_window_frame(&mut self.view, &actors, window_size).map_err(|e| e.to_string())? {
+                return Ok(false);
+            }
+            dx_vk::render_thread::Job { cam, actors, brightness: self.brightness, crosshair: false, window_size, offscreen: false }
+        };
+        rt.submit(job)?;
+        Ok(true)
+    }
+
     /// One frame as the window draws it, offscreen (no presentation, no read back): for measurements.
     /// `prep_ms` gets the session's preparation phases (milliseconds); the renderer's own are in `renderer.cpu_ms`,
     /// the GPU time in `renderer.gpu_ms`.
+    /// `render_vk_bench` with the renderer behind `rt` (on its own thread unless made inline): the first half here, the
+    /// recording and submission handed over. Returns the frame before's renderer phases and GPU time (read when this
+    /// frame takes the renderer, so as not to wait for the one in hand).
+    pub fn render_vk_bench_thread(&mut self, rt: &mut dx_vk::render_thread::RenderThread, size: (u32, u32), prep_ms: &mut Vec<(&'static str, f64)>) -> Result<(Vec<(&'static str, f64)>, Option<f64>), String> {
+        if !self.vm.snapshot_requests.is_empty() {
+            self.read_snapshots(&mut *rt.renderer()?);
+        }
+        self.prep_ms.clear();
+        let (cam, actors, p, brushes) = self.build_vk_packet(size, size);
+        *prep_ms = std::mem::take(&mut self.prep_ms);
+        let (job, stats) = {
+            let mut r = rt.renderer()?;
+            let stats = (r.cpu_ms.clone(), r.gpu_ms);
+            self.finish_vk_packet(&mut r, p, brushes);
+            if std::env::var_os("DX_BENCH_SYNC").is_some() {
+                r.render_offscreen(&mut self.view, &cam, &actors, size.0, size.1).map_err(|e| e.to_string())?;
+                self.meshes_drawn = r.actors.drawn;
+                return Ok((r.cpu_ms.clone(), r.gpu_ms));
+            }
+            self.meshes_drawn = r.actors.drawn;
+            r.begin_queued_frame(&mut self.view, &actors, size.0, size.1).map_err(|e| e.to_string())?;
+            (dx_vk::render_thread::Job { cam, actors, brightness: self.brightness, crosshair: false, window_size: size, offscreen: true }, stats)
+        };
+        rt.submit(job)?;
+        Ok(stats)
+    }
+
     pub fn render_vk_bench(&mut self, renderer: &mut dx_vk::renderer::Renderer, size: (u32, u32), prep_ms: &mut Vec<(&'static str, f64)>) -> Result<(), String> {
         self.prep_ms.clear();
         let (cam, actors) = self.prepare_vk_frame(renderer, size, size);
@@ -2237,6 +2323,15 @@ impl Session {
     /// everything the renderer reads (child frames, details, movers, the window system's draw list, uploads). Each
     /// phase's time goes to `prep_ms`.
     fn prepare_vk_frame(&mut self, renderer: &mut dx_vk::renderer::Renderer, (w, h): (u32, u32), window_size: (u32, u32)) -> (Camera, Vec<dx_soft::ActorDraw>) {
+        self.read_snapshots(renderer);
+        let (cam, actors, p, brushes) = self.build_vk_packet((w, h), window_size);
+        self.finish_vk_packet(renderer, p, brushes);
+        (cam, actors)
+    }
+
+    /// `prepare_vk_frame` without the renderer: the frame's camera, actors and packet, and the movers' brushes to check
+    /// (`finish_vk_packet`). A save game picture is read back before (`read_snapshots`).
+    fn build_vk_packet(&mut self, (w, h): (u32, u32), window_size: (u32, u32)) -> (Camera, Vec<dx_soft::ActorDraw>, dx_vk::renderer::FramePacket, Vec<MoverBrush>) {
         let mut t = std::time::Instant::now();
         let mut lap = |s: &mut Self, name: &'static str| {
             let e = t.elapsed().as_secs_f64() * 1000.0;
@@ -2246,7 +2341,7 @@ impl Session {
         // what the renderer is given this frame, applied at the end (`FramePacket`)
         let mut p = dx_vk::renderer::FramePacket::default();
         self.frame_clock(&mut p);
-        self.take_snapshots(renderer);
+        self.publish_runtime_textures();
         self.set_vis_size(w, h);
         lap(self, "snapshots/vis size");
         let (cam, rect) = self.scene_camera();
@@ -2260,7 +2355,7 @@ impl Session {
         lap(self, "child views");
         (p.details, p.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
         lap(self, "detail polys");
-        self.sync_movers(renderer, &mut p);
+        let brushes = self.sync_movers(&mut p);
         lap(self, "movers");
         p.plain_textures = !self.lit_view();
         let [rx, ry, rw, rh] = dx_vk::present::fit_rect((w, h), window_size);
@@ -2274,8 +2369,7 @@ impl Session {
         p.anim_frames = self.anim_frames.iter().map(|(k, i)| (k.clone(), *i)).collect();
         self.take_map_updates(&mut p);
         lap(self, "light/fog map updates");
-        renderer.apply(p);
-        (cam, actors)
+        (cam, actors, p, brushes)
     }
 
     /// The lightmap and fog map rectangles redone since the last frame, into the packet.
@@ -2313,14 +2407,14 @@ impl Session {
         p.light_scale = std::env::var("DX_LIGHT_SCALE").ok().and_then(|v| v.parse().ok());
         p.child_views = if self.draw_meshes { self.child_views(&cam) } else { None };
         (p.details, p.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
-        self.sync_movers(r, &mut p);
+        let brushes = self.sync_movers(&mut p);
         p.plain_textures = !self.lit_view();
         p.ui_quads = if self.show_ui { self.ui_quads(w, h) } else { Vec::new() };
         p.ui_views = if self.show_ui { self.ui_subviews() } else { Vec::new() };
         p.ui_actors = if self.show_ui { self.ui_actor_draws() } else { Vec::new() };
         p.anim_frames = self.anim_frames.iter().map(|(k, i)| (k.clone(), *i)).collect();
         self.take_map_updates(&mut p);
-        r.apply(p);
+        self.finish_vk_packet(r, p, brushes);
         let rgba = r.render(&mut self.view, &cam, &actors, w, h).map_err(|e| e.to_string())?;
         self.meshes_drawn = r.actors.drawn;
         let mut rgba = rgba;

@@ -248,14 +248,32 @@ impl Presenter {
     /// may still be drawing), makes it the context's slot, acquires the next swapchain image and starts the slot's
     /// command buffer. `None`: nothing to draw now (minimised window, or the swapchain had to be rebuilt: call again).
     pub fn begin_frame(&mut self, cx: &Context, window_size: (u32, u32)) -> Result<Option<Frame>> {
+        if !self.begin_slot(cx, window_size)? {
+            return Ok(None);
+        }
+        self.acquire(cx, window_size)
+    }
+
+    /// The first half of `begin_frame`: the next frame slot, once the GPU is done with it (its buffers can be written
+    /// from then on). False while the swapchain is (re)made: no frame now.
+    pub fn begin_slot(&mut self, cx: &Context, window_size: (u32, u32)) -> Result<bool> {
         unsafe {
             if self.extent.width == 0 || self.extent.height == 0 || self.swapchain == vk::SwapchainKHR::null() || self.images.is_empty() {
                 self.create_swapchain(cx, window_size)?;
-                return Ok(None);
+                return Ok(false);
             }
             let slot = self.frames % N;
             cx.device.wait_for_fences(&[self.in_flight[slot]], true, u64::MAX)?;
             cx.set_frame_slot(slot);
+            Ok(true)
+        }
+    }
+
+    /// The second half of `begin_frame` (after `begin_slot`): the next swapchain image (where presentation with VSync
+    /// waits) and the slot's command buffer begun. `None` when the swapchain is out of date (made anew; the slot stays).
+    pub fn acquire(&mut self, cx: &Context, window_size: (u32, u32)) -> Result<Option<Frame>> {
+        unsafe {
+            let slot = self.frames % N;
             let image = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available[slot], vk::Fence::null()) {
                 Ok((i, _suboptimal)) => i,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {

@@ -22,6 +22,7 @@ pub mod world;
 pub mod actors;
 pub mod lodmesh;
 pub mod renderer;
+pub mod render_thread;
 pub mod present;
 pub mod ui;
 

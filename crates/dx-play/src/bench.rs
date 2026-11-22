@@ -33,8 +33,12 @@ fn rss_mib() -> (f64, f64) {
 pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s: f32, csv: Option<String>, profile: Option<String>) -> Result<(), String> {
     // the step's phases, gathered without printing
     unsafe { std::env::set_var("DX_STEP_PROFILE", "quiet") };
-    let mut renderer = session.make_vk_renderer(&[])?;
+    let renderer = session.make_vk_renderer(&[])?;
     println!("Vulkan device: {}; {}x{}; {seconds} s, turning {turn_deg_per_s} deg/s", renderer.cx.device_name, size.0, size.1);
+    // as the window: the recording on a thread of its own (`DX_RENDER_THREAD=0`: on this one)
+    let threaded = std::env::var("DX_RENDER_THREAD").map(|v| v != "0").unwrap_or(true);
+    let mut rt = dx_vk::render_thread::RenderThread::new(renderer, threaded);
+    println!("render thread {}", if rt.threaded() { "on" } else { "off" });
     let at = session.player_location();
     println!("player at {:.1},{:.1},{:.1}", at[0], at[1], at[2]);
     let mut prep = Vec::new();
@@ -54,7 +58,7 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         }
         warm_frames += 1;
         last = now;
-        session.render_vk_bench(&mut renderer, size, &mut prep)?;
+        session.render_vk_bench_thread(&mut rt, size, &mut prep)?;
     }
     let _ = Session::take_step_profile();
     let (rss0, _) = rss_mib();
@@ -103,16 +107,17 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         let steps = if freeze { 0 } else { session.advance(dt) };
         let step = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
-        session.render_vk_bench(&mut renderer, size, &mut prep)?;
+        // (the renderer's phases and GPU time are the frame before's)
+        let (cpu_ms, gpu_ms) = session.render_vk_bench_thread(&mut rt, size, &mut prep)?;
         let draw = t1.elapsed().as_secs_f64() * 1000.0;
         let prep_ms: f64 = prep.iter().map(|p| p.1).sum();
         for &(k, v) in &prep {
             *prep_sum.entry(k).or_default() += v;
         }
-        for &(k, v) in &renderer.cpu_ms {
+        for &(k, v) in &cpu_ms {
             *render_sum.entry(k).or_default() += v;
         }
-        frames.push(Frame { total: t0.elapsed().as_secs_f64() * 1000.0, steps, step, prep: prep_ms, render: draw - prep_ms, gpu: renderer.gpu_ms.unwrap_or(0.0) });
+        frames.push(Frame { total: t0.elapsed().as_secs_f64() * 1000.0, steps, step, prep: prep_ms, render: draw - prep_ms, gpu: gpu_ms.unwrap_or(0.0) });
     }
     let wall = start.elapsed().as_secs_f64();
     if let Some(path) = &profile {
@@ -168,7 +173,7 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     }
     let (rss, hwm) = rss_mib();
     println!("\nmemory: resident {rss:.0} MiB (peak {hwm:.0}, {:+.0} during the run)", rss - rss0);
-    if let Some((used, budget)) = renderer.cx.video_memory() {
+    if let Some((used, budget)) = rt.renderer()?.cx.video_memory() {
         println!("video memory: {:.0} MiB used of {:.0} MiB budget", used as f64 / 1048576.0, budget as f64 / 1048576.0);
     }
     if let Some(path) = csv {
@@ -181,13 +186,13 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     }
     // `DX_BENCH_SHOT=file.png`: the last frame the bench drew (the window's path, read back before its gamma)
     if let Ok(path) = std::env::var("DX_BENCH_SHOT") {
-        if let Some((w, h, mut rgba)) = renderer.read_last_frame().map_err(|e| e.to_string())? {
+        if let Some((w, h, mut rgba)) = rt.renderer()?.read_last_frame().map_err(|e| e.to_string())? {
             dx_vk::apply_brightness(&mut rgba, session.brightness);
             std::fs::write(&path, dx_soft::png(w, h, &rgba)).map_err(|e| e.to_string())?;
             println!("picture: {path}");
         }
     }
-    renderer.destroy();
+    rt.into_inner()?.destroy();
     Ok(())
 }
 
