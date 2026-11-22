@@ -179,14 +179,13 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         std::fs::write(&path, out).map_err(|e| e.to_string())?;
         println!("per frame: {path}");
     }
-    // `DX_BENCH_SHOT=file.png`: a picture of the last view, as the bench drew it
+    // `DX_BENCH_SHOT=file.png`: the last frame the bench drew (the window's path, read back before its gamma)
     if let Ok(path) = std::env::var("DX_BENCH_SHOT") {
-        let mut r = Some(renderer);
-        let img = session.render_vk(&mut r, size.0, size.1)?;
-        std::fs::write(&path, dx_soft::png(img.width, img.height, &img.rgba)).map_err(|e| e.to_string())?;
-        println!("picture: {path}");
-        r.unwrap().destroy();
-        return Ok(());
+        if let Some((w, h, mut rgba)) = renderer.read_last_frame().map_err(|e| e.to_string())? {
+            dx_vk::apply_brightness(&mut rgba, session.brightness);
+            std::fs::write(&path, dx_soft::png(w, h, &rgba)).map_err(|e| e.to_string())?;
+            println!("picture: {path}");
+        }
     }
     renderer.destroy();
     Ok(())
