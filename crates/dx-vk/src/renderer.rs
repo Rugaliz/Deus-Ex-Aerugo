@@ -1473,3 +1473,10 @@ mod tests {
         assert_eq!(shadow_lamps(&[(0.8, 3)]), vec![(3, 1.0)]);
     }
 }
+
+/// The renderer can be handed to a thread of its own (docs: RENDER_THREAD.md).
+#[allow(dead_code)]
+fn renderer_is_send() {
+    fn send<T: Send>() {}
+    send::<Renderer>();
+}

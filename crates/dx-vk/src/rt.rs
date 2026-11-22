@@ -114,7 +114,7 @@ fn align(x: u64, a: u64) -> u64 {
 
 /// A host-visible, addressed buffer that grows (made again, larger) when a frame needs more.
 struct Growable {
-    buffer: Option<(Buffer, u64, *mut u8)>,
+    buffer: Option<(Buffer, u64, crate::Mapped<u8>)>,
     usage: vk::BufferUsageFlags,
 }
 
@@ -134,14 +134,14 @@ impl Growable {
         let size = size.max(4096).next_power_of_two();
         let (b, addr) = cx.create_buffer_addressed(size, self.usage, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
         let p = unsafe { cx.device.map_memory(b.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-        self.buffer = Some((b, addr, p));
+        self.buffer = Some((b, addr, crate::Mapped(p)));
         Ok(true)
     }
 
     fn write<T: Copy>(&mut self, cx: &Context, data: &[T]) -> Result<bool> {
         let made = self.ensure(cx, std::mem::size_of_val(data) as u64)?;
         let (_, _, p) = self.buffer.as_ref().unwrap();
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, *p, std::mem::size_of_val(data)) };
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, p.0, std::mem::size_of_val(data)) };
         Ok(made)
     }
 

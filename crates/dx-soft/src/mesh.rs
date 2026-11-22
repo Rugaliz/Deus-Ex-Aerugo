@@ -124,7 +124,8 @@ pub fn render_lod_mesh(game: &Path, package: &str, export: usize, frame: usize, 
 
 /// A mesh loaded for drawing actors: the geometry and the mesh's own textures (character skins come from the actor).
 pub struct MeshData {
-    pub lod: LodMesh,
+    /// Shared (`Arc`): the Vulkan renderer keeps it without a copy, on its own thread if it has one.
+    pub lod: std::sync::Arc<LodMesh>,
     /// A plain `Mesh` (no level-of-detail data; `lod` is converted from it, `lod.mesh` holds it as loaded): the engine
     /// draws it with `DrawMesh`, not `DrawLodMesh`.
     pub plain: bool,

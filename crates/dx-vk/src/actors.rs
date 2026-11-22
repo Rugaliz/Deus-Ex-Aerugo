@@ -9,7 +9,6 @@ use ash::vk;
 use dx_soft::mesh::MeshData;
 use dx_soft::{ActorDraw, Camera, MapView};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 const LODMESH_VERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lodmesh.vert.spv"));
 const LODMESH_FRAG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lodmesh.frag.spv"));
@@ -106,8 +105,21 @@ enum Kind {
 }
 
 /// A mesh as `DrawLodMesh` reads it.
+/// What the renderer keeps of a mesh (`MeshData` without its CPU textures): thread-safe, the geometry shared.
 struct CpuMesh {
-    data: Rc<MeshData>,
+    data: std::sync::Arc<MeshGeometry>,
+}
+
+struct MeshGeometry {
+    lod: std::sync::Arc<ue_assets::mesh::LodMesh>,
+    plain: bool,
+    own_texture_paths: Vec<Option<String>>,
+}
+
+impl CpuMesh {
+    fn of(m: &MeshData) -> CpuMesh {
+        CpuMesh { data: std::sync::Arc::new(MeshGeometry { lod: m.lod.clone(), plain: m.plain, own_texture_paths: m.own_texture_paths.clone() }) }
+    }
 }
 
 struct Tex {
@@ -135,7 +147,7 @@ const TEX_DETAIL: u8 = 2;
 pub struct ActorRenderer {
     /// The triangles built for each mesh actor of the current `draw_steps` (by the draw's address): its opaque and its
     /// blended pass draw the same triangles, built once.
-    built: HashMap<usize, std::rc::Rc<Vec<lodmesh::Tri>>>,
+    built: HashMap<usize, std::sync::Arc<Vec<lodmesh::Tri>>>,
     meshes: HashMap<String, Option<CpuMesh>>,
     textures: HashMap<TexKey, Option<Tex>>,
     tex_set_layout: vk::DescriptorSetLayout,
@@ -149,7 +161,7 @@ pub struct ActorRenderer {
     /// The detail texture pass (modulated, depth tested less-or-equal, biased toward the eye; D3D `ZBIAS` 15).
     detail_pipeline: vk::Pipeline,
     lod_buf: Buffer,
-    lod_ptr: *mut LodVertex,
+    lod_ptr: crate::Mapped<LodVertex>,
     lod_cursor: usize,
     sprite_layout: vk::PipelineLayout,
     sprite_opaque: vk::Pipeline,
@@ -161,7 +173,7 @@ pub struct ActorRenderer {
     light_pool: vk::DescriptorPool,
     light_buf: Buffer,
     light_set: vk::DescriptorSet,
-    light_ptr: *mut [f32; 4],
+    light_ptr: crate::Mapped<[f32; 4]>,
     light_cursor: usize,
     /// Where this frame slot's part of the slot buffer and of the triangle buffer ends.
     light_end: usize,
@@ -313,7 +325,7 @@ impl ActorRenderer {
                 vk::BufferUsageFlags::VERTEX_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            let lod_ptr = cx.device.map_memory(lod_buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut LodVertex;
+            let lod_ptr = crate::Mapped(cx.device.map_memory(lod_buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut LodVertex);
 
             // per-draw lighting (a part for each frame slot)
             let light_b = [vk::DescriptorSetLayoutBinding::default()
@@ -329,7 +341,7 @@ impl ActorRenderer {
                 vk::BufferUsageFlags::STORAGE_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
-            let light_ptr = cx.device.map_memory(light_buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut [f32; 4];
+            let light_ptr = crate::Mapped(cx.device.map_memory(light_buf.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut [f32; 4]);
             let light_layouts = [light_set_layout];
             let light_set = cx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(light_pool).set_layouts(&light_layouts))?[0];
             let light_info = [vk::DescriptorBufferInfo::default().buffer(light_buf.buffer).range(vk::WHOLE_SIZE)];
@@ -670,7 +682,7 @@ impl ActorRenderer {
                 continue;
             }
             if !self.meshes.contains_key(&d.mesh) {
-                let m = view.mesh_data(&d.mesh).map(|data| CpuMesh { data });
+                let m = view.mesh_data(&d.mesh).map(|data| CpuMesh::of(&data));
                 self.meshes.insert(d.mesh.clone(), m);
             }
             let Some(Some(mesh)) = self.meshes.get(&d.mesh) else { continue };
@@ -903,7 +915,7 @@ impl ActorRenderer {
             Some(t) => t.clone(),
             None => {
                 let world = posed_vertices(lod, d);
-                let t = std::rc::Rc::new(if mesh.data.plain {
+                let t = std::sync::Arc::new(if mesh.data.plain {
                     lodmesh::build_plain(&lod.mesh, &world, view, &actor, lights.as_ref())
                 } else {
                     lodmesh::build(lod, &world, view, &actor, lights.as_ref())
@@ -921,7 +933,7 @@ impl ActorRenderer {
                     v.push([p[0], p[1], p[2], inv_r]);
                     v.push([c[0], c[1], c[2], 0.0]);
                 }
-                push_slots(&mut self.light_cursor, self.light_end, self.light_ptr, &v)
+                push_slots(&mut self.light_cursor, self.light_end, self.light_ptr.0, &v)
             }
             _ => None,
         };
@@ -986,7 +998,7 @@ impl ActorRenderer {
         let base = self.lod_cursor;
         self.lod_cursor += verts.len();
         unsafe {
-            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.lod_ptr.add(base), verts.len());
+            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.lod_ptr.0.add(base), verts.len());
             cx.device.cmd_bind_vertex_buffers(cb, 0, &[self.lod_buf.buffer], &[0]);
             for (set, kind, masked, first, count) in runs {
                 let pipeline = match kind {
@@ -1108,7 +1120,7 @@ impl ActorRenderer {
         let base = self.lod_cursor;
         self.lod_cursor += verts.len();
         unsafe {
-            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.lod_ptr.add(base), verts.len());
+            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.lod_ptr.0.add(base), verts.len());
             cx.device.cmd_bind_vertex_buffers(cb, 0, &[self.lod_buf.buffer], &[0]);
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.detail_pipeline);
             let push = LodPush { vp: *vp, params: [0; 4], clip: [0.0; 4] };
@@ -1154,7 +1166,7 @@ impl ActorRenderer {
         let first = self.light_cursor * SLOT_VEC4S;
         self.light_cursor += slots;
         unsafe {
-            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.light_ptr.add(first), verts.len());
+            std::ptr::copy_nonoverlapping(verts.as_ptr(), self.light_ptr.0.add(first), verts.len());
             let push = DecalPush { vp: *vp, params: [f32::from_bits(first as u32), 0.0, size.0.max(1) as f32, size.1.max(1) as f32] };
             cx.device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.decal_pipeline);
             cx.device.cmd_bind_descriptor_sets(cb, vk::PipelineBindPoint::GRAPHICS, self.decal_layout, 0, &[set, self.light_set], &[]);

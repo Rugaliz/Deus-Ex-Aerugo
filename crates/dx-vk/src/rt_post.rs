@@ -47,7 +47,7 @@ pub struct MaskedFace {
 
 /// A host-visible storage buffer, made again larger when needed.
 #[derive(Default)]
-struct HostBuffer(Option<(Buffer, *mut u8, u64)>);
+struct HostBuffer(Option<(Buffer, crate::Mapped<u8>, u64)>);
 
 impl HostBuffer {
     /// `data` into the buffer (at least 16 bytes, a storage buffer may not be empty).
@@ -60,10 +60,10 @@ impl HostBuffer {
             let cap = need.next_power_of_two().max(4096);
             let b = cx.create_buffer(cap, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
             let p = unsafe { cx.device.map_memory(b.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-            self.0 = Some((b, p, cap));
+            self.0 = Some((b, crate::Mapped(p), cap));
         }
         let (_, p, _) = self.0.as_ref().unwrap();
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, *p, std::mem::size_of_val(data)) };
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, p.0, std::mem::size_of_val(data)) };
         Ok(())
     }
 
@@ -128,7 +128,7 @@ pub struct RtPost {
     /// The images for a target size: half size (traced, blurred), full size (distance).
     images: Option<(u32, u32, [Image; 3])>,
     /// Each frame slot's casters (buffer, mapping, capacity).
-    casters: [Option<(Buffer, *mut Caster, usize)>; N],
+    casters: [Option<(Buffer, crate::Mapped<Caster>, usize)>; N],
     /// Each frame slot's alpha-tested faces of meshes and each mesh's first face among them.
     masked_faces: [HostBuffer; N],
     mesh_first: [HostBuffer; N],
@@ -273,10 +273,10 @@ impl RtPost {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
             let p = unsafe { cx.device.map_memory(b.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut Caster };
-            *own = Some((b, p, cap));
+            *own = Some((b, crate::Mapped(p), cap));
         }
         let (_, p, _) = own.as_ref().unwrap();
-        unsafe { std::ptr::copy_nonoverlapping(casters.as_ptr(), *p, casters.len()) };
+        unsafe { std::ptr::copy_nonoverlapping(casters.as_ptr(), p.0, casters.len()) };
         self.caster_count = casters.len() as u32;
         Ok(())
     }

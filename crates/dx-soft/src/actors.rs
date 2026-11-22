@@ -53,7 +53,7 @@ impl MapView {
                 })
                 .collect();
             let own_textures = own_texture_paths.iter().map(|p| p.as_ref().and_then(|p| self.texture_by_path(p))).collect();
-            Some(Rc::new(MeshData { lod, plain, own_textures, own_texture_paths }))
+            Some(Rc::new(MeshData { lod: std::sync::Arc::new(lod), plain, own_textures, own_texture_paths }))
         })();
         self.meshes.insert(path.to_string(), data.clone());
         data

@@ -94,7 +94,7 @@ impl GpuTexture {
 pub struct RectStaging {
     /// One host buffer for each frame that may be in flight (`FRAMES_IN_FLIGHT`), used in turn: a frame's pixels go
     /// into the next one, so the frame before it can still be copying from its own.
-    buffers: Vec<(crate::Buffer, *mut u8)>,
+    buffers: Vec<(crate::Buffer, crate::Mapped<u8>)>,
     slot: usize,
     capacity: usize,
     used: usize,
@@ -107,7 +107,7 @@ impl RectStaging {
         for _ in 0..crate::FRAMES_IN_FLIGHT {
             let buffer = cx.create_buffer(capacity as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
             let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-            buffers.push((buffer, mapped));
+            buffers.push((buffer, crate::Mapped(mapped)));
         }
         Ok(RectStaging { buffers, slot: 0, capacity, used: 0, rects: Vec::new() })
     }
@@ -126,7 +126,7 @@ impl RectStaging {
         if rgba.len() != n || n == 0 || at + n > self.capacity {
             return false;
         }
-        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1.add(at), n) };
+        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1.0.add(at), n) };
         self.used = at + n;
         self.rects.push(
             vk::BufferImageCopy::default()
@@ -180,7 +180,7 @@ impl RectStaging {
 
 pub struct Staging {
     /// One host buffer for each frame that may be in flight, used in turn as `RectStaging`'s.
-    buffers: Vec<(crate::Buffer, *mut u8)>,
+    buffers: Vec<(crate::Buffer, crate::Mapped<u8>)>,
     slot: usize,
     width: u32,
     height: u32,
@@ -194,7 +194,7 @@ impl Staging {
         for _ in 0..crate::FRAMES_IN_FLIGHT {
             let buffer = cx.create_buffer(size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
             let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
-            buffers.push((buffer, mapped));
+            buffers.push((buffer, crate::Mapped(mapped)));
         }
         Ok(Staging { buffers, slot: 0, width, height, dirty: false })
     }
@@ -207,7 +207,7 @@ impl Staging {
             if !self.dirty {
                 self.slot = (self.slot + 1) % self.buffers.len();
             }
-            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1, n) };
+            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), self.buffers[self.slot].1.0, n) };
             self.dirty = true;
         }
     }

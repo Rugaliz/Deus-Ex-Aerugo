@@ -7,6 +7,14 @@
 pub const MIP_MODE: ash::vk::SamplerMipmapMode = ash::vk::SamplerMipmapMode::NEAREST;
 pub const MIP_LOD_BIAS: f32 = -0.5;
 
+/// A pointer into host-visible GPU memory that stays mapped while its buffer lives. Only the buffer's owner writes
+/// through it (one thread at a time), so the owner can be handed to another thread with it (RENDER_THREAD.md).
+#[derive(Debug, Clone, Copy)]
+pub struct Mapped<T>(pub *mut T);
+
+// SAFETY: see above: the mapping outlives every use, and the pointer is only used by whoever owns the buffer
+unsafe impl<T> Send for Mapped<T> {}
+
 pub mod texture;
 pub mod rt;
 pub mod rt_post;
