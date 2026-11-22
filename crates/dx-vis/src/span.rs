@@ -49,10 +49,8 @@ impl SpanBuffer {
         let n = (y2 - y1).max(0) as usize;
         self.start_y = y1;
         self.end_y = y1.max(y2);
+        self.clear_rows();
         self.rows.truncate(n);
-        for r in self.rows.iter_mut() {
-            r.clear();
-        }
         self.rows.resize_with(n, Vec::new);
         self.open.clear();
         self.open.resize(n.div_ceil(64), 0);
@@ -90,11 +88,16 @@ impl SpanBuffer {
         }
     }
 
+    /// Empties every row: only the rows `open` marks hold spans (every change of a row brings its bit in line).
     fn clear_rows(&mut self) {
-        for r in self.rows.iter_mut() {
-            r.clear();
+        for (w, word) in self.open.iter_mut().enumerate() {
+            let mut bits = *word;
+            while bits != 0 {
+                self.rows[w * 64 + bits.trailing_zeros() as usize].clear();
+                bits &= bits - 1;
+            }
+            *word = 0;
         }
-        self.open.iter_mut().for_each(|w| *w = 0);
     }
 
     /// The open spans of row `y` (empty outside the buffer).
@@ -126,6 +129,10 @@ impl SpanBuffer {
             // the source's spans are sorted and apart: the ones `[rs, re)` overlaps are a run, copied clipped to it and
             // then replaced by their parts outside it (`close`)
             let si = (y - source.start_y) as usize;
+            // a row closed in the source has nothing to copy or close
+            if source.open[si / 64] >> (si % 64) & 1 == 0 {
+                continue;
+            }
             let row = &mut source.rows[si];
             let first = row.iter().position(|&(_, e)| e > rs).unwrap_or(row.len());
             let last = row[first..].iter().position(|&(s, _)| s >= re).map(|k| first + k).unwrap_or(row.len());
@@ -214,22 +221,30 @@ impl SpanBuffer {
                 self.sync(i);
             }
         }
+        // both rows are sorted and apart: merged in one pass, touching spans joined (the union); one buffer reused
+        let mut merged: Vec<Span> = Vec::new();
         for y in other.start_y..other.end_y {
             let add = other.row(y);
             if add.is_empty() {
                 continue;
             }
             let row = &mut self.rows[(y - self.start_y) as usize];
-            row.extend_from_slice(add);
-            row.sort_unstable();
-            let mut merged: Vec<Span> = Vec::with_capacity(row.len());
-            for &(s, e) in row.iter() {
+            merged.clear();
+            let (mut i, mut j) = (0, 0);
+            while i < row.len() || j < add.len() {
+                let next = if j >= add.len() || (i < row.len() && row[i] <= add[j]) {
+                    i += 1;
+                    row[i - 1]
+                } else {
+                    j += 1;
+                    add[j - 1]
+                };
                 match merged.last_mut() {
-                    Some(last) if s <= last.1 => last.1 = last.1.max(e),
-                    _ => merged.push((s, e)),
+                    Some(last) if next.0 <= last.1 => last.1 = last.1.max(next.1),
+                    _ => merged.push(next),
                 }
             }
-            *row = merged;
+            std::mem::swap(row, &mut merged);
             self.sync((y - self.start_y) as usize);
         }
     }
