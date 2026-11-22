@@ -11,8 +11,9 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Any screen.** Your monitor's own resolution, including widescreen and ultrawide (16:9, 21:9, 32:9), with a wider
   view on wider screens instead of a stretched picture.
 - **Smooth and fast.** Hundreds of frames per second on a modern PC (well over a thousand on a recent one), ready for
-  high refresh rate monitors. Choose how vertical sync works (off, on, adaptive for FreeSync/G-Sync, fast) and set a
-  frame rate limit.
+  high refresh rate monitors. The picture is drawn on a thread of its own while the game runs the next moment, which
+  keeps the frame rate steady on slower PCs and laptops too. Choose how vertical sync works (off, on, adaptive for
+  FreeSync/G-Sync, fast) and set a frame rate limit (*Auto*: your monitor's refresh rate).
 - **A sharper, smoother picture.** Every texture and effect at full quality, plus modern options in *Display →
   Advanced Graphics*: anisotropic texture filtering, anti-aliasing (MSAA, with smooth grates and fences), 16-bit colour
   (no banding in fog and dark areas), smooth lightmap shadows and per-pixel lighting on characters and objects; on
@@ -24,7 +25,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   mouse for a full turn, so aiming feels the same on any mouse.
 - **Better sound.** More sound channels than the original's 16, so sounds no longer cut each other off, at your
   system's own audio quality, and a loudness control (*Sound* settings) that keeps rooms full of machines from getting
-  too loud; *Original* mixes as the original game. The original's sound and music engine is recreated faithfully.
+  too loud; *Original* mixes as the original game. A dialogue line cut short (skipped, or ended by the next) fades out
+  instead of clicking. The original's sound and music engine is recreated faithfully.
 - **No holes in the levels.** Some maps shipped with broken culling data that made the original skip whole rooms and
   doors from most angles (the Hong Kong Helibase's corridor door and stairs room), and some underwater walls without a
   surface, so you saw through the rock to the far end of the canal (Hong Kong's Wan Chai canal); Aerugo draws them.
@@ -33,10 +35,10 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
   overwritten game files.
 
-> **Status: the engine is complete, but the game has not been played through yet.** The intro, the training mission,
-> Liberty Island, Hell's Kitchen and the start of Hong Kong have been played; the later missions and the endings load
-> and run but have not been played from start to finish, so expect bugs there. Bug reports are welcome in the
-> [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
+> **Status: the engine is complete, and the game has been played up to Vandenberg** (the intro, the training and
+> every mission from Liberty Island to Vandenberg). The last missions (the ocean lab, the missile silo and Area 51)
+> and the endings load and run but have not been played from start to finish, so expect bugs there. Bug reports are
+> welcome in the [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
 
 ## How to install
 
