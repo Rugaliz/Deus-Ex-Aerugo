@@ -586,7 +586,7 @@ impl MapView {
 }
 
 /// Fills a triangle whose vertices are `[x, y, 1/w, u/w, v/w]`; calls `put(x, y, 1/w, u, v)` per covered pixel.
-pub(crate) fn raster_triangle(a: &[f32; 5], b: &[f32; 5], c: &[f32; 5], w: usize, h: usize, put: &mut dyn FnMut(usize, usize, f32, f32, f32)) {
+pub fn raster_triangle(a: &[f32; 5], b: &[f32; 5], c: &[f32; 5], w: usize, h: usize, put: &mut dyn FnMut(usize, usize, f32, f32, f32)) {
     let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     if area.abs() < 1e-6 {
         return;

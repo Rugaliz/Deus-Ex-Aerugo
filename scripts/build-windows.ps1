@@ -56,16 +56,18 @@ if ($Clean) {
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
 }
 Write-Host '== building (dist profile)'
-cargo build --locked --profile dist -p dx-play --features static-sdl
+cargo build --locked --profile dist -p dx-play -p aerugo-modkit --features dx-play/static-sdl,aerugo-modkit/static-sdl
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 New-Item -ItemType Directory -Force -Path dist | Out-Null
 Copy-Item -Force target\dist\dx-play.exe dist\deusex.exe
+Copy-Item -Force target\dist\deusex-modkit.exe dist\deusex-modkit.exe
 $size = [math]::Round((Get-Item dist\deusex.exe).Length / 1MB, 1)
 Write-Host "== built: $root\dist\deusex.exe ($size MB)"
 
 if ($dir) {
     Copy-Item -Force dist\deusex.exe (Join-Path $dir 'deusex.exe')
+    Copy-Item -Force dist\deusex-modkit.exe (Join-Path $dir 'deusex-modkit.exe')
     Write-Host "== installed: $(Join-Path $dir 'deusex.exe')"
     if ($Run) { Start-Process -FilePath (Join-Path $dir 'deusex.exe') -WorkingDirectory $dir }
 }

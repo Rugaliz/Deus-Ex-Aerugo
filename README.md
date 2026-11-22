@@ -33,7 +33,7 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
-  overwritten game files.
+  overwritten game files. A mod kit to view, export and re-import the game's models and textures comes with it.
 
 > **Status: the engine is complete, and the game has been played up to Vandenberg** (the intro, the training and
 > every mission from Liberty Island to Vandenberg). The last missions (the ocean lab, the missile silo and Area 51)
@@ -76,9 +76,38 @@ change the order). To switch a mod off without deleting it, start its name with 
 - **Your own textures:** a PNG of any size, placed at `Textures/<Package>/<Group>/<Name>.png` inside the mod, replaces
   that texture. To get every texture of the game already named that way, run `deusex --export-textures <folder>` in
   the game folder, edit or upscale what you like, and put the result in `Mods`.
+- **Your own models:** a model edited with the mod kit (below), placed at `Meshes/<Package>/<Name>.aemesh` inside the
+  mod, replaces that model's shape (for example `Meshes/DeusExItems/GEPGun.aemesh` for the GEP gun in your hands). The
+  model keeps its animations, textures and everything the game does with it; only its vertices and faces change, in
+  every animation frame. A replacement whose number of animation frames does not match the game's is left out (the
+  game writes why in its log).
 
 Mods that come with their own `.exe` or `.dll` files (launchers, renderers) do not apply to Aerugo. Big mods that
 change the game's scripts should work too, but have not been tested yet.
+
+### The mod kit
+
+**`deusex-modkit`** (`deusex-modkit.exe` on Windows; it comes with Aerugo, put it next to `deusex`) shows, exports and
+re-imports the game's models and textures. It reads your game folder and never writes into it.
+
+- **`deusex-modkit`** opens the viewer: type to search the game's models and textures by name, Enter to open one. A
+  model plays its animations (Space, Left/Right for frames, Up/Down for the sequence) with the textures the game gives
+  it (K switches between the characters or items using it), with a free camera (drag with the mouse, W/A/S/D/Q/E,
+  wheel, R to reset). F shows a weapon in your hands as the game places it, `+`/`-` changes the field of view, M shows
+  the `Mods` folder's replacement, B and O mark back faces and open edges, X exports what you see.
+- **`deusex-modkit export <model>`** writes the model as **glTF 2.0** (Blender and most 3D tools open it) with its
+  textures as PNG: every animation frame is a shape key (`frame_000`, ...) and every animation a clip of its own.
+  `export-obj <model> --frame N` writes one frame as OBJ instead; `export-texture <texture>` writes a texture as PNG at
+  the path a mod uses (`Textures/<Package>/<Group>/<Name>.png`).
+- **`deusex-modkit import <file.glb> --mod Mods/MyMod`** turns the edited model back into a mod
+  (`Mods/MyMod/Meshes/<Package>/<Name>.aemesh`). Keep the shape keys when exporting from Blender (glTF, *Shape Keys*
+  on, the default). Vertices you add that do not move in any shape key follow the nearest original face in every
+  frame, so new parts move with the model. A material's name gives its texture slot and surface (`slot0`,
+  `slot1-masked`, as the export names them).
+
+`deusex-modkit --help` lists everything (searching, pictures of a model from any angle, and more). The `mods` folder
+of this repository has an example: [GEP gun widescreen](mods/gep-gun-widescreen/README.md), which completes the GEP
+gun in your hands for wide screens (made with `export`, a Blender script and `import`).
 
 ## How to build it yourself
 

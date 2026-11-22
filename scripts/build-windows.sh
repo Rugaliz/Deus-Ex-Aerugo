@@ -39,12 +39,14 @@ rustup target list --installed | grep -qx "$target" || rustup target add "$targe
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++
 echo "== building for Windows ($target)"
-cargo build --locked --profile dist -p dx-play --features static-sdl --target "$target"
+cargo build --locked --profile dist -p dx-play -p aerugo-modkit --features dx-play/static-sdl,aerugo-modkit/static-sdl --target "$target"
 
 mkdir -p dist
 cp -f "target/$target/dist/dx-play.exe" dist/deusex.exe
+cp -f "target/$target/dist/deusex-modkit.exe" dist/deusex-modkit.exe
 echo "== built: $root/dist/deusex.exe ($(du -h dist/deusex.exe | cut -f1))"
 if [ -n "$dir" ]; then
     cp -f dist/deusex.exe "$dir/deusex.exe"
+    cp -f dist/deusex-modkit.exe "$dir/deusex-modkit.exe"
     echo "== installed: $dir/deusex.exe"
 fi

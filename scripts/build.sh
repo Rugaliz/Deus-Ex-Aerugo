@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the game executable `deusex` (optimised) into ./dist and, on request, drops it into your Deus Ex folder.
-# Every run is a clean build: earlier build output (target/ and dist/deusex) is removed first.
+# Builds the game executable `deusex` and the mod kit `deusex-modkit` (optimised) into ./dist and, on request, drops
+# them into your Deus Ex folder. Every run is a clean build: earlier build output (target/ and dist/) is removed first.
 #
 #   scripts/build.sh                      build only          -> dist/deusex
 #   scripts/build.sh --install "<dir>"    build and copy it into the Deus Ex folder (the one with System/ and Maps/)
@@ -50,13 +50,13 @@ if pkg-config --exists sdl3 2>/dev/null || ldconfig -p 2>/dev/null | grep -q 'li
 else
     echo "== no SDL3 development files found: SDL3 is built from source into the executable"
     command -v cmake >/dev/null 2>&1 || { echo "missing tool: cmake (needed to build SDL3)" >&2; missing=1; }
-    features=(--features static-sdl)
+    features=(--features dx-play/static-sdl,aerugo-modkit/static-sdl)
 fi
 [ "$missing" = 0 ] || exit 1
 
 echo "== cleaning earlier build output"
 cargo clean
-rm -f dist/deusex
+rm -f dist/deusex dist/deusex-modkit
 
 if [ "$mode" = test ]; then
     echo "== tests (against $dir)"
@@ -64,15 +64,17 @@ if [ "$mode" = test ]; then
 fi
 
 echo "== building (dist profile: optimised, no debug info)"
-cargo build --locked --profile dist -p dx-play "${features[@]}"
+cargo build --locked --profile dist -p dx-play -p aerugo-modkit "${features[@]}"
 
 mkdir -p dist
 cp -f target/dist/dx-play dist/deusex
-echo "== built: $root/dist/deusex ($(du -h dist/deusex | cut -f1))"
+cp -f target/dist/deusex-modkit dist/deusex-modkit
+echo "== built: $root/dist/deusex ($(du -h dist/deusex | cut -f1)), $root/dist/deusex-modkit ($(du -h dist/deusex-modkit | cut -f1))"
 
 case "$mode" in
     install)
         cp -f dist/deusex "$dir/deusex"
+        cp -f dist/deusex-modkit "$dir/deusex-modkit"
         echo "== installed: $dir/deusex   (run it from that folder: ./deusex)" ;;
     run)
         echo "== starting from $dir"

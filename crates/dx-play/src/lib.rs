@@ -197,7 +197,7 @@ impl Session {
         let mut reg = Registry::load_game(game).map_err(|e| e.to_string())?;
         let mods = ue_package::mods::current();
         if !mods.names.is_empty() {
-            eprintln!("mods: {} ({} packages, {} replacement textures)", mods.names.join(", "), mods.packages.len(), mods.textures.len());
+            eprintln!("mods: {} ({} packages, {} replacement textures, {} replacement meshes)", mods.names.join(", "), mods.packages.len(), mods.textures.len(), mods.meshes.len());
         }
         // class defaults come from the game's ini files and the port's own per-user layer, localised text from the .int files
         reg.set_config(ue_config::Config::new(&game.join("System"), config_dir().as_deref()));

@@ -1,0 +1,24 @@
+[package]
+name = "aerugo-modkit"
+description = "The mod kit: finds, shows and exports the game's models and textures, and turns edited models into mesh mods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "deusex-modkit"
+path = "src/main.rs"
+
+[dependencies]
+ue-package = { path = "../ue-package" }
+ue-assets = { path = "../ue-assets" }
+ue-registry = { path = "../ue-registry" }
+dx-soft = { path = "../dx-soft" }
+dx-vk = { path = "../dx-vk" }
+sdl3 = "0.20"
+png = "0.17"
+serde_json = "1"
+
+[features]
+# SDL3 compiled from source and linked into the executable (release builds: no SDL3 library needed next to it)
+static-sdl = ["sdl3/build-from-source-static"]
