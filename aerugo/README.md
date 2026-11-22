@@ -17,7 +17,7 @@ copy the new `System/Aerugo.u` here.
 | Key | Values | Default |
 |---|---|---|
 | `VSync` | 0 off (immediate), 1 on (FIFO), 2 adaptive (relaxed FIFO), 3 fast (mailbox) | 1 |
-| `FrameLimit` | frames per second; 0 none, -1 the display's refresh rate minus 3 | 0 |
+| `FrameLimit` | frames per second; 0 none, -1 the display's refresh rate | 0 |
 | `OutputRate` | sound output in Hz; 0 the system's (48000 when unknown, never below 44100) | 0 |
 | `MouseDPI` | the mouse's counts per inch; movement is scaled to the 400 DPI the game was tuned for | 800 |
 | `Loudness` | 1 even: a compressor on the sound effects keeps many sounds at once (a room full of machines) from getting too loud; quiet scenes are as the original mixes them; 0 the original's mix | 1 |

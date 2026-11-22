@@ -535,9 +535,9 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
             session.follow_quality(&mut *rt.renderer()?)?;
             settings = now;
         }
-        // the frame rate limit: Auto is 3 below the display's refresh rate (inside a FreeSync/G-Sync range)
+        // the frame rate limit: Auto is the display's refresh rate
         let limit = match settings.frame_limit {
-            -1 => window.get_display().ok().and_then(|d| d.get_mode().ok()).map(|m| m.refresh_rate - 3.0).filter(|r| *r > 20.0).unwrap_or(0.0),
+            -1 => window.get_display().ok().and_then(|d| d.get_mode().ok()).map(|m| m.refresh_rate).filter(|r| *r > 20.0).unwrap_or(0.0),
             n if n > 0 => n as f32,
             _ => 0.0,
         };

@@ -53,6 +53,6 @@ defaultproperties
 	defaultValue=0
 	defaultInfoWidth=98
 	defaultInfoPosX=270
-	HelpText="Caps the frame rate. Auto: 3 below the display's refresh rate, best with FreeSync/G-Sync and Vertical Sync on."
+	HelpText="Caps the frame rate. Auto: the display's refresh rate."
 	actionText="|&Frame Rate Limit"
 }
