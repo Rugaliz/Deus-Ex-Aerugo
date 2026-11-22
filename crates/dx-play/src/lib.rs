@@ -1862,7 +1862,9 @@ impl Session {
         hit
     }
 
-    fn sync_movers(&mut self, renderer: &mut dx_vk::renderer::Renderer) {
+    /// The movers for this frame into `p` (their brushes given to the renderer on first sight), and the world's per-view
+    /// lists.
+    fn sync_movers(&mut self, renderer: &mut dx_vk::renderer::Renderer, p: &mut dx_vk::renderer::FramePacket) {
         let mut list = Vec::new();
         for a in self.vm.live_actors() {
             let Some(d) = self.vm.mover_draw(a) else { continue };
@@ -1876,8 +1878,8 @@ impl Session {
             let rotation: [i32; 3] = std::array::from_fn(|k| d.rotation[k].wrapping_add(dr[k]));
             list.push((export, self.mover_placement(a, location, rotation)));
         }
-        renderer.movers = list;
-        match self.listed_movers() {
+        p.movers = list;
+        p.mover_lists = match self.listed_movers() {
             Some(listed) => {
                 for &(a, export) in &listed.owners {
                     if self.vm.is_live(a) {
@@ -1885,20 +1887,22 @@ impl Session {
                         self.ensure_mover_world(renderer, a, export, loc, rot);
                     }
                 }
-                renderer.mover_fragments = Some(listed.fragments);
-                renderer.mover_nodes = listed.nodes;
-                renderer.mover_main = listed.main;
+                Some((listed.fragments, listed.nodes, listed.main))
             }
-            None => {
-                renderer.mover_fragments = None;
-                renderer.mover_nodes.clear();
-                renderer.mover_main.clear();
-            }
-        }
-        renderer.world.blended_order = self.blended_order();
-        renderer.world.mirror_order = self.mirror_order();
-        renderer.world.solid_mirror_order = self.solid_mirror_order();
-        renderer.world.main_solid = self.main_solid_nodes();
+            None => None,
+        };
+        p.blended_order = self.blended_order();
+        p.mirror_order = self.mirror_order();
+        p.solid_mirror_order = self.solid_mirror_order();
+        p.main_solid = self.main_solid_nodes();
+    }
+
+    /// The clock and the screen flash for this frame's packet.
+    fn frame_clock(&mut self, p: &mut dx_vk::renderer::FramePacket) {
+        p.lightmaps = self.lightmaps;
+        p.world_time = self.level_time();
+        p.view_time = self.viewport_time();
+        p.flash = self.screen_flash();
     }
 
     /// Gives the renderer mover `a`'s brush model (`export`) with the lightmaps baked where it stands now, once.
@@ -2239,42 +2243,48 @@ impl Session {
             s.prep_ms.push((name, e));
             t = std::time::Instant::now();
         };
+        // what the renderer is given this frame, applied at the end (`FramePacket`)
+        let mut p = dx_vk::renderer::FramePacket::default();
+        self.frame_clock(&mut p);
         self.take_snapshots(renderer);
         self.set_vis_size(w, h);
         lap(self, "snapshots/vis size");
         let (cam, rect) = self.scene_camera();
-        renderer.main_rect = rect;
+        p.main_rect = rect;
         let r = rect.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]).unwrap_or([0, 0, w as i32, h as i32]);
-        renderer.coronas = self.corona_quads(&cam, r);
+        p.coronas = self.corona_quads(&cam, r);
         lap(self, "camera/coronas");
         let actors = if self.draw_meshes && rect != Some([0; 4]) { self.actor_draws(&cam) } else { Vec::new() };
         lap(self, "actor draws");
-        renderer.child_views = if self.draw_meshes { self.child_views(&cam) } else { None };
+        p.child_views = if self.draw_meshes { self.child_views(&cam) } else { None };
         lap(self, "child views");
-        (renderer.actors.details, renderer.actors.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
+        (p.details, p.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
         lap(self, "detail polys");
-        self.sync_movers(renderer);
+        self.sync_movers(renderer, &mut p);
         lap(self, "movers");
-        let plain = !self.lit_view();
-        renderer.set_plain_textures(plain);
+        p.plain_textures = !self.lit_view();
         let [rx, ry, rw, rh] = dx_vk::present::fit_rect((w, h), window_size);
         let (ww, wh) = (window_size.0.max(1) as f32, window_size.1.max(1) as f32);
         self.view_rect = Some([rx / ww, ry / wh, rw / ww, rh / wh]);
-        renderer.ui_quads = if self.show_ui { self.ui_quads(w, h) } else { Vec::new() };
+        p.ui_quads = if self.show_ui { self.ui_quads(w, h) } else { Vec::new() };
         lap(self, "window system paint");
-        renderer.ui_views = if self.show_ui { self.ui_subviews() } else { Vec::new() };
-        renderer.ui_actors = if self.show_ui { self.ui_actor_draws() } else { Vec::new() };
+        p.ui_views = if self.show_ui { self.ui_subviews() } else { Vec::new() };
+        p.ui_actors = if self.show_ui { self.ui_actor_draws() } else { Vec::new() };
         lap(self, "window views/actors");
-        for (k, i) in &self.anim_frames {
-            renderer.set_anim_frame(k, *i);
-        }
-        renderer.lightmap_updates = self.take_lightmap_updates();
-        renderer.mover_lightmap_updates = self.take_mover_lightmap_updates();
-        renderer.mover_fog_updates = self.take_mover_fog_updates();
-        renderer.child_fog_updates = self.take_child_fog_updates();
-        renderer.fog_updates = self.take_fog_updates();
+        p.anim_frames = self.anim_frames.iter().map(|(k, i)| (k.clone(), *i)).collect();
+        self.take_map_updates(&mut p);
         lap(self, "light/fog map updates");
+        renderer.apply(p);
         (cam, actors)
+    }
+
+    /// The lightmap and fog map rectangles redone since the last frame, into the packet.
+    fn take_map_updates(&mut self, p: &mut dx_vk::renderer::FramePacket) {
+        p.lightmap_updates = self.take_lightmap_updates();
+        p.mover_lightmap_updates = self.take_mover_lightmap_updates();
+        p.mover_fog_updates = self.take_mover_fog_updates();
+        p.child_fog_updates = self.take_child_fog_updates();
+        p.fog_updates = self.take_fog_updates();
     }
 
     /// Renders the same view with the Vulkan renderer (offscreen, read back as RGBA8). `renderer` is made on first use.
@@ -2298,31 +2308,19 @@ impl Session {
         let corona_rect = rect.map(|r| [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32]).unwrap_or([0, 0, w as i32, h as i32]);
         let coronas = self.corona_quads(&cam, corona_rect);
         let r = renderer.as_mut().unwrap();
-        r.main_rect = rect;
-        r.coronas = coronas;
-        r.world.use_lightmaps = self.lightmaps && r.world.lightmap_info.is_some();
-        r.world.time = self.level_time();
-        r.time = self.viewport_time();
-        r.ui.flash = self.screen_flash();
-        if let Some(k) = std::env::var("DX_LIGHT_SCALE").ok().and_then(|v| v.parse().ok()) {
-            r.world.light_scale = k;
-        }
-        r.child_views = if self.draw_meshes { self.child_views(&cam) } else { None };
-        (r.actors.details, r.actors.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
-        self.sync_movers(r);
-        let plain = !self.lit_view();
-        r.set_plain_textures(plain);
-        r.ui_quads = if self.show_ui { self.ui_quads(w, h) } else { Vec::new() };
-        r.ui_views = if self.show_ui { self.ui_subviews() } else { Vec::new() };
-        r.ui_actors = if self.show_ui { self.ui_actor_draws() } else { Vec::new() };
-        for (k, i) in &self.anim_frames {
-            r.set_anim_frame(k, *i);
-        }
-        r.lightmap_updates = self.take_lightmap_updates();
-        r.mover_lightmap_updates = self.take_mover_lightmap_updates();
-        r.mover_fog_updates = self.take_mover_fog_updates();
-        r.child_fog_updates = self.take_child_fog_updates();
-        r.fog_updates = self.take_fog_updates();
+        let mut p = dx_vk::renderer::FramePacket { main_rect: rect, coronas, ..Default::default() };
+        self.frame_clock(&mut p);
+        p.light_scale = std::env::var("DX_LIGHT_SCALE").ok().and_then(|v| v.parse().ok());
+        p.child_views = if self.draw_meshes { self.child_views(&cam) } else { None };
+        (p.details, p.details_blended) = if rect != Some([0; 4]) { self.detail_polys(&cam) } else { Default::default() };
+        self.sync_movers(r, &mut p);
+        p.plain_textures = !self.lit_view();
+        p.ui_quads = if self.show_ui { self.ui_quads(w, h) } else { Vec::new() };
+        p.ui_views = if self.show_ui { self.ui_subviews() } else { Vec::new() };
+        p.ui_actors = if self.show_ui { self.ui_actor_draws() } else { Vec::new() };
+        p.anim_frames = self.anim_frames.iter().map(|(k, i)| (k.clone(), *i)).collect();
+        self.take_map_updates(&mut p);
+        r.apply(p);
         let rgba = r.render(&mut self.view, &cam, &actors, w, h).map_err(|e| e.to_string())?;
         self.meshes_drawn = r.actors.drawn;
         let mut rgba = rgba;

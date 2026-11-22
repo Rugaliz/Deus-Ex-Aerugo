@@ -647,6 +647,45 @@ fn record_ui(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Actor
     ui.0.draw_flash(cx, cb, target.width, target.height);
 }
 
+/// Everything the game hands the renderer for one frame (RENDER_THREAD.md phase 2), applied in one place
+/// (`Renderer::apply`) just before the frame is recorded, so that a renderer on its own thread can be given it whole.
+/// What it does not carry are the resource operations that need the map's data (new movers' brushes, textures and
+/// meshes loaded on first use) and the read back of the last frame.
+#[derive(Default)]
+pub struct FramePacket {
+    pub main_rect: Option<[u32; 4]>,
+    pub coronas: Vec<UiQuad>,
+    pub child_views: Option<Vec<ChildView>>,
+    pub details: Vec<crate::actors::DetailPoly>,
+    pub details_blended: HashMap<u32, Vec<crate::actors::DetailPoly>>,
+    /// Movers to draw: brush export and where it stands.
+    pub movers: Vec<(usize, Placement)>,
+    /// The movers drawn through the lists: fragments per brush export, their dynamic nodes, the ones the main frame
+    /// drew (`None`: every mover whole).
+    pub mover_lists: Option<(HashMap<usize, Vec<crate::world::Fragment>>, HashMap<u32, (usize, usize)>, Vec<u32>)>,
+    pub blended_order: Option<Vec<u32>>,
+    pub mirror_order: Option<Vec<u32>>,
+    pub solid_mirror_order: Option<Vec<u32>>,
+    pub main_solid: Option<Vec<u32>>,
+    pub plain_textures: bool,
+    pub ui_quads: Vec<UiQuad>,
+    pub ui_views: Vec<SubView>,
+    pub ui_actors: Vec<UiActors>,
+    /// Animated textures' current frames (texture key, frame index).
+    pub anim_frames: Vec<((String, usize), usize)>,
+    pub lightmap_updates: Vec<(u32, u32, u32, u32, Vec<u8>)>,
+    pub mover_lightmap_updates: Vec<(usize, (u32, u32, u32, u32, Vec<u8>))>,
+    pub mover_fog_updates: Vec<(usize, usize, (u32, u32, u32, u32, Vec<u8>))>,
+    pub child_fog_updates: Vec<(usize, (u32, u32, u32, u32, Vec<u8>))>,
+    pub fog_updates: Vec<(u32, u32, u32, u32, Vec<u8>)>,
+    /// Lightmaps wanted (drawn when the map has them).
+    pub lightmaps: bool,
+    pub world_time: f32,
+    pub view_time: f64,
+    pub flash: Option<([f32; 3], [f32; 3])>,
+    pub light_scale: Option<f32>,
+}
+
 pub struct Renderer {
     pub cx: Context,
     pub world: World,
@@ -805,6 +844,51 @@ impl Renderer {
     }
 
     /// Shows frame `index` of an animated surface texture on the world and the movers.
+    /// Takes this frame's `FramePacket` (after any new movers' brushes were added: the per-world switches reach them).
+    pub fn apply(&mut self, p: FramePacket) {
+        self.main_rect = p.main_rect;
+        self.coronas = p.coronas;
+        self.child_views = p.child_views;
+        self.actors.details = p.details;
+        self.actors.details_blended = p.details_blended;
+        self.movers = p.movers;
+        match p.mover_lists {
+            Some((fragments, nodes, main)) => {
+                self.mover_fragments = Some(fragments);
+                self.mover_nodes = nodes;
+                self.mover_main = main;
+            }
+            None => {
+                self.mover_fragments = None;
+                self.mover_nodes.clear();
+                self.mover_main.clear();
+            }
+        }
+        self.world.blended_order = p.blended_order;
+        self.world.mirror_order = p.mirror_order;
+        self.world.solid_mirror_order = p.solid_mirror_order;
+        self.world.main_solid = p.main_solid;
+        self.set_plain_textures(p.plain_textures);
+        self.ui_quads = p.ui_quads;
+        self.ui_views = p.ui_views;
+        self.ui_actors = p.ui_actors;
+        for (k, i) in &p.anim_frames {
+            self.set_anim_frame(k, *i);
+        }
+        self.lightmap_updates = p.lightmap_updates;
+        self.mover_lightmap_updates = p.mover_lightmap_updates;
+        self.mover_fog_updates = p.mover_fog_updates;
+        self.child_fog_updates = p.child_fog_updates;
+        self.fog_updates = p.fog_updates;
+        self.world.use_lightmaps = p.lightmaps && self.world.lightmap_info.is_some();
+        self.world.time = p.world_time;
+        self.time = p.view_time;
+        self.ui.flash = p.flash;
+        if let Some(k) = p.light_scale {
+            self.world.light_scale = k;
+        }
+    }
+
     pub fn set_anim_frame(&mut self, key: &(String, usize), index: usize) {
         self.world.set_anim_frame(key, index);
         for w in self.mover_worlds.values_mut() {

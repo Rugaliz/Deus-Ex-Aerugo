@@ -518,10 +518,6 @@ fn run_window_vk(session: &mut Session, map: &str, max_frames: Option<u64>, wind
         if session.take_map_changed() {
             session.reload_vk_world(&mut renderer)?;
         }
-        renderer.world.use_lightmaps = session.lightmaps && renderer.world.lightmap_info.is_some();
-        renderer.world.time = session.level_time();
-        renderer.time = session.viewport_time();
-        renderer.ui.flash = session.screen_flash();
         session.render_vk_window(&mut renderer, window.size_in_pixels())?;
         frames_since += 1;
         // settings the menus change while playing (a few times a second)
