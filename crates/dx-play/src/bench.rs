@@ -67,6 +67,31 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         v => v.and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0),
     };
     let profiler = start_profile(profile.is_some())?;
+    // `DX_BENCH_CPU`: the CPU side measured steadily (the frame rate varies with what else the machine runs): from the
+    // loaded game (with `DX_BENCH_FREEZE`, the same state in every build), 240 game steps of 1/60 s, then 200 visibility
+    // walks of the view; medians and means. Then the run as usual.
+    if std::env::var_os("DX_BENCH_CPU").is_some() {
+        let stat = |v: &mut Vec<f64>| {
+            v.sort_by(|a, b| a.total_cmp(b));
+            (v[v.len() / 2], v.iter().sum::<f64>() / v.len() as f64)
+        };
+        let mut steps = Vec::new();
+        for _ in 0..240 {
+            let t = Instant::now();
+            session.advance(1.0 / 60.0);
+            steps.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let cam = session.render_camera();
+        let (w, h) = (size.0 as i32, size.1 as i32);
+        let mut walks = Vec::new();
+        for _ in 0..200 {
+            let t = Instant::now();
+            let _ = session.compute_visibility(&cam, w, h);
+            walks.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let ((sm, sa), (wm, wa)) = (stat(&mut steps), stat(&mut walks));
+        println!("cpu: step median {sm:.3} ms (mean {sa:.3}), walk median {wm:.3} ms (mean {wa:.3})");
+    }
     let start = Instant::now();
     last = Instant::now();
     while start.elapsed().as_secs_f64() < seconds {
