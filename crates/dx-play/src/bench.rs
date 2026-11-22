@@ -38,12 +38,21 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     let at = session.player_location();
     println!("player at {:.1},{:.1},{:.1}", at[0], at[1], at[2]);
     let mut prep = Vec::new();
+    // `DX_BENCH_FREEZE`: the game stands still (the warm-up takes ten fixed steps of 1/60 s, then none): the same scene
+    // in every frame and every run, for comparing builds
+    let freeze = std::env::var_os("DX_BENCH_FREEZE").is_some();
     // warm up: textures, meshes and caches of the first views
     let mut last = Instant::now();
     let warm = Instant::now();
+    let mut warm_frames = 0;
     while warm.elapsed().as_secs_f64() < 2.0 {
         let now = Instant::now();
-        session.advance(now.duration_since(last).as_secs_f32());
+        if !freeze {
+            session.advance(now.duration_since(last).as_secs_f32());
+        } else if warm_frames < 10 {
+            session.advance(1.0 / 60.0);
+        }
+        warm_frames += 1;
         last = now;
         session.render_vk_bench(&mut renderer, size, &mut prep)?;
     }
@@ -52,8 +61,11 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     let mut frames: Vec<Frame> = Vec::new();
     let mut prep_sum: BTreeMap<&'static str, f64> = BTreeMap::new();
     let mut render_sum: BTreeMap<&'static str, f64> = BTreeMap::new();
-    // `DX_BENCH_YAW`: the view's yaw at the start in degrees (0 otherwise)
-    let mut yaw = std::env::var("DX_BENCH_YAW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+    // `DX_BENCH_YAW`: the view's yaw at the start in degrees, `save` the loaded game's (0 otherwise)
+    let mut yaw = match std::env::var("DX_BENCH_YAW").ok() {
+        Some(v) if v == "save" => (session.yaw & 0xffff) as f32 * 360.0 / 65536.0,
+        v => v.and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0),
+    };
     let profiler = start_profile(profile.is_some())?;
     let start = Instant::now();
     last = Instant::now();
@@ -63,7 +75,7 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         last = t0;
         yaw += turn_deg_per_s * dt;
         session.set_yaw(yaw);
-        let steps = session.advance(dt);
+        let steps = if freeze { 0 } else { session.advance(dt) };
         let step = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         session.render_vk_bench(&mut renderer, size, &mut prep)?;
