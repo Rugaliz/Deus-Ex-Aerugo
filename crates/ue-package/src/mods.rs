@@ -8,7 +8,9 @@
 //! - ini files (`DeusEx.ini`, `User.ini`, ...): their keys go over the game's (the player's own settings still win);
 //! - localised text (`<Package>.int`);
 //! - replacement textures: `Textures/<Package>/<Group>/<Name>.png` (or `<Package>.<Group>.<Name>.png`), at any
-//!   size; the texture keeps its original size for the game, only the picture changes.
+//!   size; the texture keeps its original size for the game, only the picture changes;
+//! - replacement mesh geometry: `Meshes/<Package>/<Name>.aemesh` (or `<Package>.<Name>.aemesh`), written by the mod
+//!   kit (`deusex-modkit import`); the mesh keeps its animation sequences and texture slots (`ue_assets::mesh_mod`).
 //!
 //! The index is built once per game folder (`init`) and read through the free functions below.
 
@@ -73,6 +75,8 @@ pub struct Mods {
     pub ints: HashMap<String, Source>,
     /// Replacement pictures by lower-case object path (`package.group.name`); the last mod wins.
     pub textures: HashMap<String, Source>,
+    /// Replacement mesh geometry (`.aemesh`) by lower-case object path (`package.name`); the last mod wins.
+    pub meshes: HashMap<String, Source>,
 }
 
 static INDEX: RwLock<Option<(PathBuf, Arc<Mods>)>> = RwLock::new(None);
@@ -106,6 +110,15 @@ pub fn texture(path: &str) -> Option<Source> {
         return None;
     }
     m.textures.get(&path.to_ascii_lowercase()).cloned()
+}
+
+/// The replacement geometry of the mesh `Package.Name` (any case), if a mod provides one.
+pub fn mesh(path: &str) -> Option<Source> {
+    let m = current();
+    if m.meshes.is_empty() {
+        return None;
+    }
+    m.meshes.get(&path.to_ascii_lowercase()).cloned()
 }
 
 fn scan(dir: &Path) -> Mods {
@@ -176,18 +189,22 @@ fn add(out: &mut Mods, mod_name: &str, rel: &str, source: Source) {
     } else if ext_l == "int" {
         out.ints.insert(stem_l, source);
     } else if ext_l == "png" {
-        if let Some(key) = texture_key(rel) {
+        if let Some(key) = object_key(rel, "textures") {
             out.textures.insert(key, source);
+        }
+    } else if ext_l == "aemesh" {
+        if let Some(key) = object_key(rel, "meshes") {
+            out.meshes.insert(key, source);
         }
     }
 }
 
-/// The object path a replacement picture stands for: the components after a `Textures` folder joined with dots
-/// (`Textures/CoreTexMetal/Metal/Floor.png`), else the file name itself (`CoreTexMetal.Metal.Floor.png`).
-fn texture_key(rel: &str) -> Option<String> {
+/// The object path a replacement file stands for: the components after a `Textures` (`Meshes`) folder joined with
+/// dots (`Textures/CoreTexMetal/Metal/Floor.png`), else the file name itself (`CoreTexMetal.Metal.Floor.png`).
+fn object_key(rel: &str, folder: &str) -> Option<String> {
     let rel = rel.rsplit_once('.')?.0;
     let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-    let after = parts.iter().rposition(|p| p.eq_ignore_ascii_case("textures")).map(|i| &parts[i + 1..]);
+    let after = parts.iter().rposition(|p| p.eq_ignore_ascii_case(folder)).map(|i| &parts[i + 1..]);
     let key = match after {
         Some(rest) if !rest.is_empty() => rest.join("."),
         _ => parts.last()?.to_string(),
@@ -201,10 +218,12 @@ mod tests {
 
     #[test]
     fn replacement_pictures_are_named_by_object_path() {
-        assert_eq!(texture_key("Textures/CoreTexMetal/Metal/Floor.png").as_deref(), Some("coretexmetal.metal.floor"));
-        assert_eq!(texture_key("MyPack/Textures/CoreTexMetal/Floor.png").as_deref(), Some("coretexmetal.floor"));
-        assert_eq!(texture_key("CoreTexMetal.Metal.Floor.png").as_deref(), Some("coretexmetal.metal.floor"));
-        assert_eq!(texture_key("readme.png"), None);
+        let t = |r| object_key(r, "textures");
+        assert_eq!(t("Textures/CoreTexMetal/Metal/Floor.png").as_deref(), Some("coretexmetal.metal.floor"));
+        assert_eq!(t("MyPack/Textures/CoreTexMetal/Floor.png").as_deref(), Some("coretexmetal.floor"));
+        assert_eq!(t("CoreTexMetal.Metal.Floor.png").as_deref(), Some("coretexmetal.metal.floor"));
+        assert_eq!(t("readme.png"), None);
+        assert_eq!(object_key("Meshes/DeusExItems/GEPGun.aemesh", "meshes").as_deref(), Some("deusexitems.gepgun"));
     }
 
     #[test]
@@ -212,7 +231,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aerugo-mods-test-{}", std::process::id()));
         let mods = dir.join("Mods");
         let _ = std::fs::remove_dir_all(&dir);
-        for (m, f) in [("A", "Textures/Foo.utx"), ("B", "Foo.utx"), ("_C", "Foo.utx"), ("B", "System/DeusEx.ini")] {
+        for (m, f) in [("A", "Textures/Foo.utx"), ("B", "Foo.utx"), ("_C", "Foo.utx"), ("B", "System/DeusEx.ini"), ("A", "Meshes/Pkg/Gun.aemesh"), ("B", "Meshes/Pkg/Gun.aemesh")] {
             let p = mods.join(m).join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, m).unwrap();
@@ -231,6 +250,7 @@ mod tests {
         assert_eq!(m.packages["foo"].source.read().unwrap(), b"B");
         assert_eq!(m.inis["deusex"].len(), 1);
         assert_eq!(m.textures["pkg.grp.tex"].read().unwrap(), b"png");
+        assert_eq!(m.meshes["pkg.gun"].read().unwrap(), b"B");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

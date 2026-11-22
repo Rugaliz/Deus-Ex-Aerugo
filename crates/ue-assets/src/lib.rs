@@ -6,6 +6,7 @@ pub mod font;
 pub mod level;
 pub mod light;
 pub mod mesh;
+pub mod mesh_mod;
 pub mod model;
 pub mod procedural;
 pub mod sort;

@@ -42,6 +42,8 @@ impl MapView {
                 "Mesh" => LodMesh::from_plain(ue_assets::mesh::Mesh::load(&pkg.pkg, export).ok()?),
                 _ => return None,
             };
+            // a mod's replacement geometry (`Meshes/<Package>/<Name>.aemesh`)
+            let lod = ue_assets::mesh_mod::with_mod(path, lod);
             let own_texture_paths: Vec<Option<String>> = lod
                 .mesh
                 .textures
