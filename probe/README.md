@@ -7,6 +7,7 @@
 |---|---|
 | `DXProbe.u` | the compiled package, as built by `scripts/probe.sh build` in the archive |
 | `expected_crates.txt` | the original's log of `DXProbe.CrateGame` (`scripts/probe.sh crates`): a carried crate dropped against another at four gaps |
+| `expected_drops.txt` | the original's log of `DXProbe.DropGame` (`scripts/probe.sh drops`): the Dragon's Tooth sword put falling, at rest and spinning, where a save had it hanging on a slope in 12_Vandenberg_Gas, and 40 units higher |
 | `expected_travel.txt` | the original's log of `DXProbe.TravelGame` (`scripts/probe.sh travel`): Liberty Island -> UNATCO HQ -> Liberty Island, what the player carries and what the levels keep |
 
-`crates/dx-play/tests/travel_probe.rs` and `crates_probe.rs` run the same package in the port and compare the lines.
+`crates/dx-play/tests/travel_probe.rs`, `crates_probe.rs` and `drops_probe.rs` run the same package in the port and compare the lines.

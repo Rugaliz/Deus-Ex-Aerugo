@@ -1258,6 +1258,8 @@ impl Vm {
 
     /// `AActor::physFalling`.
     pub fn phys_falling(&mut self, a: u32, dt: f32, mut iterations: i32) -> Res<()> {
+        /// How far a falling slide stopped by its own plane is lifted off it on the retry (Aerugo).
+        const SLIDE_LIFT: f32 = 0.001;
         let o = self.offsets();
         let is_pawn = self.is_pawn_actor(a);
         let is_player = self.is_player_actor(a);
@@ -1395,6 +1397,15 @@ impl Vm {
                     let step_time = hit.time;
                     if dot(slide, moved_delta) >= 0.0 {
                         self.mv(a, slide, &mut hit)?;
+                        if step_time == 0.0 && hit.time == 0.0 && hit.normal == old_normal {
+                            // Aerugo (fixed steps): the slide runs along the plane that stopped the fall, but the trace's
+                            // float end point (thousands of units out) can make it enter that plane by more than the
+                            // trace's parallel tolerance, so a box resting in the plane is stopped at once. The original
+                            // gets through on a later tick, whose length differs; with steps of one length the same state
+                            // came back every step and a dropped item hung there spinning (a sword on a slope in
+                            // 12_Vandenberg_Gas). Slide once more, lifted off the plane by a thousandth of a unit.
+                            self.mv(a, add(slide, mul(old_normal, SLIDE_LIFT)), &mut hit)?;
+                        }
                         if hit.time < 1.0 {
                             if hit.normal[2] > 0.7 {
                                 return self.process_landed(a, hit.normal, hit.actor, 0.0, iterations);

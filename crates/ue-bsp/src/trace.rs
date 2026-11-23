@@ -10,7 +10,7 @@ const PUSHOUT: f32 = 1.02;
 /// Hull bounding-box slack.
 const BOUND_SLACK: f32 = 0.1;
 /// Tolerance below which a trace is considered parallel to a plane.
-const PARALLEL_EPS: f32 = 1e-5;
+const PARALLEL_EPS: f64 = 1e-5;
 /// Minimum squared length of the cross product of two hull plane normals for an edge to exist.
 const EDGE_EPS_SQ: f32 = 1e-6;
 /// Plane-pair overlap threshold for edge bevels.
@@ -25,6 +25,20 @@ fn clamp01(t: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// `n . p - w` as the engine's box trace computes it: on the x87, `(n.z p.z + n.y p.y) + p.x n.x - w` without rounding,
+/// stored once as a float. Rounding every step in f32 instead loses ~1e-4 at map coordinates in the thousands, which
+/// is ten times the trace's parallel tolerance (a slide along a slope then counts as running into it).
+fn plane_dist(plane: [f32; 4], p: Vec3) -> f32 {
+    let (n, p) = (plane.map(f64::from), p.map(f64::from));
+    ((n[2] * p[2] + n[1] * p[1]) + p[0] * n[0] - n[3]) as f32
+}
+
+/// The box's reach along `n` (`|n.x e.x| + |n.y e.y| + |n.z e.z|`), summed z, y, x on the x87 and stored once.
+fn push_x87(n: Vec3, e: Vec3) -> f32 {
+    let a = |i: usize| (f64::from(n[i]) * f64::from(e[i])).abs();
+    ((a(2) + a(1)) + a(0)) as f32
 }
 
 /// The six axis planes that bound a leaf hull: (normal, offset) from the hull's integer bounds `b`.
@@ -278,8 +292,8 @@ impl Bsp {
             let n = &self.nodes[cur];
             let plane = self.plane_of(cur, st.owner.as_ref());
             let nn = [plane[0], plane[1], plane[2]];
-            let d_start = dot(nn, st.start) - plane[3];
-            let d_end = dot(nn, st.end) - plane[3];
+            let d_start = plane_dist(plane, st.start);
+            let d_end = plane_dist(plane, st.end);
             let push = push_dist(nn, scale(st.extent, NODE_EXTENT_PAD));
             // explore the back child if either end lies within `push` of the plane or behind it, the front child if
             // either end lies within `push` behind the plane or in front of it
@@ -302,33 +316,35 @@ impl Bsp {
         }
     }
 
-    /// Clips the swept box against a hull (planes, bounds, bevels), updating the best hit.
+    /// Clips the swept box against a hull (planes, bounds, bevels), updating the best hit (103f5b80, per plane).
+    /// The distances and the push are floats; `num` and `t = num / den` stay unrounded on the x87 until a time is
+    /// stored, and the parallel test compares the float `den` with the double tolerance.
     fn lc_hull(&self, st: &mut LineState, h: &Hull, ids: &[i32]) {
         let mut tmin = -1.0f32;
         let mut tmax = st.best_time;
         let mut normal = [0.0f32; 3];
         for (plane, _) in all_planes(h, st.owner.is_none(), ids) {
             let nn = [plane[0], plane[1], plane[2]];
-            let push = push_dist(nn, st.extent);
-            let d_start = dot(nn, st.start) - plane[3];
-            let d_end = dot(nn, st.end) - plane[3];
-            let mut num = d_start - push;
-            if d_end < d_start && -push <= num && num < 0.0 {
+            let push = push_x87(nn, st.extent);
+            let d_start = plane_dist(plane, st.start);
+            let d_end = plane_dist(plane, st.end);
+            let mut num = f64::from(d_start) - f64::from(push);
+            if d_end < d_start && -f64::from(push) <= num && num < 0.0 {
                 num = 0.0;
             }
             let den = d_start - d_end;
-            let t = num / den;
-            if -PARALLEL_EPS <= den {
-                if den <= PARALLEL_EPS {
+            let t = num / f64::from(den);
+            if -PARALLEL_EPS <= f64::from(den) {
+                if f64::from(den) <= PARALLEL_EPS {
                     if push < d_start && push < d_end {
                         return;
                     }
-                } else if tmin < t {
-                    tmin = t;
+                } else if f64::from(tmin) < t {
+                    tmin = t as f32;
                     normal = nn;
                 }
-            } else if t < tmax {
-                tmax = t;
+            } else if t < f64::from(tmax) {
+                tmax = t as f32;
             }
             if tmax <= tmin {
                 return;
