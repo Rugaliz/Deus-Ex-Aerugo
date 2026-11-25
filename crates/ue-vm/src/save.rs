@@ -17,7 +17,11 @@ use ue_registry::{PropDef, Target};
 type Res<T> = Result<T, VmError>;
 
 const MAGIC: &[u8; 8] = b"DXSHSAVE";
+/// The format written. Every version from 1 up stays readable (the compatibility promise of 1.0): a change appends an
+/// optional section at the end (older saves end before it, see `decode`) or raises the version, with `decode` keeping
+/// the reading of the older ones. Reference saves of each version: `crates/dx-play/tests/save_compat.rs`.
 const VERSION: u32 = 1;
+const OLDEST_VERSION: u32 = 1;
 
 /// Portable object reference: kind in the top three bits, index in the rest.
 const K_OBJECT: u32 = 1 << 29;
@@ -327,8 +331,12 @@ impl Snapshot {
             return Err(VmError::Runtime("not a saved game".into()));
         }
         let version = r.u32()?;
-        if version != VERSION {
-            return Err(VmError::Runtime(format!("saved game version {version} is not supported")));
+        if !(OLDEST_VERSION..=VERSION).contains(&version) {
+            return Err(VmError::Runtime(if version > VERSION {
+                format!("saved game version {version} is from a newer Aerugo (this one reads versions {OLDEST_VERSION} to {VERSION})")
+            } else {
+                format!("saved game version {version} is not supported")
+            }));
         }
         let mut s = Snapshot { map: r.str()?, time: r.f32()?, rng: r.u32()?, player: r.u32()?, ..Default::default() };
         s.names = r.strs()?;
@@ -805,5 +813,23 @@ impl Vm {
     fn prop_at_name(&mut self, r: u32, name: &str) -> bool {
         let Some(class) = self.class_of(r) else { return false };
         self.reg.find_prop(class, name).is_some()
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn every_version_up_to_this_one_reads_and_a_newer_one_says_so() {
+        let bytes = Snapshot { map: "Test".into(), ..Default::default() }.encode();
+        assert_eq!(Snapshot::decode(&bytes).unwrap().map, "Test");
+        let mut newer = bytes.clone();
+        newer[8..12].copy_from_slice(&(VERSION + 1).to_le_bytes());
+        let e = Snapshot::decode(&newer).unwrap_err().to_string();
+        assert!(e.contains("newer Aerugo"), "{e}");
+        let mut zero = bytes;
+        zero[8..12].copy_from_slice(&0u32.to_le_bytes());
+        assert!(Snapshot::decode(&zero).is_err());
     }
 }
