@@ -1180,11 +1180,13 @@ impl ActorRenderer {
     /// Steps the procedural textures in use for a frame drawn at `time` and stages their pixels (after the previous
     /// frame finished on the GPU); `record_procedural_uploads` then copies them in.
     pub fn update_procedurals(&mut self, view: &mut MapView, time: f64) {
-        for t in self.textures.values_mut().flatten() {
-            if let Some((key, staging)) = &mut t.dynamic {
-                if let Some((_, _, rgba, version)) = view.procedural_frame_versioned(key, time) {
-                    staging.write_version(rgba, version);
-                }
+        // in the order of their keys, not the map's (which changes from run to run): fire and water textures share one
+        // random number sequence, so the order of their steps decides their pixels
+        let mut dynamic: Vec<_> = self.textures.values_mut().flatten().filter_map(|t| t.dynamic.as_mut()).collect();
+        dynamic.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, staging) in dynamic {
+            if let Some((_, _, rgba, version)) = view.procedural_frame_versioned(key, time) {
+                staging.write_version(rgba, version);
             }
         }
     }

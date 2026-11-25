@@ -951,7 +951,11 @@ impl Renderer {
         self.world.update_lightmap(&rects);
         let rects = std::mem::take(&mut self.fog_updates);
         self.world.update_fog(&rects);
-        for w in self.mover_worlds.values_mut() {
+        // movers in the order of their exports (the map's order changes from run to run; procedural textures share
+        // one random number sequence)
+        let mut movers: Vec<_> = self.mover_worlds.iter_mut().collect();
+        movers.sort_by_key(|(export, _)| **export);
+        for (_, w) in movers {
             w.update_procedurals(view, t);
         }
         for (export, w) in self.mover_worlds.iter_mut() {
