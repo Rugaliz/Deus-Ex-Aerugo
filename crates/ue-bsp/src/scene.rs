@@ -24,11 +24,42 @@ pub fn view_coords(location: Vec3, rotation: [i32; 3]) -> Coords {
     c
 }
 
-/// The horizontal field of view (degrees) a `fov` given for a 4:3 screen covers on a screen of `aspect`: wider
-/// screens see more at the sides with the same vertical view (the port's widescreen rule, "Hor+"); 4:3 and narrower
-/// screens keep `fov` (the original).
+static WIDE_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The widescreen rule for every view of the process (`AerugoSettings.WideView`): off (the default, the original) the
+/// field of view spans the whole screen width; on, it is meant for a 4:3 screen and wider screens see more at the
+/// sides with the same vertical view ("Hor+").
+pub fn set_wide_view(on: bool) {
+    WIDE_VIEW.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn wide_view() -> bool {
+    WIDE_VIEW.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How much wider than `fov` the view's half-width tangent is on a screen of `aspect` (1 without the wide view, or on
+/// 4:3 and narrower screens).
+pub fn widening(aspect: f32, wide: bool) -> f32 {
+    if wide {
+        (aspect / (4.0 / 3.0)).max(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// Half-width tangent of the view of a horizontal field of view `fov` (degrees) on a screen of `aspect`, under the
+/// process's widescreen rule (`set_wide_view`).
+pub fn view_tan(fov: f32, aspect: f32) -> f32 {
+    (fov.to_radians() * 0.5).tan() * widening(aspect, wide_view())
+}
+
+/// The horizontal field of view (degrees) `fov` covers on a screen of `aspect` under the widescreen rule.
 pub fn hor_plus_fov(fov: f32, aspect: f32) -> f32 {
-    2.0 * ((fov.to_radians() * 0.5).tan() * (aspect / (4.0 / 3.0)).max(1.0)).atan().to_degrees()
+    widened_fov(fov, aspect, wide_view())
+}
+
+pub fn widened_fov(fov: f32, aspect: f32, wide: bool) -> f32 {
+    2.0 * ((fov.to_radians() * 0.5).tan() * widening(aspect, wide)).atan().to_degrees()
 }
 
 /// What `FSceneNode::ComputeRenderSize` derives from the screen size and the field of view.
@@ -161,8 +192,9 @@ mod tests {
         assert_eq!((s.fx15, s.fy15), (400.50005, 300.50005));
         assert!((s.proj_z - 400.0).abs() < 1e-3);
         // a 4:3 screen keeps the field of view; 16:9 widens it (tan 45 * 4/3 -> 106.26 degrees)
-        assert!((hor_plus_fov(90.0, 4.0 / 3.0) - 90.0).abs() < 1e-4);
-        assert!((hor_plus_fov(90.0, 16.0 / 9.0) - 106.260_2).abs() < 1e-3);
+        assert!((widened_fov(90.0, 4.0 / 3.0, true) - 90.0).abs() < 1e-4);
+        assert!((widened_fov(90.0, 16.0 / 9.0, true) - 106.260_2).abs() < 1e-3);
+        assert!((widened_fov(90.0, 16.0 / 9.0, false) - 90.0).abs() < 1e-4);
     }
 
     /// `Project`: a point straight ahead lands on the centre with scale `Proj.Z / Z`; one 100 units right at depth 400

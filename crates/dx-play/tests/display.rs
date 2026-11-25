@@ -179,7 +179,7 @@ fn the_port_menus_set_what_the_host_reads() {
     s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
     s.exec("ShowMainMenu");
     let gfx = choices(&mut s, "MenuScreenAerugoGraphics");
-    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoRTShadows", "AerugoRTAO", "AerugoMaxDecals"]);
+    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoRTShadows", "AerugoRTAO", "AerugoMaxDecals", "AerugoWideView"]);
     s.settings_quality = true;
     let enhanced = dx_vk::Quality { filter: 5, msaa: 4, deep_color: true, smooth_lightmaps: true, pixel_lighting: true, rt_shadows: true, rt_ao: true };
     assert_eq!(s.quality(), enhanced, "the defaults");
@@ -195,6 +195,15 @@ fn the_port_menus_set_what_the_host_reads() {
         s.follow_settings();
         assert_eq!(s.max_decals, n);
     }
+    // the widescreen rule: the original's by default (the angle spans the screen width), "Wider" from the menu
+    s.follow_settings();
+    assert!(!ue_bsp::scene::wide_view(), "the default");
+    set(&mut s, gfx[8].1, 1);
+    s.follow_settings();
+    assert!(ue_bsp::scene::wide_view());
+    set(&mut s, gfx[8].1, 0);
+    s.follow_settings();
+    assert!(!ue_bsp::scene::wide_view());
 }
 
 /// The game's main menu shows the port's version line (`Aerugo <tag or commit>`) beside the original's version text,

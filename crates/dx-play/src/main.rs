@@ -362,6 +362,9 @@ fn main() {
     session.lightmaps = !flag("--nolight");
     // the player's picture options in a window; headless pictures draw as the original unless `--enhanced`
     session.settings_quality = !flag("--headless") || flag("--enhanced");
+    // the widescreen rule from the start (the window path follows the setting from then on, `follow_settings`)
+    let wide = session.settings_quality && session.aerugo_settings().wide_view != 0;
+    ue_bsp::scene::set_wide_view(wide);
     if let Some(b) = value("--brightness").and_then(|v| v.parse().ok()) {
         session.brightness = b;
         session.brightness_fixed = true;

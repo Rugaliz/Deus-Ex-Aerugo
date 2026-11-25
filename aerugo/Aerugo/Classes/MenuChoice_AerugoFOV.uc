@@ -55,6 +55,6 @@ defaultproperties
 	defaultValue=0
 	defaultInfoWidth=98
 	defaultInfoPosX=270
-	HelpText="How wide the view is, in degrees across a 4:3 picture (wider screens see more to the sides). 75 is the original's."
+	HelpText="How wide the view is, in degrees across the screen (with Wide Screen View on: across a 4:3 picture). 75 is the original's."
 	actionText="Field |&of View"
 }

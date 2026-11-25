@@ -8,8 +8,9 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 
 - **Runs on modern systems.** A native Windows 10/11 and Linux program. No compatibility patches, no Wine, nothing
   else to install: one small file.
-- **Any screen.** Your monitor's own resolution, including widescreen and ultrawide (16:9, 21:9, 32:9), with a wider
-  view on wider screens instead of a stretched picture.
+- **Any screen.** Your monitor's own resolution, including widescreen and ultrawide (16:9, 21:9, 32:9), never a
+  stretched picture. The field of view starts as the original's; set it in *Display*, and choose *Wide Screen View:
+  Wider* in *Advanced Graphics* to see more at the sides on wide screens.
 - **Smooth and fast.** Hundreds of frames per second on a modern PC (well over a thousand on a recent one), ready for
   high refresh rate monitors. The picture is drawn on a thread of its own while the game runs the next moment, which
   keeps the frame rate steady on slower PCs and laptops too. Choose how vertical sync works (off, on, adaptive for

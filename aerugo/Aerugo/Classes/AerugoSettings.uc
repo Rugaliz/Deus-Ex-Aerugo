@@ -31,6 +31,9 @@ var config int Loudness;
 // in a conversation showing choices, the number keys 1..9 and 0 pick that choice: 1 on, 0 as the original (mouse,
 // arrow keys and Enter only)
 var config int DialogueKeys;
+// the field of view on wide screens: 0 as the original (the angle spans the whole screen width), 1 wider (the angle is
+// for a 4:3 picture and wider screens see more at the sides, "Hor+")
+var config int WideView;
 
 defaultproperties
 {
@@ -48,4 +51,5 @@ defaultproperties
 	MaxDecals=1000
 	Loudness=1
 	DialogueKeys=1
+	WideView=0
 }

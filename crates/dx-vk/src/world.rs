@@ -139,10 +139,10 @@ struct Batch {
 
 /// Column-major view-projection for the engine's camera conventions (x forward, y right, z up at zero rotation;
 /// `fov` is horizontal). Clip +Y is up on screen because the viewport is flipped (see `Offscreen::begin`).
-/// Half-width tangent of the view for a horizontal field of view `fov` (degrees) given for a 4:3 screen: wider screens see
-/// more at the sides with the same vertical view ("Hor+", the usual widescreen behaviour); narrower ones keep the width.
+/// Half-width tangent of the view for a horizontal field of view `fov` (degrees) on a screen of `aspect`, under the
+/// widescreen rule (`ue_bsp::scene::set_wide_view`: the original's, or "Hor+").
 pub fn hor_plus_tan(fov: f32, aspect: f32) -> f32 {
-    (fov.to_radians() * 0.5).tan() * (aspect / (4.0 / 3.0)).max(1.0)
+    ue_bsp::scene::view_tan(fov, aspect)
 }
 
 pub fn view_proj(cam: &Camera, aspect: f32, near: f32, far: f32) -> [f32; 16] {

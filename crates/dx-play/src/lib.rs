@@ -735,7 +735,7 @@ impl Session {
             rt_shadows: get("RTShadows", 1) != 0,
             rt_ao: get("RTAO", 1) != 0,
         };
-        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000), loudness: get("Loudness", 1) }
+        AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000), loudness: get("Loudness", 1), wide_view: get("WideView", 0) }
     }
 
     /// The picture options a renderer of this session uses: the player's settings in a window (`settings_quality`),
@@ -780,6 +780,8 @@ impl Session {
         let dpi = settings.mouse_dpi.clamp(100, 32000);
         self.mouse_scale = 400.0 / dpi as f32;
         self.max_decals = settings.max_decals.max(0) as usize;
+        // headless pictures and tests draw as the original unless they ask for the player's settings
+        ue_bsp::scene::set_wide_view(self.settings_quality && settings.wide_view != 0);
         if let Some(mut a) = self.audio.take() {
             a.read_settings(&mut self.vm);
             a.mixer.lock().unwrap().loudness = settings.loudness != 0;
@@ -2631,5 +2633,8 @@ pub struct AerugoSettings {
     pub max_decals: i32,
     /// The loudness control on the sound effects (`dx_audio::Mixer::loudness`): 1 on, 0 the original's mix.
     pub loudness: i32,
+    /// The widescreen rule (`ue_bsp::scene::set_wide_view`): 0 the field of view spans the screen width (the
+    /// original), 1 it is meant for 4:3 and wider screens see more at the sides ("Hor+").
+    pub wide_view: i32,
 }
 

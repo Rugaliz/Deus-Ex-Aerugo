@@ -22,6 +22,7 @@ copy the new `System/Aerugo.u` here.
 | `MouseDPI` | the mouse's counts per inch; movement is scaled to the 400 DPI the game was tuned for | 800 |
 | `Loudness` | 1 even: a compressor on the sound effects keeps many sounds at once (a room full of machines) from getting too loud; quiet scenes are as the original mixes them; 0 the original's mix | 1 |
 | `DialogueKeys` | in a conversation showing choices, the number keys `1`..`9` and `0` pick that choice; 0 as the original (mouse, arrow keys and Enter) | 1 |
+| `WideView` | the field of view on wide screens: 0 as the original (the angle spans the whole screen width), 1 wider (the angle is for a 4:3 picture and wider screens see more at the sides, "Hor+") | 0 |
 | `MaxDecals` | how many of the newest decals (blood, bullet holes, scorch marks) stay out of sight; older ones go as in the original (unseen for a second, some 20 s after they appeared); 0 as the original | 1000 |
 
 Menu choices (`MenuChoice_Aerugo*`): vertical sync, frame rate limit, mouse DPI, output rate, loudness, a mouse sensitivity

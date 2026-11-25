@@ -132,10 +132,10 @@ pub struct MeshLighting {
     pub fog_lights: Vec<([f32; 3], u8, u8, u8, f32, [f32; 3])>,
 }
 
-/// Half-width tangent of the view for a horizontal field of view `fov` (degrees) meant for a 4:3 screen; wider screens
-/// see more at the sides with the same vertical view ("Hor+"). Same rule as the Vulkan renderer.
+/// Half-width tangent of the view for a horizontal field of view `fov` (degrees) on a screen of `aspect`, under the
+/// widescreen rule (`ue_bsp::scene::set_wide_view`). Same rule as the Vulkan renderer.
 pub fn hor_plus_tan(fov: f32, aspect: f32) -> f32 {
-    (fov.to_radians() * 0.5).tan() * (aspect / (4.0 / 3.0)).max(1.0)
+    ue_bsp::scene::view_tan(fov, aspect)
 }
 
 /// Camera axes (forward, right, up) for the rotator conventions of the engine.
