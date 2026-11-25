@@ -1390,8 +1390,8 @@ impl World {
     /// pixels. Call after the previous frame finished on the GPU, then `record_procedural_uploads` before drawing.
     pub fn update_procedurals(&mut self, view: &mut MapView, time: f64) {
         for (_, key, staging) in &mut self.dynamic {
-            if let Some((_, _, rgba)) = view.procedural_frame(key, time) {
-                staging.write(rgba);
+            if let Some((_, _, rgba, version)) = view.procedural_frame_versioned(key, time) {
+                staging.write_version(rgba, version);
             }
         }
     }

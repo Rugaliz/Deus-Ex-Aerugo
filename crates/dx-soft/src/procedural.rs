@@ -23,6 +23,8 @@ pub(crate) struct Procedural {
     palette: Vec<[u8; 4]>,
     masked: bool,
     rgba: Vec<u8>,
+    /// Counts the changes of `rgba` (renderers upload the pixels again only when it moved on).
+    version: u64,
 }
 
 impl Procedural {
@@ -61,6 +63,7 @@ impl Procedural {
             Kind::Fire(f) => &f.bitmap,
             Kind::Ice { ice, .. } => &ice.bitmap,
         };
+        self.version += 1;
         for (px, &i) in self.rgba.chunks_mut(4).zip(bitmap) {
             let c = if self.masked && i == 0 { [0, 0, 0, 0] } else { self.palette.get(i as usize).map(|c| [c[0], c[1], c[2], 255]).unwrap_or([0, 0, 0, 255]) };
             px.copy_from_slice(&c);
@@ -93,8 +96,14 @@ impl MapView {
     /// as the texture's clock asks, and returns `(width, height, rgba)`. `None` if the texture cannot be generated (a wet
     /// texture without a usable source stays as stored, like in the engine).
     pub fn procedural_frame(&mut self, key: &(String, usize), time: f64) -> Option<(u32, u32, &[u8])> {
+        self.procedural_frame_versioned(key, time).map(|(w, h, rgba, _)| (w, h, rgba))
+    }
+
+    /// `procedural_frame` with the version of the pixels (it changes whenever they do; `None`: unknown, a runtime
+    /// texture the scripts draw into), so a renderer can skip uploading pixels it already has.
+    pub fn procedural_frame_versioned(&mut self, key: &(String, usize), time: f64) -> Option<(u32, u32, &[u8], Option<u64>)> {
         if key.1 == usize::MAX {
-            return self.runtime.get(&key.0).map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
+            return self.runtime.get(&key.0).map(|(w, h, rgba)| (*w, *h, rgba.as_slice(), None));
         }
         if !self.procedurals.contains_key(key) {
             let p = self.make_procedural(key);
@@ -110,7 +119,7 @@ impl MapView {
                 p.refresh_rgba();
             }
             let (u, v) = p.size();
-            return Some((u as u32, v as u32, &p.rgba));
+            return Some((u as u32, v as u32, &p.rgba, Some(p.version)));
         }
         let steps = p.clock.update(time);
         for _ in 0..steps {
@@ -120,7 +129,7 @@ impl MapView {
             p.refresh_rgba();
         }
         let (u, v) = p.size();
-        Some((u as u32, v as u32, &p.rgba))
+        Some((u as u32, v as u32, &p.rgba, Some(p.version)))
     }
 
     /// The first frame of a procedural texture (`width, height, rgba`) without touching the running state, for creating
@@ -175,6 +184,7 @@ impl MapView {
             palette,
             masked: t.masked,
             rgba: vec![0; u * v * 4],
+            version: 0,
         };
         p.refresh_rgba();
         Some(p)
@@ -264,6 +274,7 @@ impl MapView {
             palette,
             masked: t.masked,
             rgba: vec![0; u * v * 4],
+            version: 0,
         };
         p.refresh_rgba();
         Some(p)
@@ -288,6 +299,7 @@ impl MapView {
             // the engine clears a fire texture's masked flag when it loads
             masked: false,
             rgba: vec![0; u * v * 4],
+            version: 0,
         };
         p.refresh_rgba();
         Some(p)

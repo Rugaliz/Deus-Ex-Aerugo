@@ -185,6 +185,8 @@ pub struct Staging {
     width: u32,
     height: u32,
     dirty: bool,
+    /// The version of the pixels last written (`write_version`).
+    version: Option<u64>,
 }
 
 impl Staging {
@@ -196,11 +198,20 @@ impl Staging {
             let mapped = unsafe { cx.device.map_memory(buffer.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8 };
             buffers.push((buffer, crate::Mapped(mapped)));
         }
-        Ok(Staging { buffers, slot: 0, width, height, dirty: false })
+        Ok(Staging { buffers, slot: 0, width, height, dirty: false, version: None })
     }
 
     /// New pixels (`width * height * 4` bytes): the frame's first write goes into the next buffer. Call after the
     /// frame's slot was waited for.
+    /// `write`, unless these pixels (`version`, `None`: unknown) were the last written: the texture has them already.
+    pub fn write_version(&mut self, rgba: &[u8], version: Option<u64>) {
+        if version.is_some() && version == self.version {
+            return;
+        }
+        self.version = version;
+        self.write(rgba);
+    }
+
     pub fn write(&mut self, rgba: &[u8]) {
         let n = (self.width * self.height * 4) as usize;
         if rgba.len() == n {

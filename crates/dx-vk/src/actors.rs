@@ -1182,8 +1182,8 @@ impl ActorRenderer {
     pub fn update_procedurals(&mut self, view: &mut MapView, time: f64) {
         for t in self.textures.values_mut().flatten() {
             if let Some((key, staging)) = &mut t.dynamic {
-                if let Some((_, _, rgba)) = view.procedural_frame(key, time) {
-                    staging.write(rgba);
+                if let Some((_, _, rgba, version)) = view.procedural_frame_versioned(key, time) {
+                    staging.write_version(rgba, version);
                 }
             }
         }
