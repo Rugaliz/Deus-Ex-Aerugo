@@ -35,6 +35,9 @@ pub struct Water {
     water_table: Vec<u8>,
     parity: u8,
     pub drops: Vec<Drop>,
+    /// Scratch for `pass`: a new row of heights, and the slopes of a pair of rows.
+    row: Vec<u8>,
+    slopes: Vec<(i32, i32)>,
 }
 
 impl Water {
@@ -57,6 +60,8 @@ impl Water {
             render_table: vec![0; 1028],
             water_table,
             parity: 0,
+            row: Vec::new(),
+            slopes: Vec::new(),
             drops,
         }
     }
@@ -229,40 +234,53 @@ impl Water {
 
     /// The half of a step that updates the odd rows (`true`) or the even rows.
     pub fn pass(&mut self, odd_rows: bool) {
+        // sizes are powers of two (`new`): wrapping is a mask. Row y reads only rows y - 1 and y + 1 (the other parity)
+        // and itself, so each new row can go into the field as soon as it is made.
         let (u, v, w) = (self.u, self.v, self.u / 2);
-        let odd = odd_rows as u8;
-        let f = &self.field;
-        let at = |y: usize, x: isize| f[(y % v) * w + x.rem_euclid(w as isize) as usize] as i32;
-        let r = |k: i32| self.render_table[(512 + k) as usize];
-        let t = |k: i32| self.water_table[(512 + k) as usize];
-        let mut new_rows: Vec<(usize, Vec<u8>)> = Vec::with_capacity(v / 2);
+        let (um, vm, wm) = (u - 1, v - 1, w - 1);
+        let odd = odd_rows as usize;
         // even rows lean left (neighbours x-1, x above and below), odd rows right (x, x+1)
-        let lean: isize = if odd == 0 { -1 } else { 1 };
-        for y in (odd as usize..v).step_by(2) {
-            let (up, down) = (y + v - 1, y + 1);
-            let mut row = Vec::with_capacity(w);
-            for x in 0..w as isize {
-                let sum = at(up, x) + at(down, x) + at(up, x + lean) + at(down, x + lean) - 2 * at(y, x);
-                row.push(t(sum));
+        let lean = if odd == 0 { wm } else { 1 };
+        // pixel columns: slope of the row below at x + base and x + base - 2
+        let base = odd;
+        let mut row = std::mem::take(&mut self.row);
+        row.resize(w, 0);
+        let mut g = std::mem::take(&mut self.slopes);
+        g.resize(w, (0, 0));
+        for y in (odd..v).step_by(2) {
+            let (up, down) = ((y + vm) & vm, (y + 1) & vm);
+            {
+                let f = &self.field;
+                let (fu, fd, fy) = (&f[up * w..up * w + w], &f[down * w..down * w + w], &f[y * w..y * w + w]);
+                for x in 0..w {
+                    let xl = (x + lean) & wm;
+                    let sum = fu[x] as i32 + fd[x] as i32 + fu[xl] as i32 + fd[xl] as i32 - 2 * fy[x] as i32;
+                    row[x] = self.water_table[(512 + sum) as usize];
+                }
+                // gx(x) for the row below and gy(x) (average with the row above), each for x in 0..w
+                for x in 0..w {
+                    let (c, l) = ((x + base) & wm, (x + base + wm - 1) & wm);
+                    let gx = fd[c] as i32 - fd[l] as i32;
+                    let gy = (gx + fu[c] as i32 - fu[l] as i32) >> 1;
+                    g[x] = (gx, gy);
+                }
             }
-            // pixel rows y (slope of the row below) and y - 1 (average slope of the rows above and below)
-            let base = if odd == 0 { 0isize } else { 1 };
-            let gx = |x: isize| at(down, x + base) - at(down, x + base - 2);
-            let gy = |x: isize| (gx(x) + at(up, x + base) - at(up, x + base - 2)) >> 1;
-            let prev_row = (y + v - 1) % v;
-            for x in 0..w as isize {
-                let c0 = ((2 * x + base - 1).rem_euclid(u as isize)) as usize;
-                let c1 = ((2 * x + base) as usize) % u;
-                self.bitmap[y * u + c0] = r(gx(x) + gx(x - 1));
-                self.bitmap[y * u + c1] = r(2 * gx(x));
-                self.bitmap[prev_row * u + c0] = r(gy(x) + gy(x - 1));
-                self.bitmap[prev_row * u + c1] = r(2 * gy(x));
+            let r = |k: i32| self.render_table[(512 + k) as usize];
+            let (row_y, row_up) = (y * u, up * u);
+            for x in 0..w {
+                let (gx, gy) = g[x];
+                let (gxl, gyl) = g[(x + wm) & wm];
+                let c0 = (2 * x + base + um) & um;
+                let c1 = (2 * x + base) & um;
+                self.bitmap[row_y + c0] = r(gx + gxl);
+                self.bitmap[row_y + c1] = r(2 * gx);
+                self.bitmap[row_up + c0] = r(gy + gyl);
+                self.bitmap[row_up + c1] = r(2 * gy);
             }
-            new_rows.push((y, row));
+            self.field[y * w..y * w + w].copy_from_slice(&row);
         }
-        for (y, row) in new_rows {
-            self.field[y * w..(y + 1) * w].copy_from_slice(&row);
-        }
+        self.row = row;
+        self.slopes = g;
     }
 
     /// Wet texture: replaces each pixel (a signed offset after `calculate`) with the source pixel that many places to
@@ -296,4 +314,73 @@ pub fn wet_source(u: usize, v: usize, src_u: usize, src_v: usize, src: &[u8]) ->
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pass as first written (wrapping by `rem_euclid` and `%`, the new rows applied after all are made): the
+    /// faster `pass` must give the same field and bitmap.
+    fn pass_reference(wt: &mut Water, odd_rows: bool) {
+        let (u, v, w) = (wt.u, wt.v, wt.u / 2);
+        let odd = odd_rows as u8;
+        let f = wt.field.clone();
+        let at = |y: usize, x: isize| f[(y % v) * w + x.rem_euclid(w as isize) as usize] as i32;
+        let r = |k: i32| wt.render_table[(512 + k) as usize];
+        let t = |k: i32| wt.water_table[(512 + k) as usize];
+        let mut new_rows: Vec<(usize, Vec<u8>)> = Vec::new();
+        let lean: isize = if odd == 0 { -1 } else { 1 };
+        let mut bitmap = wt.bitmap.clone();
+        for y in (odd as usize..v).step_by(2) {
+            let (up, down) = (y + v - 1, y + 1);
+            let row: Vec<u8> = (0..w as isize).map(|x| t(at(up, x) + at(down, x) + at(up, x + lean) + at(down, x + lean) - 2 * at(y, x))).collect();
+            let base = if odd == 0 { 0isize } else { 1 };
+            let gx = |x: isize| at(down, x + base) - at(down, x + base - 2);
+            let gy = |x: isize| (gx(x) + at(up, x + base) - at(up, x + base - 2)) >> 1;
+            let prev_row = (y + v - 1) % v;
+            for x in 0..w as isize {
+                let c0 = ((2 * x + base - 1).rem_euclid(u as isize)) as usize;
+                let c1 = ((2 * x + base) as usize) % u;
+                bitmap[y * u + c0] = r(gx(x) + gx(x - 1));
+                bitmap[y * u + c1] = r(2 * gx(x));
+                bitmap[prev_row * u + c0] = r(gy(x) + gy(x - 1));
+                bitmap[prev_row * u + c1] = r(2 * gy(x));
+            }
+            new_rows.push((y, row));
+        }
+        wt.bitmap = bitmap;
+        for (y, row) in new_rows {
+            wt.field[y * w..(y + 1) * w].copy_from_slice(&row);
+        }
+    }
+
+    #[test]
+    fn the_pass_matches_its_first_form() {
+        let mut seed = 12345u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for (u, v) in [(4, 2), (8, 8), (16, 4), (32, 64), (64, 64), (256, 128), (128, 256)] {
+            let mut a = Water::new(u, v, Vec::new());
+            a.set_refraction(100);
+            for h in a.field.iter_mut() {
+                *h = rnd();
+            }
+            for p in a.bitmap.iter_mut() {
+                *p = rnd();
+            }
+            let mut b = Water::new(u, v, Vec::new());
+            b.set_refraction(100);
+            b.field = a.field.clone();
+            b.bitmap = a.bitmap.clone();
+            for k in 0..20 {
+                a.pass(k % 2 == 1);
+                pass_reference(&mut b, k % 2 == 1);
+                assert_eq!(a.field, b.field, "{u}x{v} pass {k}: field");
+                assert_eq!(a.bitmap, b.bitmap, "{u}x{v} pass {k}: bitmap");
+            }
+        }
+    }
 }

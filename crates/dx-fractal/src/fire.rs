@@ -39,6 +39,8 @@ pub struct Fire {
     pub global_phase: i32,
     /// Star sparks keep their pixel out of the blur while this is set (cleared once no star is left).
     star_status: bool,
+    /// Scratch for `propagate`: the bitmap before the blur.
+    prev: Vec<u8>,
 }
 
 impl Fire {
@@ -57,6 +59,7 @@ impl Fire {
             umask: (u - 1) as u32,
             vmask: (v - 1) as u32,
             bitmap: vec![0; u * v],
+            prev: Vec::new(),
             render_table: vec![0; 1028],
             sparks: buf,
             num_sparks: num,
@@ -110,16 +113,23 @@ impl Fire {
     /// The blur: each pixel from the table entry for (left + self + right + below), read from the previous bitmap,
     /// wrapping; a rising fire reads everything one row lower.
     pub fn propagate(&mut self) {
+        // sizes are powers of two (`new`): wrapping is a mask; the previous bitmap is kept in `prev` (no new buffer)
         let (u, v) = (self.u, self.v);
+        let (um, vm) = (u - 1, v - 1);
         let o = self.rising as usize;
-        let src = self.bitmap.clone();
-        let g = |y: usize, x: usize| src[(y % v) * u + (x % u)] as usize;
+        let mut src = std::mem::take(&mut self.prev);
+        src.clear();
+        src.extend_from_slice(&self.bitmap);
         for y in 0..v {
+            let (a, b) = (((y + o) & vm) * u, ((y + o + 1) & vm) * u);
+            let (ra, rb) = (&src[a..a + u], &src[b..b + u]);
+            let out = &mut self.bitmap[y * u..y * u + u];
             for x in 0..u {
-                let sum = g(y + o, x + u - 1) + g(y + o, x) + g(y + o, x + 1) + g(y + o + 1, x);
-                self.bitmap[y * u + x] = self.render_table[sum];
+                let sum = ra[(x + um) & um] as usize + ra[x] as usize + ra[(x + 1) & um] as usize + rb[x] as usize;
+                out[x] = self.render_table[sum];
             }
         }
+        self.prev = src;
     }
 
     fn post_draw_sparks(&mut self) {
@@ -537,6 +547,35 @@ impl Fire {
                 y = y.wrapping_add(sy as u8);
                 heat = heat.wrapping_add(heat_step);
                 self.put(at as u32, (heat >> 23) as u8);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_blur_matches_its_first_form() {
+        let mut seed = 777u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for (u, v, rising) in [(8, 8, false), (8, 8, true), (32, 16, true), (64, 128, false), (256, 256, true)] {
+            let mut f = Fire::new(u, v, &[], 64, 0x20, rising, 0);
+            for p in f.bitmap.iter_mut() {
+                *p = rnd();
+            }
+            for k in 0..10 {
+                // as first written: a copy of the bitmap, wrapping by `%`
+                let src = f.bitmap.clone();
+                let o = f.rising as usize;
+                let g = |y: usize, x: usize| src[(y % v) * u + (x % u)] as usize;
+                let want: Vec<u8> = (0..v).flat_map(|y| (0..u).map(move |x| (y, x))).map(|(y, x)| f.render_table[g(y + o, x + u - 1) + g(y + o, x) + g(y + o, x + 1) + g(y + o + 1, x)]).collect();
+                f.propagate();
+                assert_eq!(f.bitmap, want, "{u}x{v} rising {rising} step {k}");
             }
         }
     }
