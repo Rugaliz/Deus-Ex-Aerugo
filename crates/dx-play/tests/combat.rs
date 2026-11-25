@@ -422,3 +422,39 @@ fn a_particle_generator_spews_particles_that_are_drawn() {
     assert!(s.vm.fp(proxy, "LastRenderTime") > 0.0, "the proxy was never stamped as rendered");
 }
 
+
+/// A poison barrel broken by the player's first shot fills the place with gas that belongs to the player, so the
+/// people in it are hurt and react: pain, anger or flight (`ScriptedPawn.ReactToInjury` needs an instigator). In the
+/// original the gas belonged to nobody (`Barrel1.TakeDamage` hands its clouds the barrel's `Instigator` before
+/// `Super.TakeDamage` sets it), so nobody reacted; Aerugo repairs that (`Vm::port_repair`).
+#[test]
+fn people_in_a_poison_barrels_gas_are_hurt_and_react() {
+    let Some(mut s) = new_game() else { return };
+    let tc = s.vm.reg.class_by_name("Terrorist").unwrap();
+    let t = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a).map(|c| s.vm.is_a(c, tc)).unwrap_or(false)).unwrap();
+    let loc = s.vm.location(t);
+    let bc = s.vm.reg.class_by_name("Barrel1").unwrap();
+    let barrel = s.vm.spawn(bc, 0, None, Some([loc[0] + 60.0, loc[1], loc[2]]), None).unwrap().unwrap();
+    // a poison barrel (`SC_Poison`), set up as its `BeginPlay` does for the skin
+    s.vm.set_prop(barrel, "SkinColor", 0, Value::Byte(7)).unwrap();
+    s.vm.send_event(barrel, "BeginPlay", vec![]).unwrap();
+    let health = |s: &mut Session| s.vm.get_prop(t, "Health", 0).ok().and_then(|v| v.as_i32()).unwrap();
+    let h0 = health(&mut s);
+    let p = s.player;
+    let (at, shot) = (s.vm.location(barrel), s.vm.reg.names.get("Shot").unwrap());
+    s.vm.send_event(barrel, "TakeDamage", vec![Value::Int(100), Value::Obj(p), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(shot)]).unwrap();
+    assert!(!s.vm.is_live(barrel) || s.vm.get_prop(barrel, "bDeleteMe", 0).ok() == Some(Value::Bool(true)), "the barrel broke");
+    let gc = s.vm.reg.class_by_name("PoisonGas").unwrap();
+    let clouds: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a) == Some(gc)).collect();
+    assert!(!clouds.is_empty(), "the barrel let out gas");
+    for &c in &clouds {
+        assert_eq!(s.vm.get_prop(c, "Instigator", 0).unwrap(), Value::Obj(p), "the gas belongs to the player");
+    }
+    let mut states = Vec::new();
+    for _ in 0..90 {
+        s.step_bound(DT);
+        states.push(s.vm.state_name(t).unwrap_or("-").to_string());
+    }
+    assert!(health(&mut s) < h0, "the gas hurt him ({h0} -> {})", health(&mut s));
+    assert!(states.iter().any(|st| st != "Standing" && st != "Wandering" && st != "Patrolling"), "he reacted: {states:?}");
+}

@@ -31,6 +31,8 @@ pub(crate) struct CallPlan {
     native_name: std::rc::Rc<str>,
     /// The compiled body, once first called (the code cache never changes an entry).
     code: std::cell::OnceCell<std::rc::Rc<crate::ir::Code>>,
+    /// An Aerugo repair of the original's script to run before the body (`Vm::port_repair`; 0 none).
+    repair: u8,
 }
 
 pub struct Frame {
@@ -777,6 +779,7 @@ impl Vm {
             ret: d.props.iter().find(|p| p.flags & CPF_RETURN != 0).cloned(),
             native_name: self.reg.names.str(d.name).into(),
             code: Default::default(),
+            repair: self.port_repair_of(d.export),
         });
         self.call_plans.insert(loc, plan.clone());
         plan
@@ -795,6 +798,9 @@ impl Vm {
         }
         if mem_size == 0 {
             return Ok(Value::Void);
+        }
+        if plan.repair != 0 {
+            self.port_repair(plan.repair, this, args);
         }
         if self.depth >= MAX_DEPTH {
             return Err(rt("script call depth exceeded"));
@@ -1182,5 +1188,33 @@ fn case_matches(v: &Value, c: &Value) -> bool {
         (Value::Str(a), Value::Str(b)) => a.eq_ignore_ascii_case(b),
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         _ => v == c || v.as_i32().is_some() && v.as_i32() == c.as_i32(),
+    }
+}
+
+/// Aerugo repairs of the original's scripts: defects of the shipped game code that hurt play (as the map repairs
+/// do for its data). Each is a step run before one script function's body, chosen once per function.
+impl Vm {
+    /// Which repair, if any, function `export` (package, export of its code) gets.
+    fn port_repair_of(&self, export: (usize, usize)) -> u8 {
+        let Some(pkg) = self.reg.packages.get(export.0) else { return 0 };
+        let path = pkg.pkg.object_path(ue_package::ObjectRef::Export(export.1)).unwrap_or_default();
+        match (pkg.name.as_str(), path.as_str()) {
+            // `Barrel1.TakeDamage` (state Active) gives its gas clouds the barrel's `Instigator` before
+            // `Super.TakeDamage` sets it to the attacker: a barrel broken by its first hit let out gas that belonged to
+            // nobody, so the people it hurt never reacted (no pain animation, no anger, no flight: `ReactToInjury`
+            // needs an instigator). The barrel takes the attacker as its `Instigator` first.
+            ("DeusEx", "Barrel1.Active.TakeDamage") => 1,
+            _ => 0,
+        }
+    }
+
+    fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 1 {
+            if let (Some(Value::Obj(by)), Ok(Value::Obj(0))) = (args.get(1), self.get_prop(this, "Instigator", 0)) {
+                if *by != 0 {
+                    let _ = self.set_prop(this, "Instigator", 0, Value::Obj(*by));
+                }
+            }
+        }
     }
 }
