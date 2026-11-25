@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aerugo-modkit"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "dx-soft",
  "dx-vk",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "dx-audio"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "sdl3",
  "ue-assets",
@@ -171,15 +171,15 @@ dependencies = [
 
 [[package]]
 name = "dx-fractal"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "dx-input"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "dx-light"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "dx-play"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "dx-audio",
  "dx-input",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "dx-soft"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "dx-fractal",
  "png",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vis"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vk"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ash",
  "dx-light",
@@ -860,14 +860,14 @@ dependencies = [
 
 [[package]]
 name = "ue-assets"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-bsp"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-assets",
  "ue-package",
@@ -875,21 +875,21 @@ dependencies = [
 
 [[package]]
 name = "ue-config"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-package"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "zip",
 ]
 
 [[package]]
 name = "ue-registry"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "ue-config",
  "ue-package",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "ue-vm"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 dependencies = [
  "libc",
  "ue-assets",

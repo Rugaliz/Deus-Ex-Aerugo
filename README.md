@@ -36,9 +36,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
   overwritten game files. A mod kit to view, export and re-import the game's models and textures comes with it.
 
-> **Status: the engine is complete, and the game has been played up to Vandenberg** (the intro, the training and
-> every mission from Liberty Island to Vandenberg). The last missions (the ocean lab, the missile silo and Area 51)
-> and the endings load and run but have not been played from start to finish, so expect bugs there. Bug reports are
+> **Status: 1.0 release candidate. The whole game has been played through** (the intro, the training, every
+> mission and the AI merge ending). The other two endings have not been played to the end yet. Bug reports are
 > welcome in the [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
 
 ## How to install
