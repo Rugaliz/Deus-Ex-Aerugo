@@ -34,6 +34,9 @@ var config int DialogueKeys;
 // the field of view on wide screens: 0 as the original (the angle spans the whole screen width), 1 wider (the angle is
 // for a 4:3 picture and wider screens see more at the sides, "Hor+")
 var config int WideView;
+// a soft glow around the brightest parts of the picture (lamps, light strips, the sun on water): 0 off as the original,
+// 1 subtle
+var config int Bloom;
 
 defaultproperties
 {
@@ -52,4 +55,5 @@ defaultproperties
 	Loudness=1
 	DialogueKeys=1
 	WideView=0
+	Bloom=0
 }

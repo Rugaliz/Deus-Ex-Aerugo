@@ -179,14 +179,14 @@ fn the_port_menus_set_what_the_host_reads() {
     s.vm.call_by_name(root, "ClearWindowStack", vec![]).unwrap();
     s.exec("ShowMainMenu");
     let gfx = choices(&mut s, "MenuScreenAerugoGraphics");
-    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoRTShadows", "AerugoRTAO", "AerugoMaxDecals", "AerugoWideView"]);
+    assert_eq!(names(&gfx), ["AerugoTextureFilter", "AerugoAntiAliasing", "AerugoColorDepth", "AerugoLightmaps", "AerugoMeshLighting", "AerugoRTShadows", "AerugoRTAO", "AerugoMaxDecals", "AerugoWideView", "AerugoBloom"]);
     s.settings_quality = true;
-    let enhanced = dx_vk::Quality { filter: 5, msaa: 4, deep_color: true, smooth_lightmaps: true, pixel_lighting: true, rt_shadows: true, rt_ao: true };
+    let enhanced = dx_vk::Quality { filter: 5, msaa: 4, deep_color: true, smooth_lightmaps: true, pixel_lighting: true, rt_shadows: true, rt_ao: true, bloom: false };
     assert_eq!(s.quality(), enhanced, "the defaults");
     for (i, v) in [(0, 1), (1, 3), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)] {
         set(&mut s, gfx[i].1, v);
     }
-    assert_eq!(s.quality(), dx_vk::Quality { filter: 1, msaa: 8, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false });
+    assert_eq!(s.quality(), dx_vk::Quality { filter: 1, msaa: 8, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false, bloom: false });
     // kept decals: 1000 by default, "Original" (0) and 5000 from the menu
     s.follow_settings();
     assert_eq!(s.max_decals, 1000, "the default");
@@ -204,6 +204,10 @@ fn the_port_menus_set_what_the_host_reads() {
     set(&mut s, gfx[8].1, 0);
     s.follow_settings();
     assert!(!ue_bsp::scene::wide_view());
+    // bloom: off by default (the original's picture), "Subtle" from the menu
+    assert!(!s.quality().bloom);
+    set(&mut s, gfx[9].1, 1);
+    assert!(s.quality().bloom);
 }
 
 /// The game's main menu shows the port's version line (`Aerugo <tag or commit>`) beside the original's version text,
@@ -324,3 +328,4 @@ fn shot_of_the_aerugo_credits() {
     std::fs::write(out.join("credits_aerugo.png"), dx_soft::png(img.width, img.height, &img.rgba)).unwrap();
     r.take().unwrap().destroy();
 }
+

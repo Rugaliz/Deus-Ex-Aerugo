@@ -14,7 +14,7 @@ defaultproperties
 	choices(6)=Class'MenuChoice_AerugoRTAO'
 	choices(7)=Class'MenuChoice_AerugoMaxDecals'
 	choices(8)=Class'MenuChoice_AerugoWideView'
-	choices(9)=None
+	choices(9)=Class'MenuChoice_AerugoBloom'
 	choices(10)=None
 	choices(11)=None
 	choices(12)=None

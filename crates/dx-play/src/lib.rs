@@ -734,6 +734,7 @@ impl Session {
             pixel_lighting: get("PixelLighting", 1) != 0,
             rt_shadows: get("RTShadows", 1) != 0,
             rt_ao: get("RTAO", 1) != 0,
+            bloom: get("Bloom", 0) != 0,
         };
         AerugoSettings { vsync: get("VSync", 1), frame_limit: get("FrameLimit", 0), output_rate: get("OutputRate", 0), mouse_dpi: get("MouseDPI", 800), quality, max_decals: get("MaxDecals", 1000), loudness: get("Loudness", 1), wide_view: get("WideView", 0) }
     }
@@ -745,7 +746,7 @@ impl Session {
         if let Some(v) = std::env::var("DX_QUALITY").ok() {
             let n: Vec<u32> = v.split(',').map(|x| x.trim().parse().unwrap_or(0)).collect();
             let g = |i: usize| n.get(i).copied().unwrap_or(0);
-            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), deep_color: g(2) != 0, smooth_lightmaps: g(3) != 0, pixel_lighting: g(4) != 0, rt_shadows: g(5) != 0, rt_ao: g(6) != 0 };
+            return dx_vk::Quality { filter: g(0) as u8, msaa: g(1).max(1), deep_color: g(2) != 0, smooth_lightmaps: g(3) != 0, pixel_lighting: g(4) != 0, rt_shadows: g(5) != 0, rt_ao: g(6) != 0, bloom: g(7) != 0 };
         }
         if self.settings_quality {
             self.aerugo_settings().quality

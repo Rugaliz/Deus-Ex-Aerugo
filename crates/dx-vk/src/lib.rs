@@ -7,6 +7,7 @@
 pub const MIP_MODE: ash::vk::SamplerMipmapMode = ash::vk::SamplerMipmapMode::NEAREST;
 pub const MIP_LOD_BIAS: f32 = -0.5;
 
+pub mod bloom;
 /// A pointer into host-visible GPU memory that stays mapped while its buffer lives. Only the buffer's owner writes
 /// through it (one thread at a time), so the owner can be handed to another thread with it (RENDER_THREAD.md).
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +54,8 @@ pub struct Quality {
     pub rt_shadows: bool,
     /// Ray-traced contact shadows (ambient occlusion) where surfaces and objects meet.
     pub rt_ao: bool,
+    /// A soft glow around the bright parts of the picture (`bloom`; an Aerugo option, the original has none).
+    pub bloom: bool,
 }
 
 /// Specialization constants of the scene's fragment shaders: 0 `A2C` (masked texels by alpha-to-coverage: the opaque
@@ -80,7 +83,7 @@ impl Quality {
         self.rt_shadows || self.rt_ao
     }
 
-    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false };
+    pub const ORIGINAL: Quality = Quality { filter: 0, msaa: 1, deep_color: false, smooth_lightmaps: false, pixel_lighting: false, rt_shadows: false, rt_ao: false, bloom: false };
 }
 
 impl Default for Quality {
@@ -657,7 +660,8 @@ impl Offscreen {
             vk::ImageAspectFlags::COLOR,
             vk::SampleCountFlags::TYPE_1,
         )?;
-        let keep = cx.quality().ray_traced() && cx.rt.is_some();
+        // the scene stops and goes on for the ray-traced passes and for the bloom
+        let keep = (cx.quality().ray_traced() && cx.rt.is_some()) || cx.quality().bloom;
         let multi = samples != vk::SampleCountFlags::TYPE_1;
         let depth_usage = if keep && !multi { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED } else { vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT };
         let (depth, depth_mem, depth_view) = make(DEPTH_FORMAT, depth_usage, DEPTH_ASPECTS, samples)?;
@@ -757,6 +761,8 @@ impl Offscreen {
     fn start(&self, cx: &Context, cb: vk::CommandBuffer, clear: Option<[f32; 4]>) {
         let load = if clear.is_some() { vk::AttachmentLoadOp::CLEAR } else { vk::AttachmentLoadOp::LOAD };
         let keep = self.keep && clear.is_some();
+        // the samples are kept after a `resume` too: the scene may stop again (the ray-traced passes, then the bloom)
+        let keep_samples = self.keep;
         // the part after a pause starts with depth and stencil cleared (what follows the screen passes: the coronas,
         // which test no depth, then a depth clear before the overlays); with multisampling, the samples' depth is
         // never kept (its first samples are resolved for the screen passes)
@@ -773,7 +779,7 @@ impl Offscreen {
         if let Some((_, view, _)) = self.msaa {
             color_att = color_att
                 .image_view(view)
-                .store_op(if keep { vk::AttachmentStoreOp::STORE } else { vk::AttachmentStoreOp::DONT_CARE })
+                .store_op(if keep_samples { vk::AttachmentStoreOp::STORE } else { vk::AttachmentStoreOp::DONT_CARE })
                 .resolve_mode(vk::ResolveModeFlags::AVERAGE)
                 .resolve_image_view(self.color_view)
                 .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);

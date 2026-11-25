@@ -171,7 +171,7 @@ fn record_subview(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut 
 
 /// World (with the sky pass) and actors into `target`, inside an open command buffer.
 #[allow(clippy::too_many_arguments)]
-fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, ui: (&mut UiRenderer, &[UiQuad], &[SubView], &[UiActors]), sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], rect: Option<[u32; 4]>, coronas: &[UiQuad], children: Option<&[ChildView]>, rt: RtPass) {
+fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut ActorRenderer, ui: (&mut UiRenderer, &[UiQuad], &[SubView], &[UiActors]), sky: Option<Sky>, cb: vk::CommandBuffer, target: &Offscreen, cam: &Camera, actors: &[ActorDraw], rect: Option<[u32; 4]>, coronas: &[UiQuad], children: Option<&[ChildView]>, rt: RtPass, bloom: Option<&mut crate::bloom::Bloom>) {
     // `UGameEngine::Draw` (1038f110) locks the viewport with `LOCKR_ClearScreen` (`or al, 1`) and a screen clear of
     // `FPlane(0,0,0,0)`: every frame starts black, and black is what shows where nothing is drawn (behind a masked
     // grate over solid space). `DX_CLEAR_MAGENTA` makes such holes stand out.
@@ -188,6 +188,20 @@ fn record_scene(cx: &Context, world: &World, movers: Movers, actors_gpu: &mut Ac
         }
         actors_gpu.frame_x = r[2] as f32;
         record_world(cx, world, movers, actors_gpu, sky, cb, target, cam, actors, r[2] as f32 / r[3] as f32, (&mut *ui.0, coronas, rect), children, rt);
+        // the glow over the main view (weapon included), before the window system draws over it
+        if let Some(b) = bloom {
+            target.pause(cx, cb);
+            let ran = b.run(cx, cb, target);
+            target.resume(cx, cb);
+            unsafe {
+                cx.device.cmd_set_viewport(cb, 0, &[vk::Viewport { x: r[0] as f32, y: (r[1] + r[3]) as f32, width: r[2] as f32, height: -(r[3] as f32), min_depth: 0.0, max_depth: 1.0 }]);
+                cx.device.cmd_set_scissor(cb, 0, &[vk::Rect2D { offset: vk::Offset2D { x: r[0] as i32, y: r[1] as i32 }, extent: vk::Extent2D { width: r[2], height: r[3] } }]);
+            }
+            match ran {
+                Ok(()) => b.apply(cx, cb),
+                Err(e) => eprintln!("bloom: {e}"),
+            }
+        }
         if rect.is_some() {
             unsafe {
                 cx.device.cmd_set_viewport(cb, 0, &[vk::Viewport { x: 0.0, y: target.height as f32, width: target.width as f32, height: -(target.height as f32), min_depth: 0.0, max_depth: 1.0 }]);
@@ -746,6 +760,8 @@ pub struct Renderer {
     pub cpu_ms: Vec<(&'static str, f64)>,
     /// The ray tracing (with the ray-traced picture options): this frame's acceleration structures and the screen passes.
     rt: Option<(Vec<crate::rt::RtFrame>, crate::rt_post::RtPost)>,
+    /// The glow pass (`Quality::bloom`).
+    bloom: Option<crate::bloom::Bloom>,
     /// `render_queued`'s frames: a command buffer and a fence for each frame slot, and the frames begun.
     queued: Option<([vk::CommandBuffer; crate::FRAMES_IN_FLIGHT], [vk::Fence; crate::FRAMES_IN_FLIGHT], usize)>,
 }
@@ -771,7 +787,8 @@ impl Renderer {
         let sky = view.find_actor("SkyZoneInfo").map(|(pos, rot)| Sky::new(pos, rot));
         let timer = unsafe { cx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(2 * crate::FRAMES_IN_FLIGHT as u32), None)? };
         let rt = if cx.quality().ray_traced() { Renderer::make_rt(&cx)? } else { None };
-        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), mover_errors: Default::default(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: [false; crate::FRAMES_IN_FLIGHT], gpu_ms: None, cpu_ms: Vec::new(), rt, queued: None })
+        let bloom = if cx.quality().bloom { Some(crate::bloom::Bloom::new(&cx)?) } else { None };
+        Ok(Renderer { cx, world, actors, ui, ui_quads: Vec::new(), ui_views: Vec::new(), ui_actors: Vec::new(), lightmap_updates: Vec::new(), mover_lightmap_updates: Vec::new(), mover_fog_updates: Vec::new(), child_fog_updates: Vec::new(), mover_fragments: None, mover_nodes: HashMap::new(), mover_main: Vec::new(), child_views: None, fog_updates: Vec::new(), target: None, sky, presenter: None, mover_worlds: HashMap::new(), mover_errors: Default::default(), movers: Vec::new(), time: 0.0, render_size: None, main_rect: None, coronas: Vec::new(), target_layout: None, timer, timer_pending: [false; crate::FRAMES_IN_FLIGHT], gpu_ms: None, cpu_ms: Vec::new(), rt, bloom, queued: None })
     }
 
     /// Replaces the map being drawn (level travel): the world, the movers and the sky position. Meshes and textures
@@ -839,6 +856,12 @@ impl Renderer {
         }
         if now.ray_traced() {
             self.rt = Renderer::make_rt(&self.cx)?;
+        }
+        if let Some(b) = self.bloom.take() {
+            b.destroy(&self.cx);
+        }
+        if now.bloom {
+            self.bloom = Some(crate::bloom::Bloom::new(&self.cx)?);
         }
         Ok(true)
     }
@@ -1139,7 +1162,7 @@ impl Renderer {
         let rt_result = record_rt(&self.cx, &mut self.rt, &self.world, &self.mover_worlds, &self.movers, &self.actors, actors, cam.pos, cb);
         let post = rt_post(&self.cx, &mut self.rt, &rt_result);
         let (target, rb) = self.target.take().unwrap();
-        record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
+        record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post, self.bloom.as_mut());
         target.end_for_sampling(&self.cx, cb);
         Renderer::timer_end(&self.cx, self.timer, cb);
         self.target = Some((target, rb));
@@ -1183,7 +1206,7 @@ impl Renderer {
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
             rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
             let post = rt_post(cx, rt, &rt_result);
-            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
+            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post, self.bloom.as_mut());
             target.end_for_sampling(cx, cb);
             Renderer::timer_end(cx, timer, cb);
             record_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -1240,7 +1263,7 @@ impl Renderer {
             Renderer::record_procedural_uploads(cx, world, movers, actors_gpu, ui, cb);
             rt_result = record_rt(cx, rt, world, movers, placed, actors_gpu, actors, cam.pos, cb);
             let post = rt_post(cx, rt, &rt_result);
-            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
+            record_scene(cx, world, (movers, placed, &self.mover_nodes, &self.mover_main), actors_gpu, (ui, quads, views, ui_actors), sky, cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post, self.bloom.as_mut());
             target.end_and_copy(cx, cb, rb);
         });
         let pixels = r.and_then(|_| rt_result.map(|_| ())).and_then(|_| target.read_pixels(&self.cx, rb));
@@ -1297,7 +1320,7 @@ impl Renderer {
             let post = rt_post(&self.cx, &mut self.rt, &rt_result);
             rt_result?;
             let (target, rb) = self.target.take().unwrap();
-            record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post);
+            record_scene(&self.cx, &self.world, (&self.mover_worlds, &self.movers, &self.mover_nodes, &self.mover_main), &mut self.actors, (&mut self.ui, &self.ui_quads, &self.ui_views, &self.ui_actors), self.sky, frame.cb, &target, cam, actors, self.main_rect, &self.coronas, self.child_views.as_deref(), post, self.bloom.as_mut());
             target.end_for_sampling(&self.cx, frame.cb);
             Renderer::timer_end(&self.cx, self.timer, frame.cb);
             self.timer_pending[self.cx.frame_slot()] = true;
@@ -1340,6 +1363,9 @@ impl Renderer {
         if let Some((f, p)) = self.rt.take() {
             f.into_iter().for_each(|f| f.destroy(&self.cx));
             p.destroy(&self.cx);
+        }
+        if let Some(b) = self.bloom.take() {
+            b.destroy(&self.cx);
         }
         self.ui.destroy(&self.cx);
         self.actors.destroy(&self.cx);
