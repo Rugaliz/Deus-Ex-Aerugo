@@ -1680,7 +1680,7 @@ impl Session {
         }
         let ht = dx_vk::world::hor_plus_tan(cam.fov, w as f32 / h.max(1) as f32);
         let aspect = r[2] as f32 / r[3] as f32;
-        let fov = 2.0 * (ht / (aspect / (4.0 / 3.0)).max(1.0)).atan().to_degrees();
+        let fov = 2.0 * (ht / ue_bsp::scene::widening(aspect, ue_bsp::scene::wide_view())).atan().to_degrees();
         Some((Camera { fov, ..*cam }, r))
     }
 

@@ -146,9 +146,14 @@ pub fn hor_plus_tan(fov: f32, aspect: f32) -> f32 {
 }
 
 pub fn view_proj(cam: &Camera, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    view_proj_rule(cam, aspect, near, far, ue_bsp::scene::wide_view())
+}
+
+/// `view_proj` under a given widescreen rule (`wide`: Hor+).
+pub fn view_proj_rule(cam: &Camera, aspect: f32, near: f32, far: f32, wide: bool) -> [f32; 16] {
     let (fwd, right, up) = cam.axes();
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let sx = 1.0 / hor_plus_tan(cam.fov, aspect);
+    let sx = 1.0 / ((cam.fov.to_radians() * 0.5).tan() * ue_bsp::scene::widening(aspect, wide));
     let sy_ = sx * aspect;
     let q = far / (far - near);
     // rows of clip = M * (p, 1)
@@ -1648,17 +1653,23 @@ mod tests {
     fn projection_follows_engine_axes() {
         // At zero rotation the camera looks along +X with +Y to the right and +Z up (90 degree horizontal fov at 4:3).
         let cam = Camera { pos: [10.0, 0.0, 0.0], pitch: 0, yaw: 0, fov: 90.0, roll: 0 };
-        let m = view_proj(&cam, 4.0 / 3.0, 1.0, 1000.0);
+        let m = view_proj_rule(&cam, 4.0 / 3.0, 1.0, 1000.0, false);
         let c = project(&m, [110.0, 100.0, 75.0]); // 100 ahead, 100 right, 75 up
         assert_eq!(c[3], 100.0);
         assert!((c[0] / c[3] - 1.0).abs() < 1e-5, "right edge of a 90 degree view at 45 degrees");
         assert!((c[1] / c[3] - 1.0).abs() < 1e-5, "top edge: 75/100 * aspect 4/3");
-        // a wider screen keeps the same vertical view and sees more at the sides (Hor+)
-        let wide = view_proj(&cam, 16.0 / 9.0, 1.0, 1000.0);
+        // with the wide view (Hor+) a wider screen keeps the same vertical view and sees more at the sides
+        let wide = view_proj_rule(&cam, 16.0 / 9.0, 1.0, 1000.0, true);
         let c = project(&wide, [110.0, 0.0, 75.0]);
         assert!((c[1] / c[3] - 1.0).abs() < 1e-5, "16:9 keeps the 4:3 vertical view");
         let c = project(&wide, [110.0, 100.0, 0.0]);
         assert!((c[0] / c[3] - 0.75).abs() < 1e-5, "16:9 shows 4/3 times as wide");
+        // as the original: the angle spans the screen width, so 16:9 sees less above and below
+        let orig = view_proj_rule(&cam, 16.0 / 9.0, 1.0, 1000.0, false);
+        let c = project(&orig, [110.0, 100.0, 0.0]);
+        assert!((c[0] / c[3] - 1.0).abs() < 1e-5, "the 90 degrees span the width");
+        let c = project(&orig, [110.0, 0.0, 56.25]);
+        assert!((c[1] / c[3] - 1.0).abs() < 1e-5, "top edge: 100 * 9/16");
         let near = project(&m, [11.0, 0.0, 0.0]);
         assert!((near[2] / near[3]).abs() < 1e-5, "near plane -> depth 0");
         let far = project(&m, [1010.0, 0.0, 0.0]);
