@@ -2508,9 +2508,27 @@ pub fn mission_of_map(map: &str) -> Option<i32> {
 /// release build, `Aerugo 56fba9` otherwise, `+` for uncommitted changes); the crate version without git.
 pub fn port_version() -> String {
     match env!("AERUGO_BUILD") {
-        "" => format!("Aerugo {}", env!("CARGO_PKG_VERSION")),
-        build => format!("Aerugo {build}"),
+        "" => format!("Aerugo {}", menu_version(env!("CARGO_PKG_VERSION"))),
+        build => format!("Aerugo {}", menu_version(build)),
     }
+}
+
+/// A version as the main menu shows it, short enough for the room left of the original's version text: a release
+/// tag or version without the `v` and a zero patch, its pre-release part in capitals (`v1.0.0-rc.1` -> `1.0 RC1`,
+/// `v0.5.1` -> `0.5.1`); anything else (a commit) as it is.
+pub fn menu_version(v: &str) -> String {
+    let s = v.strip_prefix('v').unwrap_or(v);
+    let (num, pre) = s.split_once('-').map_or((s, None), |(a, b)| (a, Some(b)));
+    let parts: Vec<&str> = num.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())) {
+        return v.to_string();
+    }
+    let mut out = if parts[2] == "0" { format!("{}.{}", parts[0], parts[1]) } else { num.to_string() };
+    if let Some(pre) = pre {
+        out += " ";
+        out += &pre.replace('.', "").to_ascii_uppercase();
+    }
+    out
 }
 
 /// The per-user configuration directory of this port (see `ue_config::user_config_dir`).
@@ -2638,3 +2656,15 @@ pub struct AerugoSettings {
     pub wide_view: i32,
 }
 
+
+#[cfg(test)]
+mod menu_version_tests {
+    #[test]
+    fn release_tags_are_shortened_for_the_menu() {
+        assert_eq!(super::menu_version("v1.0.0-rc.1"), "1.0 RC1");
+        assert_eq!(super::menu_version("1.0.0-rc.1"), "1.0 RC1");
+        assert_eq!(super::menu_version("v1.0.0"), "1.0");
+        assert_eq!(super::menu_version("v0.5.1"), "0.5.1");
+        assert_eq!(super::menu_version("026e44e+"), "026e44e+");
+    }
+}
