@@ -28,7 +28,169 @@ fn fatal(msg: &str, code: i32) -> ! {
     {
         let _ = sdl3::messagebox::show_simple_message_box(sdl3::messagebox::MessageBoxFlag::ERROR, "Deus Ex", msg, None);
     }
+    #[cfg(unix)]
+    unix_log::finish();
     std::process::exit(code)
+}
+
+/// Ends the run with `code` after the log has everything (see `unix_log`).
+fn exit(code: i32) -> ! {
+    #[cfg(unix)]
+    unix_log::finish();
+    std::process::exit(code)
+}
+
+/// The run's output in `deusex.log` beside the saved games (the per-user configuration directory, as on Windows), the
+/// run before kept as `deusex.previous.log`. Unlike Windows the log is always written; a terminal still shows the
+/// output: stdout and stderr go through pipes whose threads copy each line to the terminal and to the log. A crash
+/// signal and a panic are written to the log directly (the copying threads may not get to run again).
+#[cfg(unix)]
+mod unix_log {
+    use std::io::{Read, Write};
+    use std::os::fd::FromRawFd;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    static LOG_FD: AtomicI32 = AtomicI32::new(-1);
+    /// The terminal's stderr (the crash line goes there directly, not through the pipe).
+    static TERM_FD: AtomicI32 = AtomicI32::new(2);
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    struct State {
+        /// The terminal's descriptors for 1 and 2 (copies made before the pipes took their place).
+        saved: [i32; 2],
+        threads: Vec<std::thread::JoinHandle<()>>,
+    }
+
+    /// Starts the log; `finish` (also run when the returned guard drops) puts the descriptors back and waits for the
+    /// copying threads.
+    pub fn start() -> Option<Guard> {
+        let dir = dx_play::config_dir()?;
+        std::fs::create_dir_all(&dir).ok()?;
+        let _ = std::fs::rename(dir.join("deusex.log"), dir.join("deusex.previous.log"));
+        let file = std::fs::File::create(dir.join("deusex.log")).ok()?;
+        LOG_FD.store(std::os::fd::IntoRawFd::into_raw_fd(file.try_clone().ok()?), Ordering::SeqCst);
+        let log = Arc::new(Mutex::new(file));
+        let mut saved = [-1; 2];
+        let mut threads = Vec::new();
+        for (k, fd) in [1, 2].into_iter().enumerate() {
+            let mut p = [0i32; 2];
+            // SAFETY: plain descriptor calls on this process's own descriptors
+            unsafe {
+                saved[k] = libc::dup(fd);
+                if saved[k] < 0 || libc::pipe(p.as_mut_ptr()) != 0 {
+                    return None;
+                }
+                libc::dup2(p[1], fd);
+                libc::close(p[1]);
+            }
+            let log = log.clone();
+            // SAFETY: `p[0]` and the duplicate are fresh descriptors owned by the thread from here on
+            let (mut from, mut to) = unsafe { (std::fs::File::from_raw_fd(p[0]), std::fs::File::from_raw_fd(libc::dup(saved[k]))) };
+            threads.push(std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = from.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = to.write_all(&buf[..n]);
+                    if let Ok(mut l) = log.lock() {
+                        let _ = l.write_all(&buf[..n]);
+                    }
+                }
+            }));
+        }
+        TERM_FD.store(saved[1], Ordering::SeqCst);
+        *STATE.lock().ok()? = Some(State { saved, threads });
+        install_crash_handlers();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            write_direct(format!("panic: {info}\n").as_bytes());
+            previous(info);
+        }));
+        Some(Guard)
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            finish();
+        }
+    }
+
+    /// Puts the terminal's descriptors back (closing the pipes) and waits until everything written reached the log.
+    pub fn finish() {
+        let _ = std::io::stdout().flush();
+        let Some(state) = STATE.lock().ok().and_then(|mut s| s.take()) else { return };
+        // SAFETY: the saved descriptors are this process's own
+        unsafe {
+            libc::dup2(state.saved[0], 1);
+            libc::dup2(state.saved[1], 2);
+        }
+        for t in state.threads {
+            let _ = t.join();
+        }
+    }
+
+    /// Writes to the log file without locks or allocation (from a signal handler too).
+    fn write_direct(b: &[u8]) {
+        let fd = LOG_FD.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // SAFETY: write(2) on our own descriptor is async-signal-safe
+            unsafe {
+                libc::write(fd, b.as_ptr() as *const libc::c_void, b.len());
+            }
+        }
+    }
+
+    extern "C" fn on_crash(sig: libc::c_int) {
+        let name: &[u8] = match sig {
+            libc::SIGSEGV => b"crash: signal SIGSEGV (invalid memory access)\n",
+            libc::SIGBUS => b"crash: signal SIGBUS\n",
+            libc::SIGILL => b"crash: signal SIGILL\n",
+            libc::SIGFPE => b"crash: signal SIGFPE\n",
+            libc::SIGABRT => b"crash: signal SIGABRT (aborted)\n",
+            _ => b"crash: signal\n",
+        };
+        write_direct(name);
+        // SAFETY: async-signal-safe; the handler was installed once (SA_RESETHAND), so the signal now ends the process
+        // as it would have
+        unsafe {
+            libc::write(TERM_FD.load(Ordering::SeqCst), name.as_ptr() as *const libc::c_void, name.len());
+        }
+    }
+
+    fn install_crash_handlers() {
+        for sig in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT] {
+            // SAFETY: installs a handler that only calls write(2); the default action follows (SA_RESETHAND)
+            unsafe {
+                let mut sa: libc::sigaction = std::mem::zeroed();
+                sa.sa_sigaction = on_crash as extern "C" fn(libc::c_int) as usize;
+                sa.sa_flags = libc::SA_RESETHAND | libc::SA_NODEFER;
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(sig, &sa, std::ptr::null_mut());
+            }
+        }
+    }
+
+    /// `--crash-test`: a real invalid memory access, to check the crash line reaches the log.
+    pub fn crash_test() -> ! {
+        eprintln!("crash test: reading address 8");
+        finish_streams_only();
+        // SAFETY: deliberately invalid; this is the test
+        unsafe {
+            let p = 8usize as *const u32;
+            let v = std::ptr::read_volatile(p);
+            println!("{v}");
+        }
+        std::process::exit(3)
+    }
+
+    /// Lets the copying threads write what was printed so far (the crash test ends the process right after).
+    fn finish_streams_only() {
+        let _ = std::io::stderr().flush();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// Started from a console, the output goes to that console; otherwise (from the file manager or Steam) stdout and
@@ -125,7 +287,13 @@ mod crash_report {
 fn main() {
     #[cfg(windows)]
     attach_parent_console();
+    #[cfg(unix)]
+    let _log = unix_log::start();
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(unix)]
+    if args.iter().any(|a| a == "--crash-test") {
+        unix_log::crash_test();
+    }
     if args.iter().any(|a| a == "--write-default-bindings") {
         // writes the modern default layout to the per-user config directory (never overwrites an existing file)
         let Some(dir) = dx_play::config_dir() else { return eprintln!("no configuration directory") };
@@ -186,7 +354,7 @@ fn main() {
             Ok(r) => eprintln!("imported {file}: {} flags, {} actors back in their states", r.flags, r.states),
             Err(e) => {
                 eprintln!("error: cannot import {file}: {e}");
-                std::process::exit(1);
+                exit(1);
             }
         }
     }
@@ -216,7 +384,7 @@ fn main() {
         let turn: f32 = value("--turn").and_then(|v| v.parse().ok()).unwrap_or(18.0);
         if let Err(e) = bench::run(&mut session, size, seconds, turn, value("--csv"), value("--profile")) {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            exit(1);
         }
         return;
     }

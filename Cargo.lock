@@ -197,6 +197,7 @@ dependencies = [
  "dx-soft",
  "dx-vis",
  "dx-vk",
+ "libc",
  "pprof",
  "sdl3",
  "ue-assets",

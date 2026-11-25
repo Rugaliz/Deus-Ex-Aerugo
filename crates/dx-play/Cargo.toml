@@ -29,3 +29,6 @@ static-sdl = ["sdl3/build-from-source-static", "dx-audio/static-sdl"]
 
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
