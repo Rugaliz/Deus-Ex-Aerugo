@@ -480,3 +480,22 @@ fn snapshots_for_saves_and_the_menu_background() {
     assert!(s.vm.runtime_textures.contains_key(&raw), "the menu's background is a snapshot");
     r.take().unwrap().destroy();
 }
+
+/// The Save screen hides the root window and waits two ticks so that the screen it reads for the save's picture has no
+/// menus on it (`MenuScreenSaveGame.SaveGame` / `Tick`): the original ticks once per drawn frame. With the root hidden
+/// the host runs one step per frame, so two steps cannot fall between two frames (the save's picture showed the
+/// menus and the overwrite box when they did).
+#[test]
+fn a_hidden_root_window_gets_one_step_per_frame() {
+    let dir = temp_dir("roothide");
+    let Some(mut s) = new_game(&dir) else { return };
+    s.exec("ShowMainMenu");
+    run(&mut s, 3);
+    assert_eq!(s.advance(0.1), 6, "six steps in a tenth of a second");
+    let root = s.vm.ui_root(s.player);
+    s.vm.call_by_name(root, "Hide", vec![]).unwrap();
+    assert!(s.vm.ui_root_hidden(s.player));
+    assert_eq!(s.advance(0.1), 1, "one step while the root is hidden");
+    s.vm.call_by_name(root, "Show", vec![]).unwrap();
+    assert_eq!(s.advance(0.1), 6);
+}

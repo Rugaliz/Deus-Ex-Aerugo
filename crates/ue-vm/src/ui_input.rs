@@ -785,6 +785,13 @@ impl Vm {
         self.ui_player_root(pawn)
     }
 
+    /// Is the player's root window hidden (`Hide`: nothing of the window system is drawn)? Only the Save screen does
+    /// it, to take the save's picture without the menus.
+    pub fn ui_root_hidden(&self, pawn: u32) -> bool {
+        let root = self.ui_player_root(pawn);
+        root != 0 && !self.wb_pub(root, "bIsVisible")
+    }
+
     /// Does the window system want the mouse (a modal window is open)?
     pub fn ui_wants_mouse(&self, pawn: u32) -> bool {
         let root = self.ui_player_root(pawn);

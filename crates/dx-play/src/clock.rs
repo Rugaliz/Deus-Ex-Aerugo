@@ -74,12 +74,21 @@ impl Session {
             // only the last step of a drawn frame does the frame's drawing work (the visibility pass with its
             // render stamps, overlays, viewport windows): the original draws once per tick, and doing it for every
             // caught-up step made a slow frame slower still
-            let last = self.clock.accum - step < step || n + 1 == MAX_STEPS;
+            let hidden_root = self.vm.ui_root_hidden(self.player);
+            let last = hidden_root || self.clock.accum - step < step || n + 1 == MAX_STEPS;
             self.draw_this_step = last;
             self.step_bound(step);
             self.draw_this_step = true;
             self.clock.accum -= step;
             n += 1;
+            // the original ticks once per drawn frame, and the Save screen counts on it: it hides the root window,
+            // waits two ticks (so that a frame without the menus is on screen) and then reads the screen for the save's
+            // picture. While the root is hidden, one step per frame (the time left over is dropped: the game is
+            // paused under the menus).
+            if self.vm.ui_root_hidden(self.player) {
+                self.clock.accum %= step;
+                break;
+            }
         }
         self.clock.alpha = (self.clock.accum / self.clock.step).clamp(0.0, 1.0);
         n
