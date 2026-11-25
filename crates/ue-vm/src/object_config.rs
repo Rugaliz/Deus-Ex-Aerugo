@@ -317,6 +317,10 @@ impl Vm {
         if self.reg.class_by_name("MenuChoice_AerugoVSync").is_none() {
             return;
         }
+        // the credits with Aerugo's section (main menu and endings: `DeusExPlayer.ShowCredits`)
+        if let (Some(Value::Obj(game)), Some(Value::Obj(ours))) = (class_ref(self, "CreditsWindow"), class_ref(self, "AerugoCreditsWindow")) {
+            self.window_substitutes.insert(game, ours);
+        }
         for (screen, list) in screens {
             let Some(dim) = self.reg.class_by_name(screen).and_then(|c| self.reg.find_prop(c, "choices")).map(|p| p.dim) else { continue };
             for i in 0..dim {

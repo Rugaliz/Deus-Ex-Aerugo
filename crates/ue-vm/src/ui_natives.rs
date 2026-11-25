@@ -119,7 +119,10 @@ impl Vm {
             }
             "NewChild" => {
                 let show = bl(a, 1, true);
-                return Some(self.ui_create_window(ob(a, 0), this, show).map(Obj));
+                // the port's own version of a game window (`Vm::window_substitutes`: the credits with Aerugo's section)
+                let class = ob(a, 0);
+                let class = self.window_substitutes.get(&class).copied().unwrap_or(class);
+                return Some(self.ui_create_window(class, this, show).map(Obj));
             }
             "Raise" | "Lower" => {
                 let top = name == "Raise";

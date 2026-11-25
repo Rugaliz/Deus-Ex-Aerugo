@@ -243,3 +243,84 @@ fn the_main_menu_shows_the_port_version_beside_the_original() {
     assert_eq!(original, plain[0], "the original's text and place unchanged");
     assert!(port.1 + port.2 <= original.1, "the port's line overlaps the original's: {port:?} {original:?}");
 }
+
+/// The credits (`DeusExPlayer.ShowCredits`, from the main menu and the endings) are Aerugo's version of the game's
+/// window: the original's text, then a section for Deus Ex Aerugo, then the team photo that ends them.
+#[test]
+fn the_credits_end_with_a_section_for_aerugo() {
+    let Some(mut s) = new_game() else { return };
+    let p = s.player;
+    s.vm.call_by_name(p, "ShowCredits", vec![Value::Bool(false)]).unwrap();
+    s.step_bound(DT);
+    let root = s.vm.ui_root(p);
+    let credits = find_window(&mut s, root, "AerugoCreditsWindow");
+    assert_ne!(credits, 0, "the credits window is Aerugo's");
+    // the scrolled lines in order (text windows of the scroll area)
+    fn texts(s: &mut Session, w: u32, out: &mut Vec<String>) {
+        let mut c = obj(s, w, "firstChild");
+        while c != 0 {
+            if class_name(s, c) == "TextWindow" {
+                if let Ok(Value::Str(t)) = s.vm.call_by_name(c, "GetText", vec![]) {
+                    out.push(t);
+                }
+            }
+            texts(s, c, out);
+            c = obj(s, c, "nextSibling");
+        }
+    }
+    let mut lines = Vec::new();
+    texts(&mut s, credits, &mut lines);
+    let at = |t: &str| lines.iter().position(|l| l == t).unwrap_or_else(|| panic!("{t:?} not in the credits ({} lines)", lines.len()));
+    let (ours, dev, test) = (at("Deus Ex Aerugo"), at("Ricardo Rugaliz Fernandes"), at("Leandro Orochi Fernandes"));
+    assert!(ours > 50, "after the original's credits (line {ours} of {})", lines.len());
+    assert_eq!((lines[dev - 1].as_str(), lines[test - 1].as_str()), ("Developed by", "Playtested by"));
+    assert!(ours < dev && dev < test);
+}
+
+/// For a human to look at: the credits scrolled to Aerugo's section (`out/screenshots/credits_aerugo.png`).
+#[test]
+#[ignore]
+fn shot_of_the_aerugo_credits() {
+    let Some(mut s) = new_game() else { return };
+    let p = s.player;
+    s.vm.call_by_name(p, "ShowCredits", vec![Value::Bool(false)]).unwrap();
+    s.step_bound(DT);
+    let root = s.vm.ui_root(p);
+    let credits = find_window(&mut s, root, "AerugoCreditsWindow");
+    fn find_text(s: &mut Session, w: u32, text: &str) -> u32 {
+        let mut c = obj(s, w, "firstChild");
+        while c != 0 {
+            if class_name(s, c) == "TextWindow" && matches!(s.vm.call_by_name(c, "GetText", vec![]), Ok(Value::Str(t)) if t == text) {
+                return c;
+            }
+            let f = find_text(s, c, text);
+            if f != 0 {
+                return f;
+            }
+            c = obj(s, c, "nextSibling");
+        }
+        0
+    }
+    let target = find_text(&mut s, credits, "Developed by");
+    let abs_y = |s: &mut Session, mut w: u32| -> f32 {
+        let mut y = 0.0;
+        while w != 0 {
+            y += s.vm.get_prop(w, "y", 0).ok().and_then(|v| v.as_f32()).unwrap_or(0.0);
+            w = obj(s, w, "winParent");
+        }
+        y
+    };
+    let mut r = None;
+    s.render_vk(&mut r, 800, 600).unwrap();
+    for _ in 0..60 * 600 {
+        s.step_bound(DT);
+        if abs_y(&mut s, target) < 300.0 {
+            break;
+        }
+    }
+    let img = s.render_vk(&mut r, 800, 600).unwrap();
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../out/screenshots");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("credits_aerugo.png"), dx_soft::png(img.width, img.height, &img.rgba)).unwrap();
+    r.take().unwrap().destroy();
+}

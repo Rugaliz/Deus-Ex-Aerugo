@@ -427,6 +427,9 @@ pub struct Vm {
     /// Textures made at run time (snapshots), by object id.
     pub runtime_textures: ue_registry::FxHashMap<u32, snapshot::RuntimeTexture>,
     /// Snapshots the host is to take from the last frame drawn.
+    /// Window classes the port creates in place of the game's (`NewChild`), by class object: set by
+    /// `apply_port_menus` (`CreditsWindow` -> `AerugoCreditsWindow`).
+    pub window_substitutes: std::collections::HashMap<u32, u32>,
     pub snapshot_requests: Vec<snapshot::SnapshotRequest>,
     pub(crate) runtime_serial: u32,
     /// Textures' `AnimNext` by texture id (read once from their properties).
@@ -535,6 +538,7 @@ impl Vm {
             canvas_list: Vec::new(),
             runtime_textures: Default::default(),
             snapshot_requests: Vec::new(),
+            window_substitutes: Default::default(),
             runtime_serial: 0,
             anim_next_cache: Default::default(),
             texture_anim: Default::default(),
