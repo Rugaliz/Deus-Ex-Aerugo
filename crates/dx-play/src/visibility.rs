@@ -292,14 +292,29 @@ impl Session {
         // player in a fog zone
         let pz = self.vm.zone_of_actor(player);
         let volumetrics = pz != 0 && self.vm.bp(pz, "bFogZone");
-        // (read by the walk only with volumetric lighting on)
-        let vol_count = if volumetrics { self.vm.model_light_actors.len() } else { 0 };
-        let vol_lights: Vec<Option<VolLight>> = (0..vol_count)
-            .map(|i| {
-                let a = self.vm.model_light_actors[i];
-                (a != 0 && self.vm.is_live(a)).then(|| VolLight { id: a, pos: self.vm.location(a), volume_radius: self.vm.u8p(a, "VolumeRadius") })
-            })
-            .collect();
+        // (read by the walk only with volumetric lighting on). The model's light list holds an entry per surface and
+        // light (215614 in Area 51's last map) naming a few hundred lights: each light is read once a step and the
+        // entries point at it (`vol_index`, made again when the list changes)
+        let vol_lights: Vec<Option<VolLight>> = if volumetrics {
+            let fresh = self.vol_index.as_ref().is_some_and(|(list, _, _)| *list == self.vm.model_light_actors);
+            if !fresh {
+                let mut distinct: Vec<u32> = Vec::new();
+                let mut at: ue_registry::FxHashMap<u32, u32> = Default::default();
+                let slots: std::rc::Rc<[u32]> = self.vm.model_light_actors.iter().map(|&a| *at.entry(a).or_insert_with(|| {
+                    distinct.push(a);
+                    distinct.len() as u32 - 1
+                })).collect();
+                self.vol_index = Some((self.vm.model_light_actors.clone(), distinct, slots));
+            }
+            let distinct = self.vol_index.as_ref().map(|(_, d, _)| d.clone()).unwrap_or_default();
+            distinct.iter().map(|&a| (a != 0 && self.vm.is_live(a)).then(|| VolLight { id: a, pos: self.vm.location(a), volume_radius: self.vm.u8p(a, "VolumeRadius") })).collect()
+        } else {
+            Vec::new()
+        };
+        let vol_slots: std::rc::Rc<[u32]> = match &self.vol_index {
+            Some((_, _, s)) if volumetrics => s.clone(),
+            _ => std::rc::Rc::from([]),
+        };
         // `ShinySurfaces` of the configured render device's ini section (D3D: True): translucent mirrors open a mirror
         // frame, otherwise the walk draws them solid
         let shiny_surfaces = self.render_device_flag("ShinySurfaces").unwrap_or(true);
@@ -348,7 +363,7 @@ impl Session {
                 span_based: false,
                 shiny_surfaces,
                 volumetrics,
-                vol_light: &|i| vol_lights.get(i).copied().flatten(),
+                vol_light: &|i| vol_slots.get(i).and_then(|&k| vol_lights.get(k as usize).copied().flatten()),
                 render_bounds: render_bounds.as_ref().map(|(_, b)| b.as_slice()),
             };
             occlude(&world, f, &mut |fr| self.vis_sprites(fr))
