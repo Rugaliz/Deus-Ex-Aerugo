@@ -378,6 +378,31 @@ impl Vm {
         let _ = self.call_by_name(t, "SetText", vec![Value::Str(text)]);
     }
 
+    /// The main menu's Multiplayer button (the one that opens `MenuMPMain`) greyed out: Aerugo plays the single
+    /// player game only. Greyed as the menu greys its other buttons (`SetSensitivity`), so the menu keeps its look.
+    fn ui_grey_multiplayer(&mut self, menu: u32) {
+        let Some(c) = self.class_of(menu) else { return };
+        let Some(dim) = self.reg.find_prop(c, "winButtons").map(|p| p.dim) else { return };
+        for i in 0..dim {
+            let invoke = match self.get_prop(menu, "buttonDefaults", i) {
+                Ok(Value::Struct(sid, b)) => {
+                    let Some(m) = self.struct_members(sid).into_iter().find(|m| self.reg.names.str(m.name).eq_ignore_ascii_case("invoke")) else { continue };
+                    let o = m.offset as usize;
+                    b.get(o..o + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap())).unwrap_or(0)
+                }
+                _ => continue,
+            };
+            if invoke == 0 || !self.reg.obj_path(ue_registry::ObjId(invoke)).eq_ignore_ascii_case("DeusEx.MenuMPMain") {
+                continue;
+            }
+            if let Ok(Value::Obj(b)) = self.get_prop(menu, "winButtons", i) {
+                if b != 0 {
+                    let _ = self.call_by_name(b, "SetSensitivity", vec![Value::Bool(false)]);
+                }
+            }
+        }
+    }
+
     /// `CreateNewWindow`: constructs a window of `class` as a child of `parent` and runs its `InitWindow`.
     pub(crate) fn ui_create_window(&mut self, class: u32, parent: u32, show: bool) -> Res<u32> {
         let Some(c) = self.class_of_ref(class) else { return Ok(0) };
@@ -385,8 +410,11 @@ impl Vm {
         self.ui_init(w, parent);
         self.ui_lock(w);
         self.ui_event(w, "InitWindow", vec![]);
-        if self.port_version.is_some() && self.is_class(w, "MenuMain") {
-            self.ui_add_port_version(w);
+        if self.is_class(w, "MenuMain") {
+            self.ui_grey_multiplayer(w);
+            if self.port_version.is_some() {
+                self.ui_add_port_version(w);
+            }
         }
         if show {
             self.ui_set_visibility(w, true);

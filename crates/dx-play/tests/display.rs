@@ -248,6 +248,35 @@ fn the_main_menu_shows_the_port_version_beside_the_original() {
     assert!(port.1 + port.2 <= original.1, "the port's line overlaps the original's: {port:?} {original:?}");
 }
 
+/// The main menu's Multiplayer button is greyed out (Aerugo plays the single player game only); every other button
+/// is as the original's (on the logo map the original itself greys Save Game and Back to Game, buttons 1 and 7).
+#[test]
+fn the_main_menu_greys_out_multiplayer() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("ShowMainMenu");
+    s.step_bound(DT);
+    let root = s.vm.ui_root(s.player);
+    let menu = find_window(&mut s, root, "MenuMain");
+    assert_ne!(menu, 0, "the main menu is open");
+    let mut found = Vec::new();
+    for i in 0..10 {
+        let b = match s.vm.get_prop(menu, "winButtons", i) { Ok(Value::Obj(r)) => r, _ => 0 };
+        if b == 0 {
+            continue;
+        }
+        let label = match s.vm.get_prop(menu, "ButtonNames", i) { Ok(Value::Str(t)) => t, _ => String::new() };
+        let sensitive = matches!(s.vm.call_by_name(b, "IsSensitive", vec![Value::Bool(false)]), Ok(Value::Bool(true)));
+        found.push((i, label, sensitive));
+    }
+    eprintln!("{found:?}");
+    let mp: Vec<_> = found.iter().filter(|b| b.1.to_ascii_lowercase().contains("multiplayer")).map(|b| b.0).collect();
+    assert_eq!(mp.len(), 1, "one Multiplayer button: {found:?}");
+    for (i, label, sensitive) in &found {
+        assert_eq!(*sensitive, !(*i == 1 || *i == 7 || *i == mp[0]), "{i} {label}");
+    }
+}
+
 /// The credits (`DeusExPlayer.ShowCredits`, from the main menu and the endings) are Aerugo's version of the game's
 /// window: the original's text, then a section for Deus Ex Aerugo, then the team photo that ends them.
 #[test]
