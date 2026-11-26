@@ -59,6 +59,9 @@ original game really does it:
   the barrel, as the game's own code intends.
 - **UNATCO troopers with knives in Battery Park.** The map gives its troopers a pistol and rifle ammunition instead of
   their assault rifle, so after the pistol's six rounds they fought with the combat knife. They carry their rifles.
+- **Ford Schick never came back.** Rescue him from the sewers in mission 2 and he should wait for you at the Smuggler's
+  later on; the game forgot the rescue at the end of mission 2, so he never appeared, and the augmentation upgrade he
+  brings you was written under a wrong name, so it could not be given. He is there, and he gives it.
 
 ## How to install
 

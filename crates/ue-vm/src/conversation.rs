@@ -304,6 +304,10 @@ impl Vm {
                 self.set_prop(ev, "toActor", 0, Value::Obj(actor))?;
                 taken = true;
             }
+            // Ford Schick's mission 8 gift is written `AugmentationUpgrade`, a class that does not exist, so the
+            // transfer failed and the canister he talks about never came (every other gift of one says
+            // `AugmentationUpgradeCannister`). Aerugo gives the canister.
+            let object = if object.eq_ignore_ascii_case("AugmentationUpgrade") { "AugmentationUpgradeCannister".to_string() } else { object };
             let class_ref = self.deusex_class_ref(&object);
             self.set_prop(ev, "giveObject", 0, Value::Obj(class_ref))?;
             return Ok(taken);

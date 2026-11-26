@@ -1204,11 +1204,25 @@ impl Vm {
             // nobody, so the people it hurt never reacted (no pain animation, no anger, no flight: `ReactToInjury`
             // needs an instigator). The barrel takes the attacker as its `Instigator` first.
             ("DeusEx", "Barrel1.Active.TakeDamage") => 1,
+            // Ford Schick, rescued in mission 2, should wait at the Smuggler's in mission 8 (`Mission08.FirstFrame` shows
+            // him when `FordSchickRescued` is set). The only thing that sets the flag is a trigger in the sewers, with the
+            // default expiration (the end of mission 2); `Mission02.PreTravel`'s own setting with expiration 9 waits on
+            // `MS_FordFollowing`, which nothing ever sets. So Ford never came back. Leaving any mission 2 level keeps a
+            // set `FordSchickRescued` until mission 9, as `Mission02` means it to.
+            ("DeusEx", "Mission02.PreTravel") => 2,
             _ => 0,
         }
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 2 {
+            let Ok(Value::Obj(flags)) = self.get_prop(this, "flags", 0) else { return };
+            let (rescued, dead) = (self.reg.names.intern("FordSchickRescued"), self.reg.names.intern("FordSchick_Dead"));
+            let get = |vm: &mut Self, n| matches!(vm.call_by_name(flags, "GetBool", vec![Value::Name(n)]), Ok(Value::Bool(true)));
+            if flags != 0 && get(self, rescued) && !get(self, dead) {
+                let _ = self.call_by_name(flags, "SetBool", vec![Value::Name(rescued), Value::Bool(true), Value::Void, Value::Int(9)]);
+            }
+        }
         if repair == 1 {
             if let (Some(Value::Obj(by)), Ok(Value::Obj(0))) = (args.get(1), self.get_prop(this, "Instigator", 0)) {
                 if *by != 0 {
