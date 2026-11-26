@@ -336,6 +336,7 @@ impl Vm {
                 }
             }
             // Aerugo repair of the map's data, before the pawns hand out their inventory (`PostBeginPlay`)
+            self.repair_movers();
             let repaired = self.repair_initial_inventories(&order);
             if !repaired.is_empty() {
                 self.log.push(format!("Aerugo repair: {} pawns get their class's own gun back ({})", repaired.len(), repaired.join(", ")));
@@ -525,6 +526,34 @@ impl Vm {
 }
 
 impl Vm {
+    /// Aerugo repair of movers the shipped (GOTY) maps lost the movement of, at a level's start and after a saved game
+    /// is restored (a save keeps the mover's own keyframes). Maggie Chow's flat (06_HongKong_WanChai_Street): the
+    /// display case with the Buddha statue (`Dispalycase`) is the secret way between her rooms and the room behind; a
+    /// light switch and a trigger before it fire it, but both its keyframes are at rest, so it never moved, for JC or
+    /// for the people walking through (the GOTY maps are older than the retail release's). Its leftover copy in the same
+    /// map (`old_Dispalycase`, the same settings) sinks 140 units: the case gets that keyframe.
+    pub fn repair_movers(&mut self) {
+        const MOVER_REPAIRS: &[(&str, &str, u32, [f32; 3])] = &[("06_HongKong_WanChai_Street", "Dispalycase", 1, [0.0, 0.0, -140.0])];
+        let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+        let Some(mover) = self.reg.class_by_name("Mover") else { return };
+        for (m, tag, key, pos) in MOVER_REPAIRS {
+            if !m.eq_ignore_ascii_case(&map) {
+                continue;
+            }
+            let tag = self.reg.names.intern(tag);
+            for a in self.live_actors() {
+                if !self.class_of(a).is_some_and(|c| self.is_a(c, mover)) || self.get_prop(a, "Tag", 0).ok() != Some(Value::Name(tag)) {
+                    continue;
+                }
+                if self.get_prop(a, "KeyPos", *key).ok() == Some(Value::Vector([0.0; 3])) {
+                    let _ = self.set_prop(a, "KeyPos", *key, Value::Vector(*pos));
+                    let line = format!("Aerugo repair: {} moves again", self.name_of(a));
+                    self.log.push(line);
+                }
+            }
+        }
+    }
+
     /// Aerugo repair of the shipped maps' slips in what pawns carry (`INVENTORY_REPAIRS`: map and pawn class): a pawn
     /// the map gave a gun whose ammunition it does not carry, together with ammunition no gun of its takes, while its
     /// class's own gun takes that ammunition, gets its class's gun back in place of the other. Battery Park's UNATCO

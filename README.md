@@ -68,6 +68,9 @@ original game really does it:
 - **Paul lost after you saved him.** In the 'Ton, if Paul made it out through the lobby and you then left by the
   window, the game still removed him from the MJ12 lab (and his body, since he was not dead): he was simply gone, while
   the rest of the game counted him alive. He is in the lab.
+- **Maggie Chow's display case never opened.** The case with the Buddha statue in her flat is the secret way to the
+  hidden corridor behind it, but the map shipped with the Game of the Year edition lost its movement, so it stayed
+  shut for you and for everyone walking that way. It sinks into the floor again, statue and all.
 
 ## How to install
 

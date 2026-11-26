@@ -169,3 +169,27 @@ fn paul_saved_before_the_window_is_alive_in_the_mj12_lab() {
         }
     }
 }
+
+/// Maggie Chow's flat: the display case with the Buddha statue is the secret way between her rooms and the hidden
+/// corridor behind (a light switch and a trigger fire it). In the GOTY map both its keyframes are at rest, so it never
+/// moved; Aerugo gives it the 140-unit sink of its leftover copy in the same map. The switch now opens the way, and the
+/// statue standing on the case goes down with it.
+#[test]
+fn maggie_chows_display_case_opens() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "06_HongKong_WanChai_Street").unwrap();
+    s.step_bound(DT);
+    let tagged = |s: &Session, tag: &str| s.vm.live_actors().into_iter().filter(|&a| matches!(s.vm.get_prop(a, "Tag", 0), Ok(Value::Name(n)) if s.vm.reg.names.str(n) == tag)).collect::<Vec<u32>>();
+    let case = tagged(&s, "Dispalycase")[0];
+    let buddha = tagged(&s, "HKBuddha").into_iter().find(|&b| s.vm.get_prop(b, "Base", 0).ok() == Some(Value::Obj(case))).expect("the statue stands on the case");
+    let switch = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a).is_some_and(|c| s.vm.reg.class(c).path == "DeusEx.LightSwitch") && matches!(s.vm.get_prop(a, "Event", 0), Ok(Value::Name(n)) if s.vm.reg.names.str(n) == "Dispalycase")).expect("the case's light switch");
+    let (case_at, buddha_at) = (s.vm.location(case), s.vm.location(buddha));
+    let p = s.player;
+    s.vm.call_by_name(switch, "Frob", vec![Value::Obj(p), Value::Obj(0)]).unwrap();
+    for _ in 0..30 * 3 {
+        s.step_bound(DT);
+    }
+    assert!((s.vm.location(case)[2] - (case_at[2] - 140.0)).abs() < 0.5, "the case sank: {:?} -> {:?}", case_at, s.vm.location(case));
+    assert!((s.vm.location(buddha)[2] - (buddha_at[2] - 140.0)).abs() < 0.5, "the statue went down with it");
+    assert!(s.vm.log.iter().any(|l| l.contains("moves again")));
+}
