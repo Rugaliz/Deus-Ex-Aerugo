@@ -834,6 +834,9 @@ impl Vm {
         let r = self.run(&mut frame, &code);
         self.func_stack.pop();
         self.depth -= 1;
+        if plan.repair != 0 {
+            self.port_repair_after(plan.repair, this);
+        }
         let out = r.and_then(|_| {
             for (i, (p, off)) in plan.slots.iter().enumerate() {
                 if i < args.len() {
@@ -1210,11 +1213,83 @@ impl Vm {
             // `MS_FordFollowing`, which nothing ever sets. So Ford never came back. Leaving any mission 2 level keeps a
             // set `FordSchickRescued` until mission 9, as `Mission02` means it to.
             ("DeusEx", "Mission02.PreTravel") => 2,
+            // Castle Clinton (`Mission02.Timer`, Battery Park): `BatteryParkSlaughter` ("the player must have killed 2 or
+            // more", the script's own comment) is set once 2 of the 5 terrorists are dead, whoever killed them, so the
+            // UNATCO troopers' kills made everyone treat JC as a butcher. The flag is all the check does (the troopers it
+            // would send wandering are looked up as `ClintonGuard`, the map tags them `ClintonGuards`: nobody, kept).
+            // Aerugo sets it only for JC's own kills, as `TenderloinSlaughter` counts them.
+            ("DeusEx", "Mission02.Timer") => 3,
             _ => 0,
         }
     }
 
+    /// Castle Clinton (repair 3): the dead terrorists JC killed himself, the `TerroristCarcass`es tagged `ClintonTerrorist`
+    /// with `KillerBindName` "JCDenton" (unconscious ones do not count); and whether the original's check fires now
+    /// (living plus unconscious terrorists at most 3).
+    fn clinton_counts(&mut self) -> (usize, bool) {
+        let tag = self.reg.names.intern("ClintonTerrorist");
+        let (Some(t), Some(c)) = (self.reg.class_by_name("Terrorist"), self.reg.class_by_name("TerroristCarcass")) else { return (0, false) };
+        let (mut standing, mut by_jc) = (0, 0);
+        for a in self.live_actors() {
+            let Some(k) = self.class_of(a) else { continue };
+            if self.get_prop(a, "Tag", 0).ok() != Some(Value::Name(tag)) {
+                continue;
+            }
+            let text = |vm: &mut Self, n: &str| match vm.get_prop(a, n, 0) { Ok(Value::Str(s)) => s, _ => String::new() };
+            if self.is_a(k, t) {
+                standing += 1;
+            } else if self.is_a(k, c) {
+                if text(self, "itemName") == "Unconscious" {
+                    standing += 1;
+                } else if text(self, "KillerBindName") == "JCDenton" {
+                    by_jc += 1;
+                }
+            }
+        }
+        (by_jc, standing <= 3)
+    }
+
+    /// The mission script's flag base and whether it runs Battery Park (for repair 3).
+    fn clinton_flags(&mut self, this: u32) -> Option<u32> {
+        let url = match self.get_prop(this, "localURL", 0) { Ok(Value::Str(s)) => s, _ => return None };
+        match self.get_prop(this, "flags", 0) {
+            Ok(Value::Obj(f)) if f != 0 && url.eq_ignore_ascii_case("02_NYC_BATTERYPARK") => Some(f),
+            _ => None,
+        }
+    }
+
+    fn get_flag(&mut self, flags: u32, name: &str) -> bool {
+        let n = self.reg.names.intern(name);
+        matches!(self.call_by_name(flags, "GetBool", vec![Value::Name(n)]), Ok(Value::Bool(true)))
+    }
+
+    fn set_flag(&mut self, flags: u32, name: &str, value: bool, expiration: i32) {
+        let n = self.reg.names.intern(name);
+        let _ = self.call_by_name(flags, "SetBool", vec![Value::Name(n), Value::Bool(value), Value::Void, Value::Int(expiration)]);
+    }
+
+    /// The part of a repair that runs after the repaired function (see `port_repair`).
+    fn port_repair_after(&mut self, repair: u8, this: u32) {
+        if repair == 3 {
+            // the flag stood in for "checked" during the call: back to what JC did (this also clears it in a game where
+            // the original had already blamed him)
+            let Some(flags) = self.clinton_flags(this) else { return };
+            if self.clinton_counts().0 < 2 && self.get_flag(flags, "BatteryParkSlaughter") {
+                self.set_flag(flags, "BatteryParkSlaughter", false, 6);
+            }
+        }
+    }
+
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 3 {
+            // the check would fire without JC having killed two: it reads the flag as set and skips (reset after the call)
+            let Some(flags) = self.clinton_flags(this) else { return };
+            let (by_jc, fires) = self.clinton_counts();
+            if fires && by_jc < 2 {
+                self.set_flag(flags, "BatteryParkSlaughter", true, 6);
+            }
+            return;
+        }
         if repair == 2 {
             let Ok(Value::Obj(flags)) = self.get_prop(this, "flags", 0) else { return };
             let (rescued, dead) = (self.reg.names.intern("FordSchickRescued"), self.reg.names.intern("FordSchick_Dead"));

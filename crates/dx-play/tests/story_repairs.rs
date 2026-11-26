@@ -96,3 +96,43 @@ fn ford_schick_waits_at_the_smugglers_in_mission_8() {
     assert!(talked, "Ford talked");
     assert!(carries(&s, "DeusEx.AugmentationUpgradeCannister"), "Ford gave the canister");
 }
+
+/// Castle Clinton: `BatteryParkSlaughter` (everyone later treats JC as a butcher) is meant for JC killing 2 or more of
+/// the 5 terrorists, but the original sets it when any 2 are dead, the UNATCO troopers' kills included. Two killed by a
+/// trooper: JC is not blamed; two more killed by JC: he is.
+#[test]
+fn castle_clinton_blames_jc_only_for_his_own_kills() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "02_NYC_BatteryPark").unwrap();
+    for _ in 0..30 {
+        s.step_bound(DT);
+    }
+    let tagged = |s: &Session, class: &str, tag: &str| -> Vec<u32> {
+        let c = s.vm.reg.class_by_name(class).unwrap();
+        s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a) == Some(c) && matches!(s.vm.get_prop(a, "Tag", 0), Ok(Value::Name(n)) if s.vm.reg.names.str(n) == tag)).collect()
+    };
+    let terrorists = tagged(&s, "Terrorist", "ClintonTerrorist");
+    let guards = tagged(&s, "UNATCOTroop", "ClintonGuards");
+    assert_eq!(terrorists.len(), 5, "Castle Clinton's terrorists");
+    assert!(!guards.is_empty(), "Castle Clinton's troopers");
+    let kill = |s: &mut Session, victim: u32, by: u32| {
+        let at = s.vm.location(victim);
+        let shot = s.vm.reg.names.intern("Shot");
+        s.vm.call_by_name(victim, "TakeDamage", vec![Value::Int(1000), Value::Obj(by), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(shot)]).unwrap();
+    };
+    // the troopers kill two
+    kill(&mut s, terrorists[0], guards[0]);
+    kill(&mut s, terrorists[1], guards[0]);
+    for _ in 0..30 * 5 {
+        s.step_bound(DT);
+    }
+    assert!(!flag(&mut s, "BatteryParkSlaughter"), "JC is blamed for the troopers' kills");
+    // JC kills two
+    let p = s.player;
+    kill(&mut s, terrorists[2], p);
+    kill(&mut s, terrorists[3], p);
+    for _ in 0..30 * 5 {
+        s.step_bound(DT);
+    }
+    assert!(flag(&mut s, "BatteryParkSlaughter"), "JC killed two: the slaughter is his");
+}

@@ -62,6 +62,9 @@ original game really does it:
 - **Ford Schick never came back.** Rescue him from the sewers in mission 2 and he should wait for you at the Smuggler's
   later on; the game forgot the rescue at the end of mission 2, so he never appeared, and the augmentation upgrade he
   brings you was written under a wrong name, so it could not be given. He is there, and he gives it.
+- **Blamed for the troopers' kills at Castle Clinton.** The game decides whether JC slaughtered the terrorists in the
+  fort as soon as two of them are dead, whoever killed them, so the UNATCO troopers' shots made everyone treat JC as a
+  butcher. Only JC's own kills count now.
 
 ## How to install
 
