@@ -1225,6 +1225,11 @@ impl Vm {
             // simply gone, though the rest of the game counts him alive. `PlayerBailedOutWindow` (read nowhere else) is
             // cleared before it when Paul is alive.
             ("DeusEx", "Mission05.FirstFrame") => 4,
+            // The Universal Constructor's self-destruct (06_HongKong_Storage): the keypad's code fires `Self_Destruct`,
+            // a Dispatcher whose events toggle (the control rod and the shocker doors, the electricity, the warning
+            // lights and siren, a projectile generator); a second entry of the code fired them again and switched the
+            // hazards back off. The keypad runs it once: later entries find its event cleared.
+            ("DeusEx", "Keypad.RunEvents") => 5,
             _ => 0,
         }
     }
@@ -1287,6 +1292,25 @@ impl Vm {
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 5 {
+            let destruct = self.reg.names.intern("Self_Destruct");
+            let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+            if !map.eq_ignore_ascii_case("06_HongKong_Storage") || args.get(1) != Some(&Value::Bool(true)) || self.get_prop(this, "Event", 0).ok() != Some(Value::Name(destruct)) {
+                return;
+            }
+            let Some(Value::Obj(player)) = args.first().cloned() else { return };
+            let Ok(Value::Obj(flags)) = self.get_prop(player, "FlagBase", 0) else { return };
+            if flags == 0 {
+                return;
+            }
+            if self.get_flag(flags, "AerugoUCSelfDestructRun") {
+                let none = self.reg.names.intern("None");
+                let _ = self.set_prop(this, "Event", 0, Value::Name(none));
+            } else {
+                self.set_flag(flags, "AerugoUCSelfDestructRun", true, 7);
+            }
+            return;
+        }
         if repair == 4 {
             let url = match self.get_prop(this, "localURL", 0) { Ok(Value::Str(s)) => s, _ => String::new() };
             let Ok(Value::Obj(flags)) = self.get_prop(this, "flags", 0) else { return };

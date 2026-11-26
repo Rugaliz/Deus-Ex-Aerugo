@@ -214,6 +214,37 @@ fn bob_page_cannot_be_killed_in_hong_kong() {
     assert_eq!(s.vm.get_prop(page, "Health", 0).ok().and_then(|v| v.as_i32()), Some(100), "Page took harm");
 }
 
+/// The Universal Constructor's self-destruct: its keypad fires a dispatcher whose events toggle the hazards on (the
+/// control rod, the shocker doors, the electricity); entering the code a second time fired them again and switched them
+/// off. A second entry changes nothing.
+#[test]
+fn the_uc_self_destruct_runs_once() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "06_HongKong_Storage").unwrap();
+    s.step_bound(DT);
+    let is_tag = |s: &Session, a: u32, t: &str| matches!(s.vm.get_prop(a, "Tag", 0), Ok(Value::Name(n)) if s.vm.reg.names.str(n) == t);
+    let keypad = s.vm.live_actors().into_iter().find(|&a| matches!(s.vm.get_prop(a, "Event", 0), Ok(Value::Name(n)) if s.vm.reg.names.str(n) == "Self_Destruct")).expect("the destruct keypad");
+    let movers: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a).is_some_and(|c| s.vm.reg.class(c).path == "DeusEx.DeusExMover") && (is_tag(&s, a, "Shocker") || is_tag(&s, a, "Control_Rod"))).collect();
+    let sparks: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a).is_some_and(|c| s.vm.reg.class(c).path == "DeusEx.ElectricityEmitter") && is_tag(&s, a, "Shocker")).collect();
+    assert!(movers.len() >= 6 && sparks.len() >= 12, "the hazards: {} movers, {} emitters", movers.len(), sparks.len());
+    let hazards = |s: &Session| -> Vec<String> {
+        movers.iter().map(|&m| format!("{:?}", s.vm.get_prop(m, "KeyNum", 0).ok())).chain(sparks.iter().map(|&e| format!("{:?}", s.vm.get_prop(e, "bIsOn", 0).ok()))).collect()
+    };
+    let at_rest = hazards(&s);
+    let p = s.player;
+    let mut enter = |s: &mut Session| {
+        s.vm.call_by_name(keypad, "RunEvents", vec![Value::Obj(p), Value::Bool(true)]).unwrap();
+        for _ in 0..30 * 15 {
+            s.step_bound(DT);
+        }
+    };
+    enter(&mut s);
+    let running = hazards(&s);
+    assert_ne!(running, at_rest, "the self-destruct changed nothing");
+    enter(&mut s);
+    assert_eq!(hazards(&s), running, "the second entry switched the hazards back");
+}
+
 /// A survey for these repairs (not a check): the actors of `SURVEY_MAP` whose class, tag, event, flag or bind name
 /// contains `SURVEY_FILTER`, with their trigger and order settings.
 #[test]
@@ -233,6 +264,11 @@ fn survey_map_actors() {
             continue;
         }
         let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass", "bInvincible", "Health", "bImportant"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
+        let mut props = props;
+        if path.ends_with("Dispatcher") {
+            let ev: Vec<String> = (0..8).filter_map(|i| match s.vm.get_prop(a, "OutEvents", i) { Ok(Value::Name(n)) if n != 0 && s.vm.reg.names.str(n) != "None" => Some(format!("{}@{:?}", s.vm.reg.names.str(n), s.vm.get_prop(a, "OutDelays", i).ok().and_then(|v| v.as_f32()))), _ => None }).collect();
+            props.push(format!("OutEvents={ev:?}"));
+        }
         let (name, state, at) = (s.vm.name_of(a).to_string(), s.vm.state_name(a).map(str::to_string), s.vm.location(a));
         eprintln!("{name} {path} state {state:?} at {at:?}: {}", props.join(" "));
     }

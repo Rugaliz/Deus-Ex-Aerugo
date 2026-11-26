@@ -73,6 +73,8 @@ original game really does it:
   shut for you and for everyone walking that way. It sinks into the floor again, statue and all.
 - **Bob Page could be killed in Hong Kong.** In the MJ12 lab under VersaLife the map left him mortal, so he could die
   there although the story has him speak to you again later. He cannot be harmed there now.
+- **The Universal Constructor's self-destruct could be undone.** Entering its code a second time ran the sequence
+  again and switched its hazards back off (the electricity, the moving parts, the warning lights). It runs once.
 
 ## How to install
 
