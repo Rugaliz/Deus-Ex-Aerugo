@@ -136,3 +136,36 @@ fn castle_clinton_blames_jc_only_for_his_own_kills() {
     }
     assert!(flag(&mut s, "BatteryParkSlaughter"), "JC killed two: the slaughter is his");
 }
+
+/// Paul in the 'Ton: JC leaving by the window kills Paul unless Paul got out through the lobby first; in the MJ12 lab
+/// (mission 5) a saved Paul is there alive, a killed one lies dead. The original removed a saved Paul too when JC had
+/// taken the window, so he was nowhere. The hotel's flags as the map's triggers set them, then the level change.
+#[test]
+fn paul_saved_before_the_window_is_alive_in_the_mj12_lab() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    for dead in [false, true] {
+        let mut s = Session::open(&g, "04_NYC_Hotel").unwrap();
+        for _ in 0..10 {
+            s.step_bound(DT);
+        }
+        let fb = match s.vm.get_prop(s.player, "FlagBase", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+        for (name, exp, on) in [("PlayerBailedOutWindow", 6, true), ("PaulDenton_Dead", 16, dead)] {
+            if on {
+                let n = s.vm.reg.names.intern(name);
+                s.vm.call_by_name(fb, "SetBool", vec![Value::Name(n), Value::Bool(true), Value::Void, Value::Int(exp)]).unwrap();
+            }
+        }
+        let map = std::fs::read_dir(g.join("Maps")).unwrap().flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).find(|f| f.eq_ignore_ascii_case("05_NYC_UNATCOMJ12Lab.dx")).unwrap();
+        travel(&mut s, map.trim_end_matches(".dx"));
+        let count = |s: &Session, class: &str| {
+            let c = s.vm.reg.class_by_name(class).unwrap();
+            s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a) == Some(c)).count()
+        };
+        let (alive, body) = (count(&s, "PaulDenton"), count(&s, "PaulDentonCarcass"));
+        if dead {
+            assert_eq!((alive, body), (0, 1), "killed by the window: only his body");
+        } else {
+            assert_eq!((alive, body), (1, 0), "out through the lobby before the window: Paul is alive in the lab");
+        }
+    }
+}

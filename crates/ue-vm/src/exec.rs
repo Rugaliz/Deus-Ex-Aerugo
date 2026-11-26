@@ -1219,6 +1219,12 @@ impl Vm {
             // would send wandering are looked up as `ClintonGuard`, the map tags them `ClintonGuards`: nobody, kept).
             // Aerugo sets it only for JC's own kills, as `TenderloinSlaughter` counts them.
             ("DeusEx", "Mission02.Timer") => 3,
+            // Paul in the 'Ton (04_NYC_Hotel): JC leaving by the window kills Paul unless Paul already got out through
+            // the lobby (the map's `StopKill`); `Mission05.FirstFrame` then removes the living Paul from the MJ12 lab
+            // whenever JC took the window, saved or not, and his body because he is not dead: a Paul saved this way was
+            // simply gone, though the rest of the game counts him alive. `PlayerBailedOutWindow` (read nowhere else) is
+            // cleared before it when Paul is alive.
+            ("DeusEx", "Mission05.FirstFrame") => 4,
             _ => 0,
         }
     }
@@ -1281,6 +1287,14 @@ impl Vm {
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 4 {
+            let url = match self.get_prop(this, "localURL", 0) { Ok(Value::Str(s)) => s, _ => String::new() };
+            let Ok(Value::Obj(flags)) = self.get_prop(this, "flags", 0) else { return };
+            if flags != 0 && url.eq_ignore_ascii_case("05_NYC_UNATCOMJ12LAB") && self.get_flag(flags, "PlayerBailedOutWindow") && !self.get_flag(flags, "PaulDenton_Dead") {
+                self.set_flag(flags, "PlayerBailedOutWindow", false, 6);
+            }
+            return;
+        }
         if repair == 3 {
             // the check would fire without JC having killed two: it reads the flag as set and skips (reset after the call)
             let Some(flags) = self.clinton_flags(this) else { return };

@@ -65,6 +65,9 @@ original game really does it:
 - **Blamed for the troopers' kills at Castle Clinton.** The game decides whether JC slaughtered the terrorists in the
   fort as soon as two of them are dead, whoever killed them, so the UNATCO troopers' shots made everyone treat JC as a
   butcher. Only JC's own kills count now.
+- **Paul lost after you saved him.** In the 'Ton, if Paul made it out through the lobby and you then left by the
+  window, the game still removed him from the MJ12 lab (and his body, since he was not dead): he was simply gone, while
+  the rest of the game counted him alive. He is in the lab.
 
 ## How to install
 
