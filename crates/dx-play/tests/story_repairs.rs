@@ -194,6 +194,26 @@ fn maggie_chows_display_case_opens() {
     assert!(s.vm.log.iter().any(|l| l.contains("moves again")));
 }
 
+/// Bob Page in the MJ12 lab under VersaLife: the map leaves him mortal, so he could be killed there though the story
+/// has him speak to JC later (Vandenberg, the Ocean Lab, Area 51). He takes no harm.
+#[test]
+fn bob_page_cannot_be_killed_in_hong_kong() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "06_HongKong_MJ12lab").unwrap();
+    s.step_bound(DT);
+    let c = s.vm.reg.class_by_name("BobPage").unwrap();
+    let page = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(c)).expect("Page is in the lab");
+    let p = s.player;
+    let at = s.vm.location(page);
+    let shot = s.vm.reg.names.intern("Shot");
+    s.vm.call_by_name(page, "TakeDamage", vec![Value::Int(1000), Value::Obj(p), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(shot)]).unwrap();
+    for _ in 0..30 {
+        s.step_bound(DT);
+    }
+    assert!(s.vm.live_actors().contains(&page) && s.vm.state_name(page) != Some("Dying"), "Page was killed");
+    assert_eq!(s.vm.get_prop(page, "Health", 0).ok().and_then(|v| v.as_i32()), Some(100), "Page took harm");
+}
+
 /// A survey for these repairs (not a check): the actors of `SURVEY_MAP` whose class, tag, event, flag or bind name
 /// contains `SURVEY_FILTER`, with their trigger and order settings.
 #[test]
@@ -212,7 +232,7 @@ fn survey_map_actors() {
         if !line.contains(&filter) {
             continue;
         }
-        let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
+        let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass", "bInvincible", "Health", "bImportant"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
         let (name, state, at) = (s.vm.name_of(a).to_string(), s.vm.state_name(a).map(str::to_string), s.vm.location(a));
         eprintln!("{name} {path} state {state:?} at {at:?}: {}", props.join(" "));
     }

@@ -336,7 +336,7 @@ impl Vm {
                 }
             }
             // Aerugo repair of the map's data, before the pawns hand out their inventory (`PostBeginPlay`)
-            self.repair_movers();
+            self.repair_map_actors();
             let repaired = self.repair_initial_inventories(&order);
             if !repaired.is_empty() {
                 self.log.push(format!("Aerugo repair: {} pawns get their class's own gun back ({})", repaired.len(), repaired.join(", ")));
@@ -526,15 +526,30 @@ impl Vm {
 }
 
 impl Vm {
-    /// Aerugo repair of movers the shipped (GOTY) maps lost the movement of, at a level's start and after a saved game
-    /// is restored (a save keeps the mover's own keyframes). Maggie Chow's flat (06_HongKong_WanChai_Street): the
+    /// Aerugo repairs of the shipped (GOTY) maps' actors, at a level's start and after a saved game is restored (a save
+    /// keeps the actors' own settings). Movers that lost their movement: Maggie Chow's flat (06_HongKong_WanChai_Street): the
     /// display case with the Buddha statue (`Dispalycase`) is the secret way between her rooms and the room behind; a
     /// light switch and a trigger before it fire it, but both its keyframes are at rest, so it never moved, for JC or
     /// for the people walking through (the GOTY maps are older than the retail release's). Its leftover copy in the same
     /// map (`old_Dispalycase`, the same settings) sinks 140 units: the case gets that keyframe.
-    pub fn repair_movers(&mut self) {
+    ///
+    /// Also pawns the story needs alive that the map left mortal (`INVINCIBLE_REPAIRS`: map, class): Bob Page in the MJ12
+    /// lab under VersaLife (06_HongKong_MJ12lab) could be killed there, though he goes on to speak to JC at Vandenberg,
+    /// the Ocean Lab and Area 51; he is made invincible, as the maps make Paul in the 'Ton.
+    pub fn repair_map_actors(&mut self) {
         const MOVER_REPAIRS: &[(&str, &str, u32, [f32; 3])] = &[("06_HongKong_WanChai_Street", "Dispalycase", 1, [0.0, 0.0, -140.0])];
+        const INVINCIBLE_REPAIRS: &[(&str, &str)] = &[("06_HongKong_MJ12lab", "BobPage")];
         let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+        for (m, class) in INVINCIBLE_REPAIRS {
+            let Some(c) = self.reg.class_by_name(class).filter(|_| m.eq_ignore_ascii_case(&map)) else { continue };
+            for a in self.live_actors() {
+                if self.class_of(a) == Some(c) && self.get_prop(a, "bInvincible", 0).ok() == Some(Value::Bool(false)) {
+                    let _ = self.set_prop(a, "bInvincible", 0, Value::Bool(true));
+                    let line = format!("Aerugo repair: {} cannot be killed here", self.name_of(a));
+                    self.log.push(line);
+                }
+            }
+        }
         let Some(mover) = self.reg.class_by_name("Mover") else { return };
         for (m, tag, key, pos) in MOVER_REPAIRS {
             if !m.eq_ignore_ascii_case(&map) {

@@ -770,7 +770,7 @@ impl Vm {
         // `LoadMap` on a level saved in play: `PostPostBeginPlay` for every actor (pawns, decorations and the player bind
         // their conversations again, mission scripts restart their timer, ...), then the actor list is sorted
         self.rebuild_actor_slots();
-        self.repair_movers();
+        self.repair_map_actors();
         for i in self.finish_level_start(true) {
             self.log.push(format!("{} {}: {}", i.class, i.event, i.error));
         }

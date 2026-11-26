@@ -71,6 +71,8 @@ original game really does it:
 - **Maggie Chow's display case never opened.** The case with the Buddha statue in her flat is the secret way to the
   hidden corridor behind it, but the map shipped with the Game of the Year edition lost its movement, so it stayed
   shut for you and for everyone walking that way. It sinks into the floor again, statue and all.
+- **Bob Page could be killed in Hong Kong.** In the MJ12 lab under VersaLife the map left him mortal, so he could die
+  there although the story has him speak to you again later. He cannot be harmed there now.
 
 ## How to install
 
