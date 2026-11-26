@@ -193,3 +193,45 @@ fn maggie_chows_display_case_opens() {
     assert!((s.vm.location(buddha)[2] - (buddha_at[2] - 140.0)).abs() < 0.5, "the statue went down with it");
     assert!(s.vm.log.iter().any(|l| l.contains("moves again")));
 }
+
+/// A survey for these repairs (not a check): the actors of `SURVEY_MAP` whose class, tag, event, flag or bind name
+/// contains `SURVEY_FILTER`, with their trigger and order settings.
+#[test]
+#[ignore]
+fn survey_map_actors() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let map = std::env::var("SURVEY_MAP").unwrap_or_else(|_| "06_HongKong_WanChai_Market".into());
+    let filter = std::env::var("SURVEY_FILTER").unwrap_or_default().to_ascii_lowercase();
+    let mut s = Session::open(&g, &map).unwrap();
+    s.step_bound(DT);
+    let show = |s: &Session, a: u32, p: &str| match s.vm.get_prop(a, p, 0) { Ok(Value::Name(n)) => s.vm.reg.names.str(n).to_string(), Ok(Value::Str(t)) => format!("{t:?}"), Ok(v) => format!("{v:?}"), _ => String::new() };
+    for a in s.vm.live_actors() {
+        let Some(c) = s.vm.class_of(a) else { continue };
+        let path = s.vm.reg.class(c).path.clone();
+        let line = format!("{path} {}", ["Tag", "Event", "flagName", "BindName", "Alliance", "AllianceName"].iter().map(|p| show(&s, a, p)).collect::<Vec<_>>().join(" ")).to_ascii_lowercase();
+        if !line.contains(&filter) {
+            continue;
+        }
+        let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
+        let (name, state, at) = (s.vm.name_of(a).to_string(), s.vm.state_name(a).map(str::to_string), s.vm.location(a));
+        eprintln!("{name} {path} state {state:?} at {at:?}: {}", props.join(" "));
+    }
+}
+
+/// A survey (not a check): the flags conversation events `DeusExConText.ConEventSetFlag<N>` set (`SURVEY_EVENTS`, comma
+/// separated numbers, as `out/audit/flags_data.tsv` names them), with their expiration.
+#[test]
+#[ignore]
+fn survey_con_flag() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "06_HongKong_WanChai_Market").unwrap();
+    for id in std::env::var("SURVEY_EVENTS").unwrap_or_default().split(',') {
+        let ev = s.vm.load_con_object(&format!("DeusExConText.ConEventSetFlag{id}"));
+        let mut fr = match s.vm.get_prop(ev, "flagRef", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+        while fr != 0 {
+            let name = match s.vm.get_prop(fr, "flagName", 0) { Ok(Value::Name(n)) => s.vm.reg.names.str(n).to_string(), _ => String::new() };
+            eprintln!("event {id}: {name} = {:?}, expiration {:?}", s.vm.get_prop(fr, "value", 0).ok(), s.vm.get_prop(fr, "expiration", 0).ok());
+            fr = match s.vm.get_prop(fr, "nextFlagRef", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+        }
+    }
+}
