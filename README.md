@@ -29,9 +29,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   system's own audio quality, and a loudness control (*Sound* settings) that keeps rooms full of machines from getting
   too loud; *Original* mixes as the original game. A dialogue line cut short (skipped, or ended by the next) fades out
   instead of clicking. The original's sound and music engine is recreated faithfully.
-- **No holes in the levels.** Some maps shipped with broken culling data that made the original skip whole rooms and
-  doors from most angles (the Hong Kong Helibase's corridor door and stairs room), and some underwater walls without a
-  surface, so you saw through the rock to the far end of the canal (Hong Kong's Wan Chai canal); Aerugo draws them.
+- **The original's bugs fixed.** A few defects of the original game and its maps that get in the way of playing are
+  fixed; everything else plays exactly as the original (see *Fixes to the original game* below).
 - **Leaves your game alone.** Settings and saves go to your user folder, never into the game folder, so the original
   game keeps working side by side.
 - **Easy mods.** Drop texture packs, models and other mods into a `Mods` folder as zip files; no installers, no
@@ -40,6 +39,26 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
 > **Status: 1.0 release candidate. The whole game has been played through** (the intro, the training, every
 > mission and the AI merge ending). The other two endings have not been played to the end yet. Bug reports are
 > welcome in the [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
+
+## Fixes to the original game
+
+Aerugo runs the game's own scripts and maps as they shipped, so the game plays as the original, quirks included. Where
+the original or its data has a defect that gets in the way of playing, Aerugo fixes it, always after checking that the
+original game really does it:
+
+- **Missing rooms and doors.** Some maps shipped with broken culling data that made the original skip whole rooms and
+  doors from most angles (the Hong Kong Helibase's corridor door and stairs room). Aerugo draws them.
+- **See-through rock under water.** Some underwater walls have no surface, so you saw through the rock to the far end
+  of the canal (Hong Kong's Wan Chai canal). Aerugo gives them one.
+- **Clicks between dialogue lines.** A line cut short (skipped, or still sounding when the next one starts) stopped
+  mid-wave and clicked. It now fades out over a few milliseconds.
+- **The weapon in your hands could vanish for good** after you changed the field of view and then used a scope or
+  binoculars, took drugs or loaded a game. The field of view now always comes back to your setting.
+- **Poison gas from a burst barrel.** A barrel broken by its first hit let out gas that belonged to nobody, so the
+  people in it lost health but never reacted (no pain, no anger, no running away). The gas now belongs to whoever broke
+  the barrel, as the game's own code intends.
+- **UNATCO troopers with knives in Battery Park.** The map gives its troopers a pistol and rifle ammunition instead of
+  their assault rifle, so after the pistol's six rounds they fought with the combat knife. They carry their rifles.
 
 ## How to install
 
