@@ -335,6 +335,11 @@ impl Vm {
                     }
                 }
             }
+            // Aerugo repair of the map's data, before the pawns hand out their inventory (`PostBeginPlay`)
+            let repaired = self.repair_initial_inventories(&order);
+            if !repaired.is_empty() {
+                self.log.push(format!("Aerugo repair: {} pawns get their class's own gun back ({})", repaired.len(), repaired.join(", ")));
+            }
             self.set_bp(lvl, "bBegunPlay", true);
             self.set_bp(lvl, "bStartup", true);
             // `Info->Game->eventInitGame(Options, Error)`
@@ -516,5 +521,91 @@ impl Vm {
             chain.push(s);
         }
         chain.iter().flat_map(|s| self.reg.struct_def(*s).props.clone()).collect()
+    }
+}
+
+impl Vm {
+    /// Aerugo repair of the shipped maps' slips in what pawns carry (`INVENTORY_REPAIRS`: map and pawn class): a pawn
+    /// the map gave a gun whose ammunition it does not carry, together with ammunition no gun of its takes, while its
+    /// class's own gun takes that ammunition, gets its class's gun back in place of the other. Battery Park's UNATCO
+    /// troopers: a pistol and boxes of rifle ammunition, so after the pistol's six rounds the knife (the original does
+    /// that: probe `ArmsGame`, WORKLOG 3.245); the class's assault rifle uses that ammunition. Only listed cases: the same
+    /// pattern elsewhere can be deliberate (mission 4's military robot carries LAWs in place of its rockets and fights
+    /// with its machine gun). Returns the pawns changed, by name.
+    pub fn repair_initial_inventories(&mut self, actors: &[u32]) -> Vec<String> {
+        const INVENTORY_REPAIRS: &[(&str, &str)] = &[("02_NYC_BatteryPark", "UNATCOTroop")];
+        let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+        let classes: Vec<&str> = INVENTORY_REPAIRS.iter().filter(|(m, _)| m.eq_ignore_ascii_case(&map)).map(|(_, c)| *c).collect();
+        if classes.is_empty() {
+            return Vec::new();
+        }
+        let (Some(pawn_c), Some(weapon_c), Some(ammo_c)) = (self.reg.class_by_name("ScriptedPawn"), self.reg.class_by_name("Weapon"), self.reg.class_by_name("Ammo")) else { return Vec::new() };
+        let class_of_id = |vm: &Vm, id: u32| if id == 0 { None } else { vm.reg.class_by_path(vm.reg.obj_path(ue_registry::ObjId(id))) };
+        let mut changed = Vec::new();
+        for &a in actors {
+            let Some(c) = self.class_of(a) else { continue };
+            if !self.is_a(c, pawn_c) || !classes.iter().any(|n| self.reg.names.str(self.reg.class(c).name).eq_ignore_ascii_case(n)) {
+                continue;
+            }
+            let dim = self.reg.find_prop(c, "InitialInventory").map(|p| p.dim).unwrap_or(0);
+            let slot = |vm: &mut Vm, k: u32| match vm.get_prop(a, "InitialInventory", k) {
+                Ok(Value::Struct(sid, b)) if b.len() >= 8 => {
+                    let (id, count) = (u32::from_le_bytes(b[0..4].try_into().unwrap()), i32::from_le_bytes(b[4..8].try_into().unwrap()));
+                    Some((sid, b, id, count))
+                }
+                _ => None,
+            };
+            let ammo_of = |vm: &mut Vm, weapon: u32| -> u32 {
+                let Some(wc) = class_of_id(vm, weapon) else { return 0 };
+                let name = vm.reg.names.str(vm.reg.class(wc).name).to_string();
+                match vm.default_value_of(&name, "AmmoName", 0) { Some(Value::Obj(o)) => o, _ => 0 }
+            };
+            let mut weapons = Vec::new();
+            let mut ammo = Vec::new();
+            for k in 0..dim {
+                let Some((_, _, id, count)) = slot(self, k) else { continue };
+                let Some(ic) = class_of_id(self, id) else { continue };
+                if count <= 0 {
+                    continue;
+                }
+                if self.is_a(ic, weapon_c) {
+                    weapons.push((k, id));
+                } else if self.is_a(ic, ammo_c) {
+                    ammo.push(id);
+                }
+            }
+            let used: Vec<u32> = weapons.iter().map(|&(_, w)| ammo_of(self, w)).collect();
+            let stray: Vec<u32> = ammo.iter().copied().filter(|x| !used.contains(x)).collect();
+            if stray.is_empty() {
+                continue;
+            }
+            // the class's own guns (its default inventory)
+            let cname = self.reg.names.str(self.reg.class(c).name).to_string();
+            let defaults: Vec<u32> = (0..dim)
+                .filter_map(|k| match self.default_value_of(&cname, "InitialInventory", k) {
+                    Some(Value::Struct(_, b)) if b.len() >= 8 => Some(u32::from_le_bytes(b[0..4].try_into().unwrap())),
+                    _ => None,
+                })
+                .collect();
+            let own: Vec<u32> = defaults.into_iter().filter(|&id| class_of_id(self, id).is_some_and(|ic| self.is_a(ic, weapon_c))).collect();
+            for (i, &(k, w)) in weapons.iter().enumerate() {
+                let fits = ammo.contains(&used[i]) || used[i] == 0;
+                if fits {
+                    continue;
+                }
+                let none = self.reg.known_obj("Engine.AmmoNone").map(|o| o.0).unwrap_or(0);
+                if used[i] == none {
+                    continue;
+                }
+                let Some(&gun) = own.iter().find(|&&g| stray.contains(&ammo_of(self, g))) else { continue };
+                let Some((sid, mut b, _, _)) = slot(self, k) else { continue };
+                b[0..4].copy_from_slice(&gun.to_le_bytes());
+                let _ = self.set_prop(a, "InitialInventory", k, Value::Struct(sid, b));
+                let name = self.name_of(a);
+                changed.push(format!("{name}: {} -> {}", self.reg.obj_path(ue_registry::ObjId(w)), self.reg.obj_path(ue_registry::ObjId(gun))));
+                break;
+            }
+        }
+        changed
     }
 }
