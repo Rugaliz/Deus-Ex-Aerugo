@@ -28,6 +28,52 @@ impl Vm {
             self.set_prop(it, "Outer", 0, Value::Obj(a))?;
             self.set_prop(a, "RenderInterface", 0, Value::Obj(it))?;
         }
+        // `ParticleIterator.Init` (the game's own class): the generator's proxy, and 64 items unless the generator is
+        // frozen (0). The script does exactly this; run natively it costs a property copy instead of a script call per
+        // generator per visibility pass (a quarter of the pass in Area 51). A subclass (a mod's) runs its own script.
+        if self.class_of(it).is_some_and(|c| self.reg.class(c).path == "DeusEx.ParticleIterator") {
+            if self.is_class(a, "ParticleGenerator") {
+                let proxy = self.op(a, "proxy");
+                self.set_prop(it, "proxy", 0, Value::Obj(proxy))?;
+                let items = if self.bp(a, "bFrozen") { 0 } else { 64 };
+                self.set_ip(it, "MaxItems", items);
+            }
+            return Ok(());
+        }
+        // `LaserIterator.Init` (the game's own class), likewise: the emitter's place, proxy and beam style, and as many
+        // items as the active beams have segments, plus one for the last, unless the emitter is frozen or its beam
+        // hidden
+        if self.class_of(it).is_some_and(|c| self.reg.class(c).path == "DeusEx.LaserIterator") {
+            if self.is_class(a, "LaserEmitter") {
+                const BEAMS: usize = 8;
+                const BEAM_SIZE: usize = 36;
+                let (loc, rot, proxy, random) = (self.vp(a, "Location"), self.rotation(a), self.op(a, "proxy"), self.bp(a, "bRandomBeam"));
+                self.set_ip(it, "MaxItems", 0);
+                self.set_ip(it, "nextItem", 0);
+                self.set_vp(it, "prevLoc", loc);
+                self.set_vp(it, "prevRand", [0.0; 3]);
+                self.set_vp(it, "savedLoc", loc);
+                self.set_prop(it, "savedRot", 0, Value::Rotator(rot))?;
+                self.set_prop(it, "proxy", 0, Value::Obj(proxy))?;
+                self.set_bp(it, "bRandomBeam", random);
+                if !self.bp(a, "bFrozen") && !self.bp(a, "bHiddenBeam") {
+                    let mut items = 0i32;
+                    if let Some((base, _)) = self.prop_at(it, "Beams") {
+                        for i in 0..BEAMS {
+                            let b = base + i * BEAM_SIZE;
+                            if self.u32_at(it, b) & 1 != 0 {
+                                items = items.wrapping_add(self.u32_at(it, b + 32) as i32);
+                            }
+                        }
+                    }
+                    if items > 0 {
+                        items += 1;
+                    }
+                    self.set_ip(it, "MaxItems", items);
+                }
+            }
+            return Ok(());
+        }
         self.send_event(it, "Init", vec![Value::Obj(camera)])?;
         Ok(())
     }

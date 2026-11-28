@@ -446,3 +446,43 @@ fn a_texture_sharing_its_palettes_path_has_its_size() {
     let (pi, ei) = s.vm.reg.export_by_path("Effects.Smoke.SmokePuff1").unwrap();
     assert_eq!(s.vm.reg.packages[pi].pkg.export_class_name(ei), "FireTexture");
 }
+
+/// The native `Init` of the game's particle and laser iterators (run once per generator or emitter per visibility pass)
+/// leaves the iterator exactly as the script's `Init` does: for every one in Area 51's last map (lasers and particles),
+/// the script runs first, its fields are scrambled, then the native version runs.
+#[test]
+fn native_iterator_init_matches_the_script() {
+    let Some(mut s) = open("15_Area51_Final") else { return };
+    let cam = s.camera();
+    let _ = s.compute_visibility(&cam, 800, 600);
+    let fields = ["MaxItems", "nextItem", "prevLoc", "prevRand", "savedLoc", "savedRot", "proxy", "bRandomBeam"];
+    let p = s.player;
+    let mut checked = [0usize; 2];
+    for a in s.vm.live_actors() {
+        let it = s.vm.op(a, "RenderInterface");
+        if it == 0 {
+            continue;
+        }
+        let class = s.vm.class_of(it).map(|c| s.vm.reg.class(c).path.clone()).unwrap_or_default();
+        let kind = match class.as_str() {
+            "DeusEx.ParticleIterator" => 0,
+            "DeusEx.LaserIterator" => 1,
+            _ => continue,
+        };
+        let read = |s: &Session| fields.iter().map(|f| format!("{:?}", s.vm.get_prop(it, f, 0).ok())).collect::<Vec<_>>();
+        s.vm.send_event(it, "Init", vec![Value::Obj(p)]).unwrap();
+        let script = read(&s);
+        for f in ["MaxItems", "nextItem"] {
+            let _ = s.vm.set_prop(it, f, 0, Value::Int(-7));
+        }
+        for f in ["prevLoc", "prevRand", "savedLoc"] {
+            let _ = s.vm.set_prop(it, f, 0, Value::Vector([1.0, 2.0, 3.0]));
+        }
+        let _ = s.vm.set_prop(it, "proxy", 0, Value::Obj(0));
+        s.vm.prepare_render_interface(a, p).unwrap();
+        assert_eq!(read(&s), script, "{class} of {}", s.vm.name_of(a));
+        checked[kind] += 1;
+    }
+    eprintln!("particle iterators {}, laser iterators {}", checked[0], checked[1]);
+    assert!(checked[0] > 0 && checked[1] > 0);
+}
