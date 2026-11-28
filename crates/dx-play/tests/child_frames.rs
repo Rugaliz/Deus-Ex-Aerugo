@@ -433,3 +433,16 @@ fn meshes_are_cut_at_the_mirror_plane() {
     let in_floor = |img: &[u8]| (280..330).flat_map(|y| (330..470).map(move |x| (y * 800 + x) * 4)).filter(|&i| img[i] as i32 - plain[i] as i32 > 40).count();
     assert!(in_floor(&sprite) > 200, "the sprite's reflection shows in the floor: {}", in_floor(&sprite));
 }
+
+/// Some textures share their group and name with their own palette (23 in the game, all fire textures: the steam and
+/// smoke puffs, flames, the laser spot, the EMP and biocell effects). A path must mean the texture: with the palette in
+/// its place the texture had no size, and every particle drawn with it (Brooklyn Bridge Station's steam) got an empty
+/// sprite and was never drawn.
+#[test]
+fn a_texture_sharing_its_palettes_path_has_its_size() {
+    let Some(mut s) = open("03_NYC_BrooklynBridgeStation") else { return };
+    let id = s.vm.reg.obj_id("Effects.Smoke.SmokePuff1").0;
+    assert_eq!(s.vm.texture_size(id), (64.0, 64.0));
+    let (pi, ei) = s.vm.reg.export_by_path("Effects.Smoke.SmokePuff1").unwrap();
+    assert_eq!(s.vm.reg.packages[pi].pkg.export_class_name(ei), "FireTexture");
+}

@@ -71,6 +71,8 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         v => v.and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0),
     };
     let profiler = start_profile(profile.is_some())?;
+    let spikes: Option<f64> = std::env::var("DX_BENCH_SPIKES").ok().and_then(|v| v.parse().ok());
+    let mut phase_sum: BTreeMap<&'static str, f64> = BTreeMap::new();
     // `DX_BENCH_CPU`: the CPU side measured steadily (the frame rate varies with what else the machine runs): from the
     // loaded game (with `DX_BENCH_FREEZE`, the same state in every build), 240 game steps of 1/60 s, then 200 visibility
     // walks of the view; medians and means. Then the run as usual.
@@ -106,6 +108,17 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
         session.set_yaw(yaw);
         let steps = if freeze { 0 } else { session.advance(dt) };
         let step = t0.elapsed().as_secs_f64() * 1000.0;
+        // `DX_BENCH_SPIKES=ms` (with `DX_STEP_PROFILE`): the phases of every frame whose steps took longer
+        if let Some(limit) = spikes {
+            let phases = Session::take_step_profile();
+            if step > limit {
+                let top: Vec<String> = phases.iter().filter(|p| p.1 * 1000.0 >= 0.3).take(12).map(|(k, v)| format!("{}={:.2}", k.trim(), v * 1000.0)).collect();
+                println!("spike: frame {} step {step:.2} ms ({steps} steps): {}", frames.len(), top.join(" "));
+            }
+            for (k, v) in phases {
+                *phase_sum.entry(k).or_default() += v;
+            }
+        }
         let t1 = Instant::now();
         // (the renderer's phases and GPU time are the frame before's)
         let (cpu_ms, gpu_ms) = session.render_vk_bench_thread(&mut rt, size, &mut prep)?;
@@ -150,7 +163,12 @@ pub fn run(session: &mut Session, size: (u32, u32), seconds: f64, turn_deg_per_s
     );
     println!("per frame (ms): step {:.2}, preparation {:.2}, renderer CPU {:.2}, GPU {:.2}", avg(&|f| f.step), avg(&|f| f.prep), avg(&|f| f.render), avg(&|f| f.gpu));
     println!("\nstep phases (ms per step):");
-    for (k, v) in Session::take_step_profile() {
+    let mut phases = Session::take_step_profile();
+    if spikes.is_some() {
+        phases = phase_sum.into_iter().collect();
+        phases.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+    for (k, v) in phases {
         if v * 1000.0 / steps.max(1) as f64 >= 0.01 {
             println!("  {k:<28} {:.3}", v * 1000.0 / steps.max(1) as f64);
         }

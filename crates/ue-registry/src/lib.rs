@@ -381,12 +381,24 @@ impl Registry {
         }
     }
 
+    /// Indexes a package's exports by path. A path names one object; when two exports share it (some textures share
+    /// group and name with their own palette, `Effects.Smoke.SmokePuff1`), the path means the other one: a palette is
+    /// reached through its texture's `Palette` reference inside the package, never by path.
     fn index_package(&mut self, pi: usize) {
         let lp = &self.packages[pi];
         for ei in 0..lp.pkg.exports.len() {
             if let Some(p) = lp.pkg.object_path(ObjectRef::Export(ei)) {
                 let key = format!("{}.{}", lp.name, p).to_ascii_lowercase();
-                self.exports_by_path.entry(key).or_insert((pi, ei));
+                match self.exports_by_path.get(&key) {
+                    None => {
+                        self.exports_by_path.insert(key, (pi, ei));
+                    }
+                    Some(&(pj, ej)) => {
+                        if pj == pi && lp.pkg.export_class_name(ej) == "Palette" && lp.pkg.export_class_name(ei) != "Palette" {
+                            self.exports_by_path.insert(key, (pi, ei));
+                        }
+                    }
+                }
             }
         }
     }
