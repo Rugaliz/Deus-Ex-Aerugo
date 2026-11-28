@@ -97,7 +97,9 @@ impl Vm {
         self.set_u32_at(a, off, r.zone);
         self.set_u32_at(a, off + ro.leaf, r.leaf as u32);
         if let Some(i) = crate::ref_instance(a) {
-            self.objects[i].mem.data[off + ro.zone_number] = r.zone_number;
+            if let Some(d) = self.objects[i].mem.data.get_mut(off + ro.zone_number) {
+                *d = r.zone_number;
+            }
         }
     }
 

@@ -234,3 +234,77 @@ fn survey_map_shot() {
     std::fs::write(dir.join(format!("{name}.png")), dx_soft::png(img.width, img.height, &img.rgba)).unwrap();
     eprintln!("player at {:?}", s.player_location());
 }
+
+/// Memory over level changes: travels between maps (`SURVEY_MAPS`, comma separated) and prints the object count, the
+/// live ones, the bytes the dead ones still hold, and the process's resident memory.
+#[test]
+#[ignore]
+fn survey_travel_memory() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let maps = std::env::var("SURVEY_MAPS").unwrap_or_else(|_| "01_NYC_UNATCOHQ,01_NYC_UNATCOIsland,01_NYC_UNATCOHQ,01_NYC_UNATCOIsland,01_NYC_UNATCOHQ,01_NYC_UNATCOIsland".into());
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("StartNewGame 01_NYC_UNATCOIsland");
+    for _ in 0..30 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let rss = || std::fs::read_to_string("/proc/self/status").unwrap_or_default().lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) / 1024.0;
+    let report = |s: &Session, what: &str| {
+        let (mut live, mut dead_bytes, mut dead) = (0usize, 0usize, 0usize);
+        for o in &s.vm.objects {
+            if o.alive {
+                live += 1;
+            } else {
+                dead += 1;
+                dead_bytes += o.mem.data.len() + o.mem.strings.iter().map(|x| x.len()).sum::<usize>();
+            }
+        }
+        eprintln!("{what}: {} objects, {live} live, {dead} dead holding {:.1} MB; resident {:.0} MB", s.vm.objects.len(), dead_bytes as f64 / 1e6, rss());
+    };
+    report(&s, &s.map_name.clone());
+    for m in maps.split(',') {
+        let p = s.player;
+        s.vm.call_by_name(p, "ClientTravel", vec![Value::Str(m.into()), Value::Byte(2), Value::Bool(true)]).unwrap();
+        for _ in 0..120 {
+            s.step_bound(1.0 / 30.0);
+            if s.map_name.eq_ignore_ascii_case(m) {
+                break;
+            }
+        }
+        for _ in 0..30 {
+            s.step_bound(1.0 / 30.0);
+        }
+        report(&s, m);
+    }
+}
+
+/// Destroys (`SURVEY_HOW=destroy`) or kills (`kill`) the first actor of `SURVEY_CLASS` in `SURVEY_MAP` and prints what
+/// the VM logged meanwhile.
+#[test]
+#[ignore]
+fn survey_destroy_log() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let map = std::env::var("SURVEY_MAP").unwrap_or_else(|_| "01_NYC_UNATCOIsland".into());
+    let class = std::env::var("SURVEY_CLASS").unwrap_or_else(|_| "Terrorist".into());
+    let mut s = Session::open(&g, &map).unwrap();
+    for _ in 0..10 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let c = s.vm.reg.class_by_name(&class).unwrap();
+    let a = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(c)).unwrap();
+    s.vm.log.clear();
+    if std::env::var("SURVEY_HOW").as_deref() == Ok("kill") {
+        let p = s.player;
+        let at = s.vm.location(a);
+        let shot = s.vm.reg.names.intern("Shot");
+        s.vm.call_by_name(a, "TakeDamage", vec![Value::Int(1000), Value::Obj(p), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(shot)]).unwrap();
+        for _ in 0..90 {
+            s.step_bound(1.0 / 30.0);
+        }
+    } else {
+        s.vm.destroy(a).unwrap();
+        s.step_bound(1.0 / 30.0);
+    }
+    for l in &s.vm.log {
+        eprintln!("log: {l}");
+    }
+}

@@ -146,15 +146,26 @@ impl Vm {
     /// level.
     pub fn unload_level_keeping(&mut self, keep: &HashSet<u32>) -> u32 {
         let old_level = self.level;
+        // the game rules object and what it owns may be taken over by the next level (`load_level_with` without
+        // events): their memory stays
+        let game: HashSet<u32> = self.game_closure().into_iter().collect();
         for i in 0..self.objects.len() {
             let r = crate::inst_ref(i);
             if keep.contains(&r) || r == old_level {
                 continue;
             }
+            let free = !game.contains(&r);
             let o = &mut self.objects[i];
+            let was_alive = o.alive;
             o.alive = false;
             o.exec = None;
             o.latent = None;
+            // a slot of a level left behind is never used again (a level entered again is rebuilt from its snapshot in
+            // new slots): its memory goes (the slot and class stay, so references to it still read as dead)
+            if free && (was_alive || !o.mem.data.is_empty()) {
+                o.mem = crate::Mem::default();
+                o.disabled = Default::default();
+            }
         }
         self.time = 0.0;
         self.ai.reset();

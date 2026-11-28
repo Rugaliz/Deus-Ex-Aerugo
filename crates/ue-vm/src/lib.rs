@@ -225,7 +225,7 @@ pub struct Object {
     pub mem: Mem,
     /// Current state: (class declaring it, index in that class).
     pub state: Option<(ClassId, usize)>,
-    pub exec: Option<StateExec>,
+    pub exec: Option<Box<StateExec>>,
     pub latent: Option<Latent>,
     /// Events turned off with `Disable`.
     pub disabled: HashSet<u32>,
@@ -926,7 +926,7 @@ impl Vm {
                 let code = self.code_for(export, size)?;
                 if let Some(pc) = code.label_index(label_name) {
                     let frame = Frame::new(self.zero_mem(0), obj);
-                    self.objects[idx].exec = Some(StateExec { code, frame, pc, key: (export, size) });
+                    self.objects[idx].exec = Some(Box::new(StateExec { code, frame, pc, key: (export, size) }));
                     return Ok(());
                 }
             }

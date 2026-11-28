@@ -292,7 +292,9 @@ impl Vm {
         if let Some(i) = ref_instance(obj) {
             if let Some(o) = self.objects.get_mut(i) {
                 for k in 0..3 {
-                    o.mem.data[off + k * 4..off + k * 4 + 4].copy_from_slice(&v[k].to_le_bytes());
+                    if let Some(d) = o.mem.data.get_mut(off + k * 4..off + k * 4 + 4) {
+                        d.copy_from_slice(&v[k].to_le_bytes());
+                    }
                 }
             }
         }
@@ -305,7 +307,10 @@ impl Vm {
     pub fn set_u8_at(&mut self, obj: u32, off: usize, v: u8) {
         if let Some(i) = ref_instance(obj) {
             if let Some(o) = self.objects.get_mut(i) {
-                o.mem.data[off] = v;
+                // (a slot of a level left behind has no memory any more)
+                if let Some(d) = o.mem.data.get_mut(off) {
+                    *d = v;
+                }
             }
         }
     }
@@ -313,7 +318,9 @@ impl Vm {
     pub fn set_u32_at(&mut self, obj: u32, off: usize, v: u32) {
         if let Some(i) = ref_instance(obj) {
             if let Some(o) = self.objects.get_mut(i) {
-                o.mem.data[off..off + 4].copy_from_slice(&v.to_le_bytes());
+                if let Some(d) = o.mem.data.get_mut(off..off + 4) {
+                    d.copy_from_slice(&v.to_le_bytes());
+                }
             }
         }
     }

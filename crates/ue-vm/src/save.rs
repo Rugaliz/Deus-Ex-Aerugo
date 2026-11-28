@@ -696,7 +696,7 @@ impl Vm {
             obj.mem.data = data;
             obj.mem.strings = o.strings.clone();
             obj.state = state;
-            obj.exec = exec;
+            obj.exec = exec.map(Box::new);
             obj.latent = o.latent.clone();
             obj.disabled = disabled;
             obj.alive = true;
