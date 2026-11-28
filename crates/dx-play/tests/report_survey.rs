@@ -308,3 +308,18 @@ fn survey_destroy_log() {
         eprintln!("log: {l}");
     }
 }
+
+/// Every `DeusExProjectile` class with its default `bExplodes` and `bIgnoresNanoDefense`.
+#[test]
+#[ignore]
+fn survey_projectiles() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "DX").unwrap();
+    let base = s.vm.reg.class_by_name("DeusExProjectile").unwrap();
+    let names: Vec<String> = (0..s.vm.reg.classes.len()).map(|i| ue_registry::ClassId(i as u32)).filter(|&c| s.vm.is_a(c, base)).map(|c| s.vm.reg.class(c).path.rsplit('.').next().unwrap_or("").to_string()).collect();
+    for n in names {
+        let e = s.vm.default_value_of(&n, "bExplodes", 0);
+        let i = s.vm.default_value_of(&n, "bIgnoresNanoDefense", 0);
+        eprintln!("{n}: bExplodes {e:?} bIgnoresNanoDefense {i:?}");
+    }
+}

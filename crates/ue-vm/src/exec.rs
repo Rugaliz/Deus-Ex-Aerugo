@@ -1253,6 +1253,11 @@ impl Vm {
             // in Gunther's face). Dropped as the conversation starts, it is set down instead (no throw velocity, as the
             // script does when the player leans).
             ("DeusEx", "DeusExPlayer.DropDecoration") => 10,
+            // Aggressive Defense "detonates missiles and grenades" (its description); the game's data marks every other
+            // projectile `bIgnoresNanoDefense` (darts, throwing knives, flamethrower fire, plasma bolts, gas, tracers),
+            // but `FindNearestProjectile` honours the flag only in multiplayer: in single player it blew up darts,
+            // knives and fire. Repair 11 finds the nearest again with the flag honoured.
+            ("DeusEx", "AugDefense.FindNearestProjectile") => 11,
             _ => 0,
         }
     }
@@ -1354,6 +1359,37 @@ impl Vm {
 
     /// The part of a repair that runs after the repaired function (see `port_repair`).
     fn port_repair_after(&mut self, repair: u8, this: u32, args: &mut [Value], ret: &mut Value) {
+        if repair == 11 {
+            let Some(proj_class) = self.reg.class_by_name("DeusExProjectile") else { return };
+            let player = self.op(this, "Player");
+            let me = self.vp(player, "Location");
+            let skip = ["Cloud", "Tracer", "GreaselSpit", "GraySpit"];
+            let (mut best, mut best_d) = (0u32, 999999.0f32);
+            for p in self.live_actors() {
+                let Some(c) = self.class_of(p) else { continue };
+                if !self.is_a(c, proj_class) || self.bp(p, "bIgnoresNanoDefense") {
+                    continue;
+                }
+                if skip.iter().any(|k| self.reg.class_by_name(k).is_some_and(|kc| self.is_a(c, kc))) || self.op(p, "Owner") == player {
+                    continue;
+                }
+                let v = self.vp(p, "Velocity");
+                if (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() <= 100.0 {
+                    continue;
+                }
+                let l = self.vp(p, "Location");
+                let d = ((me[0] - l[0]).powi(2) + (me[1] - l[1]).powi(2) + (me[2] - l[2]).powi(2)).sqrt();
+                if d < best_d {
+                    best_d = d;
+                    best = p;
+                }
+            }
+            if self.u8p(self.level, "NetMode") == 0 {
+                *ret = Value::Obj(best);
+            }
+            let _ = &args;
+            return;
+        }
         if repair == 10 {
             let deco = std::mem::take(&mut self.repair_deco);
             if deco != 0 && self.is_live(deco) {

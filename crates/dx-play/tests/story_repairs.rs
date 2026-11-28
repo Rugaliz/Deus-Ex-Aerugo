@@ -462,3 +462,33 @@ fn a_carried_object_is_set_down_when_a_conversation_starts() {
     eprintln!("the ball's fastest horizontal speed: {fastest}");
     assert!(fastest < 50.0, "thrown: {fastest}");
 }
+
+/// Aggressive Defense detonates missiles and grenades (its description; the game marks every other projectile
+/// `bIgnoresNanoDefense`), not darts, throwing knives or flamethrower fire, which the original's single-player search
+/// took too: with a dart near and a rocket farther, it picks the rocket.
+#[test]
+fn aggressive_defense_leaves_darts_and_knives_alone() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("StartNewGame 01_NYC_UNATCOIsland");
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let p = s.player;
+    let ac = s.vm.reg.class_by_name("AugDefense").unwrap();
+    let aug = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(ac) && s.vm.get_prop(a, "Player", 0).ok() == Some(Value::Obj(p))).expect("the player's AugDefense");
+    let me = s.player_location();
+    let spawn = |s: &mut Session, class: &str, dist: f32| -> u32 {
+        let c = s.vm.reg.class_by_name(class).unwrap();
+        let a = s.vm.spawn(c, 0, None, Some([me[0] + dist, me[1], me[2] + 40.0]), None).unwrap().expect(class);
+        s.vm.set_prop(a, "Velocity", 0, Value::Vector([-800.0, 0.0, 0.0])).unwrap();
+        a
+    };
+    let dart = spawn(&mut s, "Dart", 150.0);
+    let rocket = spawn(&mut s, "Rocket", 400.0);
+    let got = s.vm.call_by_name(aug, "FindNearestProjectile", vec![]).unwrap();
+    assert_eq!(got, Value::Obj(rocket), "the rocket, not the dart ({dart})");
+    s.vm.destroy(rocket).unwrap();
+    let got = s.vm.call_by_name(aug, "FindNearestProjectile", vec![]).unwrap();
+    assert_ne!(got, Value::Obj(dart), "never the dart");
+}
