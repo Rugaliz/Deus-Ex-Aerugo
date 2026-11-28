@@ -708,6 +708,31 @@ impl Vm {
                 let v = self.find_object_for(p, class_name.as_deref(), &name)?;
                 (Value::Obj(v), rest)
             }
+            // `UStructProperty::ImportText`: `(Member=Value,Member=Value,...)`, each member by its own type; members
+            // not named stay zero (a vector `(X=1,Y=2,Z=3)`, a rotator `(Pitch=0,Yaw=16384,Roll=0)`)
+            K::Struct => {
+                let Target::Struct(sid) = p.target else { return None };
+                let mut rest = s.trim_start().strip_prefix('(')?;
+                let members = self.struct_members(sid);
+                let size = self.reg.struct_def(sid).size as usize;
+                let mut mem = crate::Mem { data: vec![0; size.max(4)], strings: Vec::new() };
+                loop {
+                    rest = rest.trim_start();
+                    if let Some(r) = rest.strip_prefix(')') {
+                        rest = r;
+                        break;
+                    }
+                    let eq = rest.find('=')?;
+                    let key = rest[..eq].trim();
+                    let m = members.iter().find(|m| self.reg.names.str(m.name).eq_ignore_ascii_case(key))?.clone();
+                    let (v, r) = self.import_param(&m, &rest[eq + 1..])?;
+                    Self::write_to(&mut mem, &m, m.offset as usize, v).ok()?;
+                    rest = r.trim_start();
+                    rest = rest.strip_prefix(',').unwrap_or(rest);
+                }
+                let v = self.read_from(&mem, &PropDef { offset: 0, dim: 1, ..p.clone() }, 0).ok()?;
+                (v, rest)
+            }
             _ => return None,
         })
     }
@@ -834,5 +859,27 @@ mod tests {
         let mut s = "  ; note\n  5";
         parse_next(&mut s);
         assert_eq!(s, "5");
+    }
+}
+
+#[cfg(test)]
+mod struct_import {
+    use crate::Value;
+
+    /// An exec function's struct parameter (`UStructProperty::ImportText`): `(Member=Value,...)`, unnamed members zero.
+    #[test]
+    fn vectors_and_rotators_are_read_from_the_command_line() {
+        let Some(g) = std::env::var_os("DEUSEX_DIR") else { return };
+        let reg = ue_registry::Registry::load_game(std::path::Path::new(&g)).unwrap();
+        let mut vm = crate::Vm::new(reg);
+        let actor = vm.reg.class_by_name("Actor").unwrap();
+        let loc = vm.reg.find_prop(actor, "Location").unwrap().clone();
+        let rot = vm.reg.find_prop(actor, "Rotation").unwrap().clone();
+        let (v, rest) = vm.import_param(&loc, "(X=1.5,Y=-2,Z=3) next").unwrap();
+        assert_eq!(v, Value::Vector([1.5, -2.0, 3.0]));
+        assert_eq!(rest.trim(), "next");
+        let (v, _) = vm.import_param(&rot, "(Yaw=16384)").unwrap();
+        assert_eq!(v, Value::Rotator([0, 16384, 0]));
+        assert!(vm.import_param(&loc, "1 2 3").is_none(), "not a struct");
     }
 }
