@@ -62,3 +62,32 @@ fn hells_kitchen_has_music_on_the_last_visit() {
     let playing = match s.vm.get_prop(p, "Song", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
     assert_eq!(path(&s, playing), "NYCStreets2_Music.NYCStreets2_Music", "the player's music");
 }
+
+/// The Paris metro guard shack's datacube (10_Paris_Metro, `10_Datacube09`): the GOTY map gives the catacombs picture
+/// (Chad's, already had) in place of the metro map, which no map gives. Reading it gives the metro map.
+#[test]
+fn the_paris_metro_datacube_gives_the_metro_map() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "10_Paris_Metro").unwrap();
+    for _ in 0..10 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let tag = s.vm.reg.names.intern("10_Datacube09");
+    let cube = s.vm.live_actors().into_iter().find(|&a| s.vm.get_prop(a, "textTag", 0).ok() == Some(Value::Name(tag))).expect("the guard shack's datacube");
+    let p = s.player;
+    s.vm.call_by_name(cube, "Frob", vec![Value::Obj(p), Value::Obj(0)]).unwrap();
+    for _ in 0..10 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let mut images = Vec::new();
+    let mut item = match s.vm.get_prop(p, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    while item != 0 && images.len() < 200 {
+        let c = s.vm.class_of(item).map(|c| s.vm.reg.class(c).path.clone()).unwrap_or_default();
+        if c.contains("Image") {
+            images.push(c);
+        }
+        item = match s.vm.get_prop(item, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    }
+    assert!(images.iter().any(|c| c == "DeusEx.Image10_Paris_Metro"), "the pictures: {images:?}");
+    assert!(!images.iter().any(|c| c == "DeusEx.Image10_Paris_Catacombs"), "the pictures: {images:?}");
+}

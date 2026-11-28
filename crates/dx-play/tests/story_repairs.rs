@@ -263,7 +263,7 @@ fn survey_map_actors() {
         if !line.contains(&filter) {
             continue;
         }
-        let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass", "bInvincible", "Health", "bImportant"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
+        let props: Vec<String> = ["Tag", "Event", "flagName", "flagValue", "bSetFlag", "bTrigger", "TriggerType", "ClassProximityType", "bTriggerOnceOnly", "bInitiallyActive", "CollisionRadius", "CollisionHeight", "BindName", "Alliance", "Orders", "OrderTag", "bInWorld", "Alliances", "AllianceName", "AllianceLevel", "bPermanent", "Alliance0", "bHateTrespass", "bInvincible", "Health", "bImportant", "imageClass", "textTag"].iter().filter_map(|p| s.vm.get_prop(a, p, 0).ok().map(|_| format!("{p}={}", show(&s, a, p)))).collect();
         let mut props = props;
         if path.ends_with("Dispatcher") {
             let ev: Vec<String> = (0..8).filter_map(|i| match s.vm.get_prop(a, "OutEvents", i) { Ok(Value::Name(n)) if n != 0 && s.vm.reg.names.str(n) != "None" => Some(format!("{}@{:?}", s.vm.reg.names.str(n), s.vm.get_prop(a, "OutDelays", i).ok().and_then(|v| v.as_f32()))), _ => None }).collect();

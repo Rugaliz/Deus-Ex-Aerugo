@@ -542,7 +542,21 @@ impl Vm {
         // Levels the GOTY maps left without music (`LevelInfo.Song` empty), with the song the game ships for them:
         // the last Hell's Kitchen visit (08_NYC_Street; `NYCStreets2_Music`, a track no map refers to, was made for it)
         const MUSIC_REPAIRS: &[(&str, &str)] = &[("08_NYC_Street", "NYCStreets2_Music.NYCStreets2_Music")];
+        // Datacubes the GOTY maps give the wrong picture (map, the picture's class, the right one): the Paris metro
+        // guard shack's gives the catacombs picture (already Chad's) in place of the metro map, which no map gives
+        const IMAGE_REPAIRS: &[(&str, &str, &str)] = &[("10_Paris_Metro", "DeusEx.Image10_Paris_Catacombs", "DeusEx.Image10_Paris_Metro")];
         let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+        for (m, from, to) in IMAGE_REPAIRS {
+            let Some(dev) = self.reg.class_by_name("InformationDevices").filter(|_| m.eq_ignore_ascii_case(&map)) else { continue };
+            let (from_id, to_id) = (self.reg.obj_id(from).0, self.reg.obj_id(to).0);
+            for a in self.live_actors() {
+                if self.class_of(a).is_some_and(|c| self.is_a(c, dev)) && self.get_prop(a, "imageClass", 0).ok() == Some(Value::Obj(from_id)) {
+                    let _ = self.set_prop(a, "imageClass", 0, Value::Obj(to_id));
+                    let line = format!("Aerugo repair: {} gives {to}", self.name_of(a));
+                    self.log.push(line);
+                }
+            }
+        }
         for (m, song) in MUSIC_REPAIRS {
             let level = self.level;
             if m.eq_ignore_ascii_case(&map) && level != 0 && self.op(level, "Song") == 0 {
