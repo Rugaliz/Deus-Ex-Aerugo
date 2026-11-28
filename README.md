@@ -37,8 +37,8 @@ gameplay are exactly the original's, because Aerugo runs the game's own scripts 
   overwritten game files. A mod kit to view, export and re-import the game's models and textures comes with it.
 
 > **Status: 1.0 release candidate. The whole game has been played through** (the intro, the training, every
-> mission and the AI merge ending). The other two endings have not been played to the end yet. Bug reports are
-> welcome in the [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
+> mission and all three endings). Bug reports are welcome in the
+> [issues](https://github.com/Rugaliz/Deus-Ex-Aerugo/issues).
 
 ## Fixes to the original game
 
@@ -79,6 +79,16 @@ original game really does it:
   release's, and this one was made before its music: the track the game ships for it was never played. It plays.
 - **The wrong picture in the Paris metro.** The guard shack's datacube gave the catacombs picture you already had
   instead of the metro map. It gives the map.
+- **Skill awards that paid again and again.** Some awards meant to pay once could be set off repeatedly (the known
+  infinite skill point loops). A once-only award pays once.
+- **Unconscious bodies that could not die.** A knocked-out body that was shot, blown up or burnt was torn apart but
+  still counted as alive in the mission scripts, and one that fell into water never drowned. Both now die.
+- **The hazmat suit let fire, electricity and EMP through.** Its description promises protection from them, but it
+  only reduced gas, radiation and poison. It reduces all of them.
+- **A carried object thrown at the person you talk to.** Starting a conversation while carrying something threw it
+  forward, into their face (the TNT crate and Gunther). It is set down.
+- **Aggressive Defense destroyed darts, knives and fire.** It is described as detonating missiles and grenades, and
+  the game marks every other projectile to be left alone, but single player ignored that mark. It leaves them alone.
 
 ## How to install
 

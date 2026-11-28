@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aerugo-modkit"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "dx-soft",
  "dx-vk",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "dx-audio"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "sdl3",
  "ue-assets",
@@ -171,15 +171,15 @@ dependencies = [
 
 [[package]]
 name = "dx-fractal"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 
 [[package]]
 name = "dx-input"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 
 [[package]]
 name = "dx-light"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "dx-play"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "dx-audio",
  "dx-input",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "dx-soft"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "dx-fractal",
  "png",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vis"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-assets",
  "ue-bsp",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "dx-vk"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ash",
  "dx-light",
@@ -860,14 +860,14 @@ dependencies = [
 
 [[package]]
 name = "ue-assets"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-bsp"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-assets",
  "ue-package",
@@ -875,21 +875,21 @@ dependencies = [
 
 [[package]]
 name = "ue-config"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-package",
 ]
 
 [[package]]
 name = "ue-package"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "zip",
 ]
 
 [[package]]
 name = "ue-registry"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "ue-config",
  "ue-package",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "ue-vm"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "libc",
  "ue-assets",
