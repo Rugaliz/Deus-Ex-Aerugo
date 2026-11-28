@@ -1236,6 +1236,11 @@ impl Vm {
             // once-only award has paid, it pays nothing more.
             ("DeusEx", "SkillAwardTrigger.Trigger") => 6,
             ("DeusEx", "SkillAwardTrigger.Touch") => 7,
+            // An unconscious body (`DeusExCarcass.bNotDead`) shot, blown up or burnt is torn apart when damaged enough,
+            // but never becomes dead first: it keeps the name "Unconscious" and no killer, so the mission scripts
+            // (which count bodies by that name and by `KillerBindName`) count it as alive. Lethal damage now kills it
+            // first.
+            ("DeusEx", "DeusExCarcass.TakeDamage") => 8,
             _ => 0,
         }
     }
@@ -1285,6 +1290,32 @@ impl Vm {
         let _ = self.call_by_name(flags, "SetBool", vec![Value::Name(n), Value::Bool(value), Value::Void, Value::Int(expiration)]);
     }
 
+    /// An unconscious body (`bNotDead`) becomes a dead one, killed by `by` (a pawn, or 0: drowned): the name of a dead
+    /// body (its class's), the killer's bind name and alliance, and a dead body's smell, as `InitFor` gives a body that
+    /// was dead from the start.
+    pub(crate) fn carcass_dies(&mut self, carcass: u32, by: u32) {
+        if !self.bp(carcass, "bNotDead") {
+            return;
+        }
+        self.set_bp(carcass, "bNotDead", false);
+        let class = self.class_of(carcass).map(|c| self.reg.class(c).path.rsplit('.').next().unwrap_or("").to_string());
+        if let Some(Value::Str(name)) = class.and_then(|c| self.default_value_of(&c, "itemName", 0)) {
+            if !self.bp(carcass, "bAnimalCarcass") {
+                let _ = self.set_prop(carcass, "itemName", 0, Value::Str(name));
+            }
+        }
+        if by != 0 && self.is_live(by) {
+            let bind = self.get_prop(by, "BindName", 0).unwrap_or(Value::Str(String::new()));
+            let _ = self.set_prop(carcass, "KillerBindName", 0, bind);
+            if let Ok(al) = self.get_prop(by, "Alliance", 0) {
+                let _ = self.set_prop(carcass, "KillerAlliance", 0, al);
+            }
+        }
+        if !self.is_class(carcass, "Robot") && !self.bp(carcass, "bAnimalCarcass") {
+            self.set_bp(carcass, "bEmitCarcass", true);
+        }
+    }
+
     /// The part of a repair that runs after the repaired function (see `port_repair`).
     fn port_repair_after(&mut self, repair: u8, this: u32) {
         if repair == 6 || repair == 7 {
@@ -1307,6 +1338,15 @@ impl Vm {
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 8 {
+            let (Some(Value::Int(damage)), Some(Value::Name(kind))) = (args.first(), args.get(4)) else { return };
+            let lethal = ["Shot", "Sabot", "Exploded", "Munch", "Tantalus", "Burned", "Flamed", "Drowned"];
+            if *damage > 0 && lethal.iter().any(|k| self.reg.names.str(*kind).eq_ignore_ascii_case(k)) {
+                let by = match args.get(1) { Some(Value::Obj(o)) => *o, _ => 0 };
+                self.carcass_dies(this, by);
+            }
+            return;
+        }
         if repair == 6 || repair == 7 {
             // the one the points would go to: the instigator of a trigger, the toucher
             let who = match args.get(if repair == 6 { 1 } else { 0 }) { Some(Value::Obj(o)) => *o, _ => 0 };

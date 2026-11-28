@@ -321,3 +321,51 @@ fn a_once_only_skill_award_pays_once() {
     s.vm.call_by_name(award, "Trigger", vec![Value::Obj(p), Value::Obj(p)]).unwrap();
     assert_eq!(points(&s), again, "a fourth time pays nothing");
 }
+
+/// Unconscious bodies can die: shot (or blown up, burnt), and drowned when they land in water. In the original an
+/// unconscious body kept its "Unconscious" name and no killer when shot (the mission scripts count it alive), and only a
+/// body that appeared in water drowned, not one that fell in.
+#[test]
+fn unconscious_bodies_can_be_killed_and_drown() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "01_NYC_UNATCOIsland").unwrap();
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let tc = s.vm.reg.class_by_name("Terrorist").unwrap();
+    let cc = s.vm.reg.class_by_name("TerroristCarcass").unwrap();
+    let p = s.player;
+    let text = |s: &Session, a: u32, n: &str| match s.vm.get_prop(a, n, 0) { Ok(Value::Str(t)) => t, _ => String::new() };
+    let mut knock_out = |s: &mut Session| -> u32 {
+        let t = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(tc)).unwrap();
+        let at = s.vm.location(t);
+        let ko = s.vm.reg.names.intern("KnockedOut");
+        s.vm.call_by_name(t, "TakeDamage", vec![Value::Int(1000), Value::Obj(p), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(ko)]).unwrap();
+        for _ in 0..90 {
+            s.step_bound(DT);
+        }
+        let bodies: Vec<u32> = s.vm.live_actors().into_iter().filter(|&a| s.vm.class_of(a) == Some(cc)).collect();
+        bodies.into_iter().find(|&a| { let l = s.vm.location(a); (l[0] - at[0]).abs() + (l[1] - at[1]).abs() < 200.0 }).expect("the body")
+    };
+    // shot
+    let body = knock_out(&mut s);
+    assert_eq!(text(&s, body, "itemName"), "Unconscious");
+    let at = s.vm.location(body);
+    let shot = s.vm.reg.names.intern("Shot");
+    s.vm.call_by_name(body, "TakeDamage", vec![Value::Int(5), Value::Obj(p), Value::Vector(at), Value::Vector([0.0; 3]), Value::Name(shot)]).unwrap();
+    assert_eq!(s.vm.get_prop(body, "bNotDead", 0).ok(), Some(Value::Bool(false)), "shot dead");
+    assert_ne!(text(&s, body, "itemName"), "Unconscious");
+    assert_eq!(text(&s, body, "KillerBindName"), "JCDenton");
+    // drowned: the second body is moved into the bay
+    let body = knock_out(&mut s);
+    assert_eq!(text(&s, body, "itemName"), "Unconscious");
+    let zi = s.vm.reg.class_by_name("ZoneInfo").unwrap();
+    let water = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a).is_some_and(|c| s.vm.is_a(c, zi)) && s.vm.get_prop(a, "bWaterZone", 0).ok() == Some(Value::Bool(true))).expect("a water zone");
+    let spot = s.vm.location(water);
+    s.vm.call_by_name(body, "SetLocation", vec![Value::Vector(spot)]).unwrap();
+    for _ in 0..5 {
+        s.step_bound(DT);
+    }
+    assert_eq!(s.vm.get_prop(body, "bNotDead", 0).ok(), Some(Value::Bool(false)), "drowned");
+    assert_eq!(s.vm.get_prop(body, "Mesh", 0).ok(), s.vm.get_prop(body, "Mesh3", 0).ok(), "the body in water");
+}

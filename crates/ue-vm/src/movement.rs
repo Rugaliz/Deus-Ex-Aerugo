@@ -139,6 +139,16 @@ impl Vm {
                     self.send_event(old_zone, "ActorLeaving", vec![Value::Obj(a)])?;
                 }
                 self.send_event(a, "ZoneChange", vec![Value::Obj(new.zone)])?;
+                // Aerugo repair: a body that lands in water drowns, as one that appears there does
+                // (`DeusExCarcass.PostBeginPlay` runs that rule only at spawning: a pawn shot above water stayed
+                // unconscious, with its dry mesh, in the water)
+                if new.zone != 0 && self.is_class(a, "DeusExCarcass") && self.bp(new.zone, "bWaterZone") {
+                    self.carcass_dies(a, 0);
+                    let wet = self.op(a, "Mesh3");
+                    if wet != 0 {
+                        let _ = self.set_prop(a, "Mesh", 0, Value::Obj(wet));
+                    }
+                }
             }
             self.write_region(a, ro.region, new);
             if !test {
