@@ -834,9 +834,6 @@ impl Vm {
         let r = self.run(&mut frame, &code);
         self.func_stack.pop();
         self.depth -= 1;
-        if plan.repair != 0 {
-            self.port_repair_after(plan.repair, this);
-        }
         let out = r.and_then(|_| {
             for (i, (p, off)) in plan.slots.iter().enumerate() {
                 if i < args.len() {
@@ -853,6 +850,12 @@ impl Vm {
         });
         if self.frame_pool.len() < 64 {
             self.frame_pool.push(std::mem::take(&mut frame.mem.data));
+        }
+        let mut out = out;
+        if plan.repair != 0 {
+            if let Ok(ret) = &mut out {
+                self.port_repair_after(plan.repair, this, args, ret);
+            }
         }
         out
     }
@@ -1241,6 +1244,10 @@ impl Vm {
             // (which count bodies by that name and by `KillerBindName`) count it as alive. Lethal damage now kills it
             // first.
             ("DeusEx", "DeusExCarcass.TakeDamage") => 8,
+            // The hazmat suit's description promises protection against fire, electricity and EMP as well as gases,
+            // radiation and poison; `DXReduceDamage` applies it only to the latter (the community patch's fix): the
+            // former now get the same share (repair 9, after the function).
+            ("DeusEx", "DeusExPlayer.DXReduceDamage") => 9,
             _ => 0,
         }
     }
@@ -1290,6 +1297,30 @@ impl Vm {
         let _ = self.call_by_name(flags, "SetBool", vec![Value::Name(n), Value::Bool(value), Value::Void, Value::Int(expiration)]);
     }
 
+    /// `DeusExPlayer.UsingChargedPickup`: an item of exactly class `class` in the inventory, active.
+    fn using_charged_pickup(&mut self, player: u32, class: &str) -> bool {
+        let mut item = self.op(player, "Inventory");
+        let mut guard = 0;
+        while item != 0 && guard < 1000 {
+            if self.class_of(item).is_some_and(|c| self.reg.class(c).path.rsplit('.').next() == Some(class)) && self.bp(item, "bActive") {
+                return true;
+            }
+            item = self.op(item, "Inventory");
+            guard += 1;
+        }
+        false
+    }
+
+    /// `SkillSystem.GetSkillLevelValue(class'<skill>')` of a player.
+    fn skill_level_value(&mut self, player: u32, skill: &str) -> f32 {
+        let system = self.op(player, "SkillSystem");
+        let class_ref = self.reg.obj_id(&format!("DeusEx.{skill}")).0;
+        match self.call_by_name(system, "GetSkillLevelValue", vec![Value::Obj(class_ref)]) {
+            Ok(v) => v.as_f32().unwrap_or(1.0),
+            Err(_) => 1.0,
+        }
+    }
+
     /// An unconscious body (`bNotDead`) becomes a dead one, killed by `by` (a pawn, or 0: drowned): the name of a dead
     /// body (its class's), the killer's bind name and alliance, and a dead body's smell, as `InitFor` gives a body that
     /// was dead from the start.
@@ -1317,7 +1348,30 @@ impl Vm {
     }
 
     /// The part of a repair that runs after the repaired function (see `port_repair`).
-    fn port_repair_after(&mut self, repair: u8, this: u32) {
+    fn port_repair_after(&mut self, repair: u8, this: u32, args: &mut [Value], ret: &mut Value) {
+        if repair == 9 {
+            // the suit's share for fire, electricity and EMP, as for the gases: x 0.75 x the environmental skill
+            let kind = match args.get(1) { Some(Value::Name(n)) => self.reg.names.str(*n).to_ascii_lowercase(), _ => return };
+            if !["burned", "flamed", "shocked", "emp"].contains(&kind.as_str()) || !self.using_charged_pickup(this, "HazMatSuit") {
+                return;
+            }
+            let damage = args.first().and_then(|v| v.as_i32()).unwrap_or(0);
+            let adjusted = args.get(3).and_then(|v| v.as_i32()).unwrap_or(damage);
+            let skill = self.skill_level_value(this, "SkillEnviro");
+            let reduced = (adjusted as f32 * 0.75 * skill) as i32;
+            if reduced < adjusted {
+                args[3] = Value::Int(reduced);
+                let check_only = args.get(4).and_then(|v| v.as_bool()).unwrap_or(false);
+                if reduced < damage && damage > 0 {
+                    *ret = Value::Bool(true);
+                    if !check_only {
+                        let pct = 1.0 - reduced as f32 / damage as f32;
+                        let _ = self.call_by_name(this, "SetDamagePercent", vec![Value::Float(pct)]);
+                    }
+                }
+            }
+            return;
+        }
         if repair == 6 || repair == 7 {
             if let Some((player, before)) = self.repair_points.take() {
                 let now = self.get_prop(player, "SkillPointsTotal", 0).ok().and_then(|v| v.as_i32()).unwrap_or(before);

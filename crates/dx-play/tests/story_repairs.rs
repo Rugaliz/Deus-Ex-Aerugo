@@ -369,3 +369,55 @@ fn unconscious_bodies_can_be_killed_and_drown() {
     assert_eq!(s.vm.get_prop(body, "bNotDead", 0).ok(), Some(Value::Bool(false)), "drowned");
     assert_eq!(s.vm.get_prop(body, "Mesh", 0).ok(), s.vm.get_prop(body, "Mesh3", 0).ok(), "the body in water");
 }
+
+/// The hazmat suit protects against what its description says (fire, electricity, EMP besides gases, radiation and
+/// poison): the original's `DXReduceDamage` gives the suit's share only to the latter.
+#[test]
+fn the_hazmat_suit_protects_against_fire_electricity_and_emp() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("StartNewGame 01_NYC_UNATCOIsland");
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let p = s.player;
+    let reduce = |s: &mut Session, kind: &str| -> i32 {
+        let n = s.vm.reg.names.intern(kind);
+        let mut a = vec![Value::Int(40), Value::Name(n), Value::Vector([0.0; 3]), Value::Int(0), Value::Bool(true)];
+        s.vm.call_by_name_out(p, "DXReduceDamage", &mut a).unwrap();
+        a[3].as_i32().unwrap()
+    };
+    let kinds = ["Burned", "Flamed", "Shocked", "EMP", "PoisonGas"];
+    let without: Vec<i32> = kinds.iter().map(|k| reduce(&mut s, k)).collect();
+    s.exec("Summon HazMatSuit");
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let c = s.vm.reg.class_by_name("HazMatSuit").unwrap();
+    // into the inventory (`Inventory.GiveTo`)
+    let lying = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(c)).expect("the summoned suit");
+    s.vm.call_by_name(lying, "GiveTo", vec![Value::Obj(p)]).unwrap();
+    for _ in 0..5 {
+        s.step_bound(DT);
+    }
+    let mut suit = 0;
+    let mut item = match s.vm.get_prop(p, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    while item != 0 {
+        if s.vm.class_of(item) == Some(c) {
+            suit = item;
+        }
+        item = match s.vm.get_prop(item, "Inventory", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    }
+    assert_ne!(suit, 0, "the suit is carried");
+    s.vm.call_by_name(suit, "Activate", vec![]).unwrap();
+    for _ in 0..5 {
+        s.step_bound(DT);
+    }
+    assert_eq!(s.vm.get_prop(suit, "bActive", 0).ok(), Some(Value::Bool(true)));
+    let with: Vec<i32> = kinds.iter().map(|k| reduce(&mut s, k)).collect();
+    eprintln!("without {without:?}, with {with:?}");
+    for i in 0..4 {
+        assert!(with[i] < without[i], "{} not reduced: {} -> {}", kinds[i], without[i], with[i]);
+    }
+    assert!(with[4] < without[4], "poison gas as before");
+}
