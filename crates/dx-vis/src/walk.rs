@@ -278,17 +278,18 @@ fn deproject(f: &Frame, sx: f32, sy: f32, z: f32) -> Vec3 {
 /// Splits a piece by a node plane at the sprite's depth (the chunk filter): the plane distance over the sprite's
 /// screen box is linear in the screen position; the four box corners decide whether it is cut (beyond +-0.01), and a
 /// cut row is split where the distance crosses zero.
-fn split(f: &Frame, s: &Sprite, p: &Piece, plane: [f32; 4]) -> (Option<Piece>, Option<Piece>) {
+fn split(f: &Frame, s: &Sprite, p: Piece, plane: [f32; 4]) -> (Option<Piece>, Option<Piece>) {
     let d = |sx: f32, sy: f32| dot(deproject(f, sx, sy, s.z), [plane[0], plane[1], plane[2]]) - plane[3];
     let corners = [(s.x1 as f32, s.y1 as f32), (s.x2 as f32, s.y1 as f32), (s.x2 as f32, s.y2 as f32), (s.x1 as f32, s.y2 as f32)];
-    let ds: Vec<f32> = corners.iter().map(|&(x, y)| d(x, y)).collect();
+    let ds = corners.map(|(x, y)| d(x, y));
     let front = ds.iter().filter(|&&v| v > 0.01).count();
     let back = ds.iter().filter(|&&v| v < -0.01).count();
+    // a piece wholly on one side moves on as it is
     if back == 0 {
-        return (Some(p.clone()), None);
+        return (Some(p), None);
     }
     if front == 0 {
-        return (None, Some(p.clone()));
+        return (None, Some(p));
     }
     let (c, ax, ay) = (d(0.0, 0.0), d(1.0, 0.0), d(0.0, 1.0));
     let (ax, ay) = (ax - c, ay - c);
@@ -350,13 +351,16 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
     let mut seen_mask: u64 = 1u64 << camera_zone;
     vis.zones = seen_mask;
     // one span buffer per zone; the camera zone sees the whole screen
-    let mut span: Vec<SpanBuffer> = (0..64).map(|_| SpanBuffer::alloc(0, 0)).collect();
-    span[camera_zone as usize] = f.span.clone();
     // dynamic lists per node: [0] chunks being filtered, then final pieces for the front [1] and back [2] side
     let n = model.nodes.len();
     // the per-node lists come from the previous walk's (emptied here, allocations kept)
     let mut scratch = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
     scratch.reset(n);
+    let mut span: Vec<SpanBuffer> = (0..64).map(|_| SpanBuffer::alloc(0, 0)).collect();
+    // the camera zone's buffer, a copy of the frame's: the last walk's rows are reused
+    let mut cam_span = std::mem::take(&mut scratch.cam_span);
+    cam_span.copy_from(&f.span);
+    span[camera_zone as usize] = cam_span;
     let (mut chunks, mut finals, mut light_lists) = (std::mem::take(&mut scratch.chunks), std::mem::take(&mut scratch.finals), std::mem::take(&mut scratch.light_lists));
     // the nodes whose lists got something (the next walk empties only those)
     let mut touched: Vec<usize> = std::mem::take(&mut scratch.touched);
@@ -442,8 +446,7 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
             return;
         }
         for p in std::mem::take(&mut finals[node][list]) {
-            let mut out = SpanBuffer::alloc(p.y1, p.y1 + p.spans.len() as i32);
-            if out.copy_from_raster(&span[z], p.y1, p.y1 + p.spans.len() as i32, &p.spans) {
+            if span[z].overlaps_raster(p.y1, p.y1 + p.spans.len() as i32, &p.spans) {
                 if !vis.sprites[p.sprite] {
                     vis.sprite_order.push(p.sprite);
                 }
@@ -541,7 +544,7 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
             }
             // chunks hanging here move down (or become final pieces where a side has no child)
             for p in std::mem::take(&mut chunks[node]) {
-                let (front, back) = split(f, &sprites[p.sprite], &p, nd.plane);
+                let (front, back) = split(f, &sprites[p.sprite], p, nd.plane);
                 if let Some(q) = front {
                     if nd.i_front >= 0 {
                         chunks[nd.i_front as usize].push(q);
@@ -724,7 +727,8 @@ pub fn walk_lit(world: &World, f: &Frame, sprites: &[Sprite], lights: &[DynLight
     vis.surf_vol_lights = surf_vol.into_iter().collect();
     vis.surf_vol_lights.sort_unstable();
     vis.leaf_lights = leaf_links.into_iter().map(|(leaf, v)| (leaf, v.iter().rev().map(|&(id, _, _)| id).collect())).collect();
-    SCRATCH.with(|s| *s.borrow_mut() = Scratch { chunks, finals, light_lists, touched });
+    let cam_span = std::mem::take(&mut span[camera_zone as usize]);
+    SCRATCH.with(|s| *s.borrow_mut() = Scratch { chunks, finals, light_lists, touched, cam_span });
     (vis, children)
 }
 
@@ -737,6 +741,8 @@ struct Scratch {
     light_lists: Vec<Vec<(usize, bool, bool)>>,
     /// The nodes whose lists the last walk put something in (only those can hold leftovers).
     touched: Vec<usize>,
+    /// The camera zone's span buffer (its rows' allocations kept).
+    cam_span: SpanBuffer,
 }
 
 impl Scratch {

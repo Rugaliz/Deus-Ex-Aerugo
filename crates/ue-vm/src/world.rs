@@ -458,7 +458,21 @@ impl Vm {
         // newest first, as long as a pass ticks something; the toggle never matches a static owner on odd frames.
         let mut pending: Vec<usize> = Vec::new();
         let mut progress = false;
-        let mut i = 0;
+        // in object order: the actors that exist (the actor slots hold every live actor; the other objects, windows
+        // and conversation data, need no look), then whatever this tick creates, scanned as it comes
+        let mut existing = self.actor_slots.clone();
+        existing.sort_unstable();
+        existing.dedup();
+        let created_from = self.objects.len();
+        for i in existing {
+            if i < created_from && dynamic(self, i) {
+                match self.actor_tick(i, dt, players_only, scripted, issues) {
+                    Ticked::Deferred => pending.push(i),
+                    Ticked::Done => progress = true,
+                }
+            }
+        }
+        let mut i = created_from;
         while i < self.objects.len() {
             if dynamic(self, i) {
                 match self.actor_tick(i, dt, players_only, scripted, issues) {

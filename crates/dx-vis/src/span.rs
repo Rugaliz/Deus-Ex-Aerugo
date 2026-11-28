@@ -150,6 +150,31 @@ impl SpanBuffer {
         any
     }
 
+    /// Makes this buffer a copy of `other`, reusing its rows' allocations (`clone_from`).
+    pub fn copy_from(&mut self, other: &SpanBuffer) {
+        self.start_y = other.start_y;
+        self.end_y = other.end_y;
+        self.rows.clone_from(&other.rows);
+        self.open.clone_from(&other.open);
+    }
+
+    /// Whether `copy_from_raster` into a buffer of rows `ry1..ry2` would copy anything: some open span of `self` overlaps
+    /// the raster's span in its row. Nothing is written (a test that allocates no buffer).
+    pub fn overlaps_raster(&self, ry1: i32, ry2: i32, raster: &[Span]) -> bool {
+        let y1 = self.start_y.max(ry1);
+        let y2 = self.end_y.min(ry2);
+        for y in y1..y2 {
+            let Some(&(rs, re)) = raster.get((y - ry1) as usize) else { continue };
+            if rs >= re {
+                continue;
+            }
+            if self.row(y).iter().any(|&(s, e)| s.max(rs) < e.min(re)) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn copy_raster(&mut self, source: &SpanBuffer, ry1: i32, ry2: i32, raster: &[Span]) -> bool {
         self.clear_rows();
         let y1 = source.start_y.max(ry1).max(self.start_y);
