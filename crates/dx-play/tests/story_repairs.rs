@@ -291,3 +291,33 @@ fn survey_con_flag() {
         }
     }
 }
+
+/// A once-only skill award (`SkillAwardTrigger`, `bTriggerOnceOnly`) fired by an event pays once: the original honours
+/// the flag only for touches, so anything that fires it again (a button, a flag trigger touched again) paid again.
+/// The 'Ton's `StayedWithPaul` award, triggered three times.
+#[test]
+fn a_once_only_skill_award_pays_once() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "04_NYC_Hotel").unwrap();
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let c = s.vm.reg.class_by_name("SkillAwardTrigger").unwrap();
+    let tag = s.vm.reg.names.intern("StayedWithPaul");
+    let award = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(c) && s.vm.get_prop(a, "Tag", 0).ok() == Some(Value::Name(tag))).expect("the award");
+    assert_eq!(s.vm.get_prop(award, "bTriggerOnceOnly", 0).ok(), Some(Value::Bool(true)));
+    let points = |s: &Session| s.vm.get_prop(s.player, "SkillPointsTotal", 0).ok().and_then(|v| v.as_i32()).unwrap_or(0);
+    let p = s.player;
+    let start = points(&s);
+    for _ in 0..3 {
+        s.vm.call_by_name(award, "Trigger", vec![Value::Obj(p), Value::Obj(p)]).unwrap();
+    }
+    let gained = points(&s) - start;
+    let each = s.vm.get_prop(award, "skillPointsAdded", 0).ok().and_then(|v| v.as_i32()).unwrap_or(-1);
+    assert!(gained > 0, "it paid at all");
+    assert_eq!(each, 0, "spent");
+    assert!(gained <= 500 && gained == points(&s) - start, "paid once: {gained}");
+    let again = points(&s);
+    s.vm.call_by_name(award, "Trigger", vec![Value::Obj(p), Value::Obj(p)]).unwrap();
+    assert_eq!(points(&s), again, "a fourth time pays nothing");
+}

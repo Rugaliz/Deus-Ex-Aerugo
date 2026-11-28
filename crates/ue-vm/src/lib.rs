@@ -380,6 +380,9 @@ pub struct Vm {
     static_props_recent: std::cell::RefCell<Vec<(usize, usize, Option<ClassId>, Option<(ClassId, usize)>)>>,
     /// A direct-mapped front of `prop_cache` (class, name address, name length, result): most lookups end here.
     pub(crate) prop_fast: Box<[(u32, usize, usize, Option<(usize, u32)>)]>,
+    /// A repair's note from before the repaired function to after it (`Vm::port_repair`, `port_repair_after`): the
+    /// player and their skill point total before a skill award trigger ran.
+    pub(crate) repair_points: Option<(u32, i32)>,
     /// Per function, what a call needs from its definition (`call_plan`).
     pub(crate) call_plans: ue_registry::FxHashMap<FuncLoc, std::rc::Rc<exec::CallPlan>>,
     /// Spare frame memories and argument lists, reused by calls instead of allocated each time.
@@ -553,6 +556,7 @@ impl Vm {
             class_name_cache: Default::default(),
             arg_pool: Vec::new(),
             prop_fast: vec![(u32::MAX, 0, 0, None); crate::physics::PROP_FAST_SLOTS].into_boxed_slice(),
+            repair_points: None,
             ancestry: Default::default(),
             empty_events: Default::default(),
         }

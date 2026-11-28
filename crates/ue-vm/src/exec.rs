@@ -1230,6 +1230,12 @@ impl Vm {
             // lights and siren, a projectile generator); a second entry of the code fired them again and switched the
             // hazards back off. The keypad runs it once: later entries find its event cleared.
             ("DeusEx", "Keypad.RunEvents") => 5,
+            // `SkillAwardTrigger` gives its points when touched or triggered; `bTriggerOnceOnly` stops only the touch (the
+            // base Trigger turns collision off), so a once-only award fired by anything repeatable (a button, a
+            // re-touchable flag trigger) paid again and again (the community's "infinite skill point loops"). Once a
+            // once-only award has paid, it pays nothing more.
+            ("DeusEx", "SkillAwardTrigger.Trigger") => 6,
+            ("DeusEx", "SkillAwardTrigger.Touch") => 7,
             _ => 0,
         }
     }
@@ -1281,6 +1287,15 @@ impl Vm {
 
     /// The part of a repair that runs after the repaired function (see `port_repair`).
     fn port_repair_after(&mut self, repair: u8, this: u32) {
+        if repair == 6 || repair == 7 {
+            if let Some((player, before)) = self.repair_points.take() {
+                let now = self.get_prop(player, "SkillPointsTotal", 0).ok().and_then(|v| v.as_i32()).unwrap_or(before);
+                if now > before && self.bp(this, "bTriggerOnceOnly") {
+                    let _ = self.set_prop(this, "skillPointsAdded", 0, Value::Int(0));
+                }
+            }
+            return;
+        }
         if repair == 3 {
             // the flag stood in for "checked" during the call: back to what JC did (this also clears it in a game where
             // the original had already blamed him)
@@ -1292,6 +1307,14 @@ impl Vm {
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 6 || repair == 7 {
+            // the one the points would go to: the instigator of a trigger, the toucher
+            let who = match args.get(if repair == 6 { 1 } else { 0 }) { Some(Value::Obj(o)) => *o, _ => 0 };
+            self.repair_points = (who != 0 && self.is_class(who, "DeusExPlayer"))
+                .then(|| (who, self.get_prop(who, "SkillPointsTotal", 0).ok().and_then(|v| v.as_i32()).unwrap_or(0)));
+            let _ = this;
+            return;
+        }
         if repair == 5 {
             let destruct = self.reg.names.intern("Self_Destruct");
             let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
