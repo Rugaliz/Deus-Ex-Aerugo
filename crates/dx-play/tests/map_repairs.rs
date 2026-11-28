@@ -43,3 +43,22 @@ fn survey_inventory_repairs() {
         }
     }
 }
+
+/// The last Hell's Kitchen visit (08_NYC_Street): the GOTY map has no music (`LevelInfo.Song` empty; the earlier visits
+/// play `NYCStreets_Music`), and the game ships `NYCStreets2_Music`, which no map refers to. The level gets it, and the
+/// player's music logic picks it up as for any level.
+#[test]
+fn hells_kitchen_has_music_on_the_last_visit() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "08_NYC_Street").unwrap();
+    for _ in 0..90 {
+        s.step_bound(1.0 / 30.0);
+    }
+    let path = |s: &Session, o: u32| if o == 0 { String::new() } else { s.vm.reg.obj_path(ue_registry::ObjId(o)).to_string() };
+    let level = s.vm.level;
+    let song = match s.vm.get_prop(level, "Song", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    assert_eq!(path(&s, song), "NYCStreets2_Music.NYCStreets2_Music");
+    let p = s.player;
+    let playing = match s.vm.get_prop(p, "Song", 0) { Ok(Value::Obj(o)) => o, _ => 0 };
+    assert_eq!(path(&s, playing), "NYCStreets2_Music.NYCStreets2_Music", "the player's music");
+}

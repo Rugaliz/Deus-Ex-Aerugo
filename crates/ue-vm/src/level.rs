@@ -539,7 +539,19 @@ impl Vm {
     pub fn repair_map_actors(&mut self) {
         const MOVER_REPAIRS: &[(&str, &str, u32, [f32; 3])] = &[("06_HongKong_WanChai_Street", "Dispalycase", 1, [0.0, 0.0, -140.0])];
         const INVINCIBLE_REPAIRS: &[(&str, &str)] = &[("06_HongKong_MJ12lab", "BobPage")];
+        // Levels the GOTY maps left without music (`LevelInfo.Song` empty), with the song the game ships for them:
+        // the last Hell's Kitchen visit (08_NYC_Street; `NYCStreets2_Music`, a track no map refers to, was made for it)
+        const MUSIC_REPAIRS: &[(&str, &str)] = &[("08_NYC_Street", "NYCStreets2_Music.NYCStreets2_Music")];
         let map = self.reg.obj_path(ue_registry::ObjId(self.xlevel)).split('.').next().unwrap_or("").to_string();
+        for (m, song) in MUSIC_REPAIRS {
+            let level = self.level;
+            if m.eq_ignore_ascii_case(&map) && level != 0 && self.op(level, "Song") == 0 {
+                let id = self.reg.obj_id(song).0;
+                if id != 0 && self.set_prop(level, "Song", 0, Value::Obj(id)).is_ok() {
+                    self.log.push(format!("Aerugo repair: the level plays {song}"));
+                }
+            }
+        }
         for (m, class) in INVINCIBLE_REPAIRS {
             let Some(c) = self.reg.class_by_name(class).filter(|_| m.eq_ignore_ascii_case(&map)) else { continue };
             for a in self.live_actors() {
