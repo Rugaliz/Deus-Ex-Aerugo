@@ -75,6 +75,10 @@ original game really does it:
   there although the story has him speak to you again later. He cannot be harmed there now.
 - **The Universal Constructor's self-destruct could be undone.** Entering its code a second time ran the sequence
   again and switched its hazards back off (the electricity, the moving parts, the warning lights). It runs once.
+- **No music on the last visit to Hell's Kitchen.** The maps of the Game of the Year edition are older than the first
+  release's, and this one was made before its music: the track the game ships for it was never played. It plays.
+- **The wrong picture in the Paris metro.** The guard shack's datacube gave the catacombs picture you already had
+  instead of the metro map. It gives the map.
 
 ## How to install
 

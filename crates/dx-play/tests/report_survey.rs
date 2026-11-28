@@ -168,3 +168,69 @@ fn survey_palette_path_clashes() {
     }
     eprintln!("total {total}");
 }
+
+/// Surfaces of `SURVEY_MAP` with the fake backdrop (sky) flag whose normal points up or down (floors, ceilings), with
+/// their texture and a point.
+#[test]
+#[ignore]
+fn survey_sky_floors() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let map = std::env::var("SURVEY_MAP").unwrap_or_else(|_| "15_Area51_Bunker".into());
+    let s = Session::open(&g, &map).unwrap();
+    let m = &s.view.model;
+    let pkg = ue_package::Package::open(g.join("Maps").join(format!("{map}.dx"))).unwrap();
+    let tex = |t: i32| pkg.object_path(ue_package::ObjectRef::from_index(t)).unwrap_or_default();
+    for (i, sf) in m.surfs.iter().enumerate() {
+        if sf.poly_flags & 0x80 == 0 {
+            continue;
+        }
+        let n = m.vectors.get(sf.v_normal as usize).copied().unwrap_or([0.0; 3]);
+        let p = m.points.get(sf.p_base as usize).copied().unwrap_or([0.0; 3]);
+        if n[2].abs() > 0.7 {
+            let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for nd in m.nodes.iter().filter(|nd| nd.i_surf == i as i32) {
+                for k in 0..nd.num_vertices as usize {
+                    let Some(v) = m.verts.get(nd.i_vert_pool as usize + k) else { continue };
+                    let Some(pt) = m.points.get(v.p_vertex as usize) else { continue };
+                    for c in 0..3 {
+                        mn[c] = mn[c].min(pt[c]);
+                        mx[c] = mx[c].max(pt[c]);
+                    }
+                }
+            }
+            eprintln!("surf {i} normal {n:?} base {p:?} flags {:#x} texture {} box {mn:?}..{mx:?} lightmap {}", sf.poly_flags, tex(sf.texture), sf.i_light_map);
+        }
+    }
+}
+
+/// A picture of `SURVEY_MAP` from `SURVEY_VIEW="x y z pitch yaw"` (rotator units) after a second, to
+/// `out/screenshots/<SURVEY_NAME>.png` (Vulkan).
+#[test]
+#[ignore]
+fn survey_map_shot() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let map = std::env::var("SURVEY_MAP").unwrap_or_else(|_| "15_Area51_Bunker".into());
+    let v: Vec<f32> = std::env::var("SURVEY_VIEW").unwrap_or_default().split_whitespace().filter_map(|x| x.parse().ok()).collect();
+    let mut s = Session::open(&g, &map).unwrap();
+    if v.len() >= 5 {
+        s.teleport([v[0], v[1], v[2]], v[4] * 360.0 / 65536.0);
+    }
+    for _ in 0..30 {
+        s.step_bound(1.0 / 30.0);
+    }
+    if v.len() >= 5 {
+        s.pitch = v[3] as i32;
+        let p = s.player;
+        s.vm.set_prop(p, "ViewRotation", 0, Value::Rotator([v[3] as i32, v[4] as i32, 0])).unwrap();
+        s.step_bound(1.0 / 30.0);
+        s.pitch = v[3] as i32;
+        s.vm.set_prop(p, "ViewRotation", 0, Value::Rotator([v[3] as i32, v[4] as i32, 0])).unwrap();
+    }
+    let mut r = None;
+    let img = s.render_vk(&mut r, 1280, 720).expect("vulkan render");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../out/screenshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name = std::env::var("SURVEY_NAME").unwrap_or_else(|_| "map_shot".into());
+    std::fs::write(dir.join(format!("{name}.png")), dx_soft::png(img.width, img.height, &img.rgba)).unwrap();
+    eprintln!("player at {:?}", s.player_location());
+}
