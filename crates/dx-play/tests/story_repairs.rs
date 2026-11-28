@@ -421,3 +421,44 @@ fn the_hazmat_suit_protects_against_fire_electricity_and_emp() {
     }
     assert!(with[4] < without[4], "poison gas as before");
 }
+
+/// A decoration carried when a third-person conversation starts is set down, not thrown at the person spoken to (the
+/// conversation puts away what the player holds through `DropDecoration`, which throws it forward).
+#[test]
+fn a_carried_object_is_set_down_when_a_conversation_starts() {
+    let Some(g) = std::env::var_os("DEUSEX_DIR").map(PathBuf::from) else { return };
+    let mut s = Session::open(&g, "DX").unwrap();
+    s.exec("StartNewGame 01_NYC_UNATCOIsland");
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let pc = s.vm.reg.class_by_name("PaulDenton").unwrap();
+    let paul = s.vm.live_actors().into_iter().find(|&a| s.vm.class_of(a) == Some(pc)).unwrap();
+    let at = s.vm.location(paul);
+    let yaw = match s.vm.get_prop(paul, "Rotation", 0) { Ok(Value::Rotator(r)) => r[1] as f32 * std::f32::consts::TAU / 65536.0, _ => 0.0 };
+    s.teleport([at[0] + 200.0 * yaw.cos(), at[1] + 200.0 * yaw.sin(), at[2]], (yaw + std::f32::consts::PI).to_degrees());
+    for _ in 0..10 {
+        s.step_bound(DT);
+    }
+    let bc = s.vm.reg.class_by_name("Basketball").unwrap();
+    let me = s.player_location();
+    let ball = s.vm.spawn(bc, 0, None, Some([me[0], me[1], me[2] + 120.0]), None).unwrap().expect("the ball");
+    let p = s.player;
+    s.vm.set_prop(p, "CarriedDecoration", 0, Value::Obj(ball)).unwrap();
+    s.vm.call_by_name(p, "PutCarriedDecorationInHand", vec![]).unwrap();
+    for _ in 0..5 {
+        s.step_bound(DT);
+    }
+    assert_eq!(s.vm.get_prop(p, "CarriedDecoration", 0).ok(), Some(Value::Obj(ball)), "carried");
+    assert_eq!(s.vm.call_by_name(p, "StartConversation", vec![Value::Obj(paul), Value::Byte(1)]).unwrap(), Value::Bool(true));
+    let mut fastest = 0.0f32;
+    for _ in 0..20 {
+        s.step_bound(DT);
+        if let Ok(Value::Vector(v)) = s.vm.get_prop(ball, "Velocity", 0) {
+            fastest = fastest.max((v[0] * v[0] + v[1] * v[1]).sqrt());
+        }
+    }
+    assert_ne!(s.vm.get_prop(p, "CarriedDecoration", 0).ok(), Some(Value::Obj(ball)), "put away");
+    eprintln!("the ball's fastest horizontal speed: {fastest}");
+    assert!(fastest < 50.0, "thrown: {fastest}");
+}

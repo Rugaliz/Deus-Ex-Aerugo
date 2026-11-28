@@ -1248,6 +1248,11 @@ impl Vm {
             // radiation and poison; `DXReduceDamage` applies it only to the latter (the community patch's fix): the
             // former now get the same share (repair 9, after the function).
             ("DeusEx", "DeusExPlayer.DXReduceDamage") => 9,
+            // A third-person conversation puts away what the player holds (`PutInHand(None)`), which drops a carried
+            // decoration with `DropDecoration`: thrown forward at the person the player has just turned to (the TNT crate
+            // in Gunther's face). Dropped as the conversation starts, it is set down instead (no throw velocity, as the
+            // script does when the player leans).
+            ("DeusEx", "DeusExPlayer.DropDecoration") => 10,
             _ => 0,
         }
     }
@@ -1349,6 +1354,14 @@ impl Vm {
 
     /// The part of a repair that runs after the repaired function (see `port_repair`).
     fn port_repair_after(&mut self, repair: u8, this: u32, args: &mut [Value], ret: &mut Value) {
+        if repair == 10 {
+            let deco = std::mem::take(&mut self.repair_deco);
+            if deco != 0 && self.is_live(deco) {
+                let _ = self.set_prop(deco, "Velocity", 0, Value::Vector([0.0; 3]));
+            }
+            let _ = (&args, &ret);
+            return;
+        }
         if repair == 9 {
             // the suit's share for fire, electricity and EMP, as for the gases: x 0.75 x the environmental skill
             let kind = match args.get(1) { Some(Value::Name(n)) => self.reg.names.str(*n).to_ascii_lowercase(), _ => return };
@@ -1392,6 +1405,13 @@ impl Vm {
     }
 
     fn port_repair(&mut self, repair: u8, this: u32, args: &[Value]) {
+        if repair == 10 {
+            self.repair_deco = 0;
+            if matches!(self.state_name(this), Some("Conversation")) {
+                self.repair_deco = self.op(this, "CarriedDecoration");
+            }
+            return;
+        }
         if repair == 8 {
             let (Some(Value::Int(damage)), Some(Value::Name(kind))) = (args.first(), args.get(4)) else { return };
             let lethal = ["Shot", "Sabot", "Exploded", "Munch", "Tantalus", "Burned", "Flamed", "Drowned"];
